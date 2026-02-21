@@ -1,22 +1,5 @@
-mod auth;
-mod blob_store;
-mod config;
-mod db;
-mod error;
-mod models;
-mod pagination;
-mod routes;
-
-use blob_store::LocalBlobStore;
-use config::Config;
+use oyster::{AppState, blob_store::LocalBlobStore, config::Config, db, routes};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-
-#[derive(Clone)]
-pub struct AppState {
-    pub db: db::DbPool,
-    pub blob_store: LocalBlobStore,
-    pub config: Config,
-}
 
 #[tokio::main]
 async fn main() {
