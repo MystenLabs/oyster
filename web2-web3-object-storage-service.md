@@ -70,11 +70,11 @@ All mutating endpoints and authenticated reads require an API key, passed via an
 - Transfers all on-chain blob objects from all service-managed wallets to the developer-supplied wallet.
 - **This is a one-way, destructive operation.** After transfer, blob extension and deletion are the developer’s responsibility. The service should require explicit confirmation (e.g., re-auth + confirmation token).
 - **Open question**: Should transfer close the account, or should the account persist (empty) so the developer can continue uploading new blobs?
-- **Open question**: What happens to permanent (non-deletable) blobs whose epochs are about to expire? The developer needs to understand they are inheriting epoch-extension responsibility.
+- What happens to blobs whose epochs are about to expire? The developer needs to understand they are inheriting epoch-extension responsibility.
 
 ### Buckets
 
-Buckets are an organizational primitive. They exist for usage tracking, reporting, and bulk lifecycle management (deleting a bucket deletes its contents). There is work underway on a Walrus-native “Blob Manager” concept that overlaps with buckets, but this service should treat its bucket abstraction as its own - whether buckets are backed by Blob Manager on-chain or by service-layer metadata is an implementation detail.
+Buckets are an organizational primitive. They exist for usage tracking, reporting, and bulk lifecycle management (deleting a bucket deletes its contents). There is work underway on a Walrus-native “Blob Manager” concept that overlaps with buckets, but this service should treat its bucket abstraction as its own - whether buckets are backed by Blob Manager on-chain or by service-layer metadata is an implementation detail. NB: in our initial prototype, we are implementing buckets support in our centralized service, not on chain.
 
 ### Create Bucket
 
@@ -105,9 +105,9 @@ Buckets are an organizational primitive. They exist for usage tracking, reportin
 - `PUT /buckets/<bucket_id>/blobs`
 - Body: raw blob data (the request body *is* the blob).
 - Headers:
-    - `Content-Type` - stored as blob metadata, returned on read by object ID. Not available when reading by blob ID (blob ID is content-addressed and has no per-registration metadata).
-    - `X-Walrus-Deletable: true|false` (default: `true`) - immutable after creation.
-    - `X-Walrus-Duration: <duration>` - initial storage duration (e.g., `30d`, `6m`, `1y`). Also sets the auto-renewal increment for this blob. The service converts durations to epoch counts internally (Walrus epochs are ~2 weeks, so the service rounds up - minor over-reservation is expected and should be documented). If not specified, defaults to TBD.
+  - `Content-Type` - stored as blob metadata, returned on read by object ID. Not available when reading by blob ID (blob ID is content-addressed and has no per-registration metadata).
+  - `X-Walrus-Deletable: true|false` (default: `true`) - immutable after creation.
+  - `X-Walrus-Duration: <duration>` - initial storage duration (e.g., `30d`, `6m`, `1y`). Also sets the auto-renewal increment for this blob. The service converts durations to epoch counts internally (Walrus epochs are ~2 weeks, so the service rounds up - minor over-reservation is expected and should be documented). If not specified, defaults to TBD.
 - Returns: `{ "object_id": "...", "blob_id": "...", "expires": "<iso8601>", "auto_extend_duration": "<duration>" }`
 - **Open question**: Maximum blob size? Walrus has a practical encoding limit based on committee size. The service should enforce and document this.
 - **Multipart upload**: Planned but not in v1.
@@ -144,11 +144,11 @@ Buckets are an organizational primitive. They exist for usage tracking, reportin
 
 ### Model
 
-Usage-based billing with variable monthly invoices. Developers pay for:
+Monthly prepayment model with top-ups if funds get too low. Developers pay for:
 
 1. **Storage**: bytes x epochs. Priced per GB-epoch (or a human-friendly equivalent like GB-month).
 2. **Writes**: per-upload fee (covers Sui gas + Walrus registration costs + margin).
-3. **Reads**: per-read fee or per-GB-downloaded, if reads are metered. (v1 could start with unmetered reads to keep it simple and competitive with free Walrus reads.)
+3. **Reads**: per-read fee or per-GB-downloaded, if reads are metered. (v1 will start with unmetered reads to keep it simple and competitive with free Walrus reads.)
 4. **Epoch extensions**: per-extension fee (covers gas + extension cost + margin).
 
 ### Pricing and FX

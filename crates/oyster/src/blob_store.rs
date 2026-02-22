@@ -58,6 +58,8 @@ fn compute_blob_id(data: &[u8]) -> BlobId {
     let mut hasher = Blake2s256::new();
     hasher.update(data);
     let hash = hasher.finalize();
+    // TODO: use something like Base64Display::new(hash, &URL_SAFE_NO_PAD).fmt(f) instead
+    // of hex-encoding the hash.
     BlobId(hex::encode(hash))
 }
 
