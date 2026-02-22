@@ -9,7 +9,7 @@ use utoipa::{
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
-use utoipa_swagger_ui::SwaggerUi;
+use utoipa_scalar::{Scalar, Servable};
 
 use crate::AppState;
 
@@ -76,6 +76,6 @@ pub fn build_router(state: AppState) -> Router {
     }
 
     router
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api))
+        .merge(Scalar::with_url("/docs", api))
         .with_state(state)
 }
