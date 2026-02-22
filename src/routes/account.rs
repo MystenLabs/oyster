@@ -9,9 +9,20 @@ use crate::{
     auth::{self, AuthenticatedAccount},
     db,
     error::AppError,
-    models::{ApiKeyWithSecret, CreateAccountResponse},
+    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse},
 };
 
+#[utoipa::path(
+    post,
+    path = "/account/api-keys",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 201, description = "API key created", body = ApiKeyWithSecret),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// Generate a new API key for the authenticated account.
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -27,6 +38,19 @@ pub async fn create_api_key(
     Ok((StatusCode::CREATED, Json(api_key)))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/account/api-keys/{key_id}",
+    tag = "Account",
+    security(("bearer" = [])),
+    params(("key_id" = String, Path, description = "API key ID to revoke")),
+    responses(
+        (status = 204, description = "API key revoked"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "API key not found", body = ErrorResponse),
+    ),
+)]
+/// Revoke an API key by its ID. Only the owner of the key can revoke it.
 pub async fn revoke_api_key(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -42,20 +66,59 @@ pub async fn revoke_api_key(
 
 // Stubs
 
+#[utoipa::path(
+    put,
+    path = "/account/billing",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 501, description = "Not implemented", body = ErrorResponse),
+    ),
+)]
+/// Update billing information for the authenticated account. Not yet implemented.
 pub async fn update_billing() -> Result<StatusCode, AppError> {
     Err(AppError::NotImplemented)
 }
 
+#[utoipa::path(
+    get,
+    path = "/account/report",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 501, description = "Not implemented", body = ErrorResponse),
+    ),
+)]
+/// Retrieve a usage report for the authenticated account. Not yet implemented.
 pub async fn get_report() -> Result<StatusCode, AppError> {
     Err(AppError::NotImplemented)
 }
 
+#[utoipa::path(
+    post,
+    path = "/account/transfer",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 501, description = "Not implemented", body = ErrorResponse),
+    ),
+)]
+/// Transfer ownership of resources to another account. Not yet implemented.
 pub async fn transfer() -> Result<StatusCode, AppError> {
     Err(AppError::NotImplemented)
 }
 
 // Debug endpoint
 
+#[utoipa::path(
+    post,
+    path = "/debug/create-account",
+    tag = "Debug",
+    responses(
+        (status = 201, description = "Account created", body = CreateAccountResponse),
+    ),
+)]
+/// Create a new account with an initial API key. Only available when debug endpoints are enabled.
 pub async fn debug_create_account(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {

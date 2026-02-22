@@ -14,6 +14,7 @@ use crate::{
     error::AppError,
     models::{
         BlobMetadata,
+        ErrorResponse,
         PaginatedResponse,
         PaginationParams,
         StoreBlobResponse,
@@ -25,6 +26,21 @@ use crate::{
 const MAX_BLOB_SIZE: usize = 1_073_741_824; // 1 GB
 const DEFAULT_DURATION_DAYS: i64 = 30;
 
+#[utoipa::path(
+    put,
+    path = "/buckets/{bucket_id}/blobs",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(("bucket_id" = String, Path, description = "Bucket ID")),
+    request_body(content = Vec<u8>, content_type = "application/octet-stream"),
+    responses(
+        (status = 201, description = "Blob stored", body = StoreBlobResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Bucket not found", body = ErrorResponse),
+        (status = 413, description = "Payload too large", body = ErrorResponse),
+    ),
+)]
+/// Upload a blob into a bucket. The request body is the raw binary content. Content is deduplicated by hash.
 pub async fn store_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -77,6 +93,21 @@ pub async fn store_blob(
     ))
 }
 
+#[utoipa::path(
+    get,
+    path = "/buckets/{bucket_id}/blobs",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_id" = String, Path, description = "Bucket ID"),
+        PaginationParams,
+    ),
+    responses(
+        (status = 200, description = "List of blobs", body = PaginatedResponse<BlobMetadata>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// List all blobs in a bucket, with cursor-based pagination.
 pub async fn list_blobs(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -112,6 +143,17 @@ pub async fn list_blobs(
     Ok(Json(PaginatedResponse { data, next_cursor }))
 }
 
+#[utoipa::path(
+    get,
+    path = "/blobs/{object_id}",
+    tag = "Blobs",
+    params(("object_id" = String, Path, description = "Object ID")),
+    responses(
+        (status = 200, description = "Blob data", content_type = "application/octet-stream"),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Read a blob's content by its object ID. No authentication required.
 pub async fn read_blob(
     State(state): State<AppState>,
     Path(object_id): Path<String>,
@@ -130,6 +172,17 @@ pub async fn read_blob(
         .into_response())
 }
 
+#[utoipa::path(
+    get,
+    path = "/blobs/by-blob-id/{blob_id}",
+    tag = "Blobs",
+    params(("blob_id" = String, Path, description = "Blob content-hash ID")),
+    responses(
+        (status = 200, description = "Blob data", content_type = "application/octet-stream"),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Read a blob's content by its content-addressed blob ID. No authentication required.
 pub async fn read_blob_by_blob_id(
     State(state): State<AppState>,
     Path(blob_id): Path<String>,
@@ -149,6 +202,21 @@ pub async fn read_blob_by_blob_id(
         .into_response())
 }
 
+#[utoipa::path(
+    patch,
+    path = "/blobs/{object_id}/metadata",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(("object_id" = String, Path, description = "Object ID")),
+    request_body = UpdateBlobMetadataRequest,
+    responses(
+        (status = 200, description = "Metadata updated", body = BlobMetadata),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Update a blob's metadata (content type or auto-extend duration). At least one field must be provided.
 pub async fn update_blob_metadata(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -174,6 +242,19 @@ pub async fn update_blob_metadata(
     Ok(Json(metadata))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/blobs/{object_id}",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(("object_id" = String, Path, description = "Object ID")),
+    responses(
+        (status = 204, description = "Blob deleted"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Delete a blob by its object ID. The underlying data is only removed when no other objects reference it.
 pub async fn delete_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,

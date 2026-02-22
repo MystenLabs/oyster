@@ -2,55 +2,80 @@ pub mod account;
 pub mod blobs;
 pub mod buckets;
 
-use axum::{Router, routing};
+use axum::Router;
+use utoipa::{
+    Modify,
+    OpenApi,
+    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+};
+use utoipa_axum::{router::OpenApiRouter, routes};
+use utoipa_swagger_ui::SwaggerUi;
 
 use crate::AppState;
 
-pub fn build_router(state: AppState) -> Router {
-    let mut router = Router::new()
-        // Account / API keys
-        .route("/account/api-keys", routing::post(account::create_api_key))
-        .route(
-            "/account/api-keys/{key_id}",
-            routing::delete(account::revoke_api_key),
-        )
-        // Stubs
-        .route("/account/billing", routing::put(account::update_billing))
-        .route("/account/report", routing::get(account::get_report))
-        .route("/account/transfer", routing::post(account::transfer))
-        // Buckets
-        .route(
-            "/buckets",
-            routing::post(buckets::create_bucket).get(buckets::list_buckets),
-        )
-        .route(
-            "/buckets/{bucket_id}",
-            routing::delete(buckets::delete_bucket),
-        )
-        // Blobs
-        .route(
-            "/buckets/{bucket_id}/blobs",
-            routing::put(blobs::store_blob).get(blobs::list_blobs),
-        )
-        .route(
-            "/blobs/{object_id}",
-            routing::get(blobs::read_blob).delete(blobs::delete_blob),
-        )
-        .route(
-            "/blobs/by-blob-id/{blob_id}",
-            routing::get(blobs::read_blob_by_blob_id),
-        )
-        .route(
-            "/blobs/{object_id}/metadata",
-            routing::patch(blobs::update_blob_metadata),
-        );
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Oyster Object Storage API",
+        version = "0.1.0",
+        description = "A content-addressed object storage API with buckets, blobs, and API key authentication."
+    ),
+    tags(
+        (name = "Account", description = "Account and API key management"),
+        (name = "Buckets", description = "Bucket CRUD operations"),
+        (name = "Blobs", description = "Blob storage and retrieval"),
+        (name = "Debug", description = "Debug endpoints (development only)"),
+    ),
+    modifiers(&SecurityAddon),
+)]
+struct ApiDoc;
 
-    if state.config.enable_debug_endpoints {
-        router = router.route(
-            "/debug/create-account",
-            routing::post(account::debug_create_account),
+struct SecurityAddon;
+
+impl Modify for SecurityAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_default();
+        components.add_security_scheme(
+            "bearer",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("API Key")
+                    .build(),
+            ),
         );
     }
+}
 
-    router.with_state(state)
+pub fn build_router(state: AppState) -> Router {
+    let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+        // Account / API keys
+        .routes(routes!(account::create_api_key))
+        .routes(routes!(account::revoke_api_key))
+        // Stubs
+        .routes(routes!(account::update_billing))
+        .routes(routes!(account::get_report))
+        .routes(routes!(account::transfer))
+        // Buckets
+        .routes(routes!(buckets::create_bucket, buckets::list_buckets))
+        .routes(routes!(buckets::delete_bucket))
+        // Blobs
+        .routes(routes!(blobs::store_blob, blobs::list_blobs))
+        .routes(routes!(blobs::read_blob, blobs::delete_blob))
+        .routes(routes!(blobs::read_blob_by_blob_id))
+        .routes(routes!(blobs::update_blob_metadata))
+        .split_for_parts();
+
+    let mut router = router;
+
+    if state.config.enable_debug_endpoints {
+        let (debug_router, _debug_api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+            .routes(routes!(account::debug_create_account))
+            .split_for_parts();
+        router = router.merge(debug_router);
+    }
+
+    router
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", api))
+        .with_state(state)
 }

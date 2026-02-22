@@ -10,10 +10,24 @@ use crate::{
     blob_store::BlobStore,
     db,
     error::AppError,
-    models::{Bucket, CreateBucketRequest, PaginatedResponse, PaginationParams},
+    models::{Bucket, CreateBucketRequest, ErrorResponse, PaginatedResponse, PaginationParams},
     pagination,
 };
 
+#[utoipa::path(
+    post,
+    path = "/buckets",
+    tag = "Buckets",
+    security(("bearer" = [])),
+    request_body = CreateBucketRequest,
+    responses(
+        (status = 201, description = "Bucket created", body = Bucket),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 409, description = "Bucket name already exists", body = ErrorResponse),
+    ),
+)]
+/// Create a new bucket. Bucket names must be unique within an account.
 pub async fn create_bucket(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -40,6 +54,18 @@ pub async fn create_bucket(
     Ok((StatusCode::CREATED, Json(bucket)))
 }
 
+#[utoipa::path(
+    get,
+    path = "/buckets",
+    tag = "Buckets",
+    security(("bearer" = [])),
+    params(PaginationParams),
+    responses(
+        (status = 200, description = "List of buckets", body = PaginatedResponse<Bucket>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// List all buckets owned by the authenticated account, with cursor-based pagination.
 pub async fn list_buckets(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -73,6 +99,19 @@ pub async fn list_buckets(
     Ok(Json(PaginatedResponse { data, next_cursor }))
 }
 
+#[utoipa::path(
+    delete,
+    path = "/buckets/{bucket_id}",
+    tag = "Buckets",
+    security(("bearer" = [])),
+    params(("bucket_id" = String, Path, description = "Bucket ID")),
+    responses(
+        (status = 204, description = "Bucket deleted"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Bucket not found", body = ErrorResponse),
+    ),
+)]
+/// Delete a bucket and all blobs it contains. Unreferenced blob data is cleaned up from storage.
 pub async fn delete_bucket(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
