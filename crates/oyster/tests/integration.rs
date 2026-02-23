@@ -593,3 +593,87 @@ async fn blob_content_type_preserved() {
         "image/png"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Oyster–Pearl integration (4.5.3)
+// ---------------------------------------------------------------------------
+
+/// Stand up Pearl's gRPC server in-process and return a connected `PearlConnection`.
+async fn start_pearl() -> oyster::pearl_client::PearlConnection {
+    use pearl::{
+        auth::check_service_secret,
+        grpc::{PearlService, proto::pearl_server::PearlServer},
+    };
+
+    const PEARL_SECRET: &str = "oyster-pearl-test-secret";
+
+    let db = pearl::db::create_pool("sqlite::memory:")
+        .await
+        .expect("in-memory pool");
+
+    let service = PearlService { db };
+    let interceptor = check_service_secret(PEARL_SECRET.to_string());
+    let svc = PearlServer::with_interceptor(service, interceptor);
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().unwrap();
+    let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+
+    tokio::spawn(async move {
+        tonic::transport::Server::builder()
+            .add_service(svc)
+            .serve_with_incoming(incoming)
+            .await
+            .expect("pearl server error");
+    });
+
+    let url = format!("http://{addr}");
+    for _ in 0..20 {
+        if let Ok(conn) =
+            oyster::pearl_client::PearlConnection::connect(&url, PEARL_SECRET.to_string()).await
+        {
+            return conn;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("could not connect to Pearl gRPC server at {url}");
+}
+
+#[tokio::test]
+async fn pearl_client_create_and_get_wallets() {
+    let pearl = start_pearl().await;
+
+    // Create an account through Oyster's PearlConnection wrapper.
+    let create_resp = pearl.create_account(100, 200, 500, 1000).await.unwrap();
+    assert!(!create_resp.account_id.is_empty());
+    assert!(create_resp.address.starts_with("0x"));
+
+    // Fetch wallets through the wrapper.
+    let wallets_resp = pearl
+        .get_account_wallets(&create_resp.account_id)
+        .await
+        .unwrap();
+    assert_eq!(wallets_resp.wallets.len(), 1);
+    let wallet = &wallets_resp.wallets[0];
+    assert_eq!(wallet.account_id, create_resp.account_id);
+    assert_eq!(wallet.address, create_resp.address);
+    assert_eq!(wallet.min_sui_balance, 100);
+    assert_eq!(wallet.min_wal_balance, 200);
+    assert_eq!(wallet.top_up_target_sui, 500);
+    assert_eq!(wallet.top_up_target_wal, 1000);
+}
+
+#[tokio::test]
+async fn pearl_client_sign_transaction_unimplemented() {
+    let pearl = start_pearl().await;
+
+    let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
+
+    let err = pearl
+        .sign_transaction(&create_resp.account_id, vec![1, 2, 3])
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::Unimplemented);
+}
