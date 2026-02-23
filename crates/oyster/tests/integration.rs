@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{
     Router,
     body::Body,
@@ -20,6 +22,8 @@ async fn test_app() -> (Router, TempDir) {
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path.clone(),
         enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -27,7 +31,8 @@ async fn test_app() -> (Router, TempDir) {
 
     let state = AppState {
         db: pool,
-        blob_store,
+        blob_store: Arc::new(blob_store),
+        pearl: None,
         config,
     };
 

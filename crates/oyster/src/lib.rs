@@ -5,14 +5,19 @@ pub mod db;
 pub mod error;
 pub mod models;
 pub mod pagination;
+pub mod pearl_client;
 pub mod routes;
 
-use blob_store::LocalBlobStore;
+use std::sync::Arc;
+
+use blob_store::BlobStore;
 use config::Config;
+use pearl_client::PearlConnection;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: db::DbPool,
-    pub blob_store: LocalBlobStore,
+    pub blob_store: Arc<dyn BlobStore>,
+    pub pearl: Option<PearlConnection>,
     pub config: Config,
 }

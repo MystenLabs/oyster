@@ -7,7 +7,6 @@ use axum::{
 use crate::{
     AppState,
     auth::AuthenticatedAccount,
-    blob_store::BlobStore,
     db,
     error::AppError,
     models::{Bucket, CreateBucketRequest, ErrorResponse, PaginatedResponse, PaginationParams},

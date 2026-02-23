@@ -1,4 +1,4 @@
-use std::{future::Future, path::PathBuf};
+use std::{future::Future, path::PathBuf, pin::Pin};
 
 use blake2::{Blake2s256, Digest};
 
@@ -25,15 +25,13 @@ pub enum BlobStoreError {
     Io(#[from] std::io::Error),
 }
 
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
 pub trait BlobStore: Send + Sync + 'static {
-    fn store(&self, data: &[u8]) -> impl Future<Output = Result<BlobId, BlobStoreError>> + Send;
-    fn read(
-        &self,
-        blob_id: &BlobId,
-    ) -> impl Future<Output = Result<Vec<u8>, BlobStoreError>> + Send;
-    fn delete(&self, blob_id: &BlobId) -> impl Future<Output = Result<(), BlobStoreError>> + Send;
-    fn exists(&self, blob_id: &BlobId)
-    -> impl Future<Output = Result<bool, BlobStoreError>> + Send;
+    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<BlobId, BlobStoreError>>;
+    fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
+    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>>;
+    fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
 }
 
 #[derive(Debug, Clone)]
@@ -64,35 +62,44 @@ fn compute_blob_id(data: &[u8]) -> BlobId {
 }
 
 impl BlobStore for LocalBlobStore {
-    async fn store(&self, data: &[u8]) -> Result<BlobId, BlobStoreError> {
+    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<BlobId, BlobStoreError>> {
         let blob_id = compute_blob_id(data);
         let path = self.blob_path(&blob_id);
-        if path.exists() {
-            return Ok(blob_id);
-        }
-        let parent = path.parent().expect("blob path must have parent");
-        tokio::fs::create_dir_all(parent).await?;
-        tokio::fs::write(&path, data).await?;
-        Ok(blob_id)
+        let data = data.to_vec();
+        Box::pin(async move {
+            if path.exists() {
+                return Ok(blob_id);
+            }
+            let parent = path.parent().expect("blob path must have parent");
+            tokio::fs::create_dir_all(parent).await?;
+            tokio::fs::write(&path, &data).await?;
+            Ok(blob_id)
+        })
     }
 
-    async fn read(&self, blob_id: &BlobId) -> Result<Vec<u8>, BlobStoreError> {
+    fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
         let path = self.blob_path(blob_id);
-        if !path.exists() {
-            return Err(BlobStoreError::NotFound(blob_id.to_string()));
-        }
-        Ok(tokio::fs::read(&path).await?)
+        let blob_id_str = blob_id.to_string();
+        Box::pin(async move {
+            if !path.exists() {
+                return Err(BlobStoreError::NotFound(blob_id_str));
+            }
+            Ok(tokio::fs::read(&path).await?)
+        })
     }
 
-    async fn delete(&self, blob_id: &BlobId) -> Result<(), BlobStoreError> {
+    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);
-        if path.exists() {
-            tokio::fs::remove_file(&path).await?;
-        }
-        Ok(())
+        Box::pin(async move {
+            if path.exists() {
+                tokio::fs::remove_file(&path).await?;
+            }
+            Ok(())
+        })
     }
 
-    async fn exists(&self, blob_id: &BlobId) -> Result<bool, BlobStoreError> {
-        Ok(self.blob_path(blob_id).exists())
+    fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
+        let path = self.blob_path(blob_id);
+        Box::pin(async move { Ok(path.exists()) })
     }
 }

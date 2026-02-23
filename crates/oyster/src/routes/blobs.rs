@@ -9,7 +9,7 @@ use axum::{
 use crate::{
     AppState,
     auth::AuthenticatedAccount,
-    blob_store::{BlobId, BlobStore},
+    blob_store::BlobId,
     db,
     error::AppError,
     models::{

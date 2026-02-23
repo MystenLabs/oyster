@@ -6,6 +6,8 @@ pub struct Config {
     pub database_url: String,
     pub blob_store_path: PathBuf,
     pub enable_debug_endpoints: bool,
+    pub pearl_grpc_url: Option<String>,
+    pub pearl_service_secret: String,
 }
 
 impl Config {
@@ -20,6 +22,9 @@ impl Config {
             enable_debug_endpoints: std::env::var("ENABLE_DEBUG")
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(true),
+            pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
+            pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
+                .unwrap_or_else(|_| "dev-secret".into()),
         }
     }
 }

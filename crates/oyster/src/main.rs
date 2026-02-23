@@ -1,4 +1,13 @@
-use oyster::{AppState, blob_store::LocalBlobStore, config::Config, db, routes};
+use std::sync::Arc;
+
+use oyster::{
+    AppState,
+    blob_store::LocalBlobStore,
+    config::Config,
+    db,
+    pearl_client::PearlConnection,
+    routes,
+};
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 #[tokio::main]
@@ -16,9 +25,25 @@ async fn main() {
         .await
         .expect("failed to initialize blob store");
 
+    let pearl = match &config.pearl_grpc_url {
+        Some(url) => {
+            tracing::info!("connecting to Pearl at {url}");
+            let conn = PearlConnection::connect(url, config.pearl_service_secret.clone())
+                .await
+                .expect("failed to connect to Pearl");
+            tracing::info!("pearl connected");
+            Some(conn)
+        }
+        None => {
+            tracing::info!("PEARL_GRPC_URL not set, running in local-only mode");
+            None
+        }
+    };
+
     let state = AppState {
         db,
-        blob_store,
+        blob_store: Arc::new(blob_store),
+        pearl,
         config: config.clone(),
     };
 
