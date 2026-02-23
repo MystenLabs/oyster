@@ -214,6 +214,10 @@ async fn sign_transaction_success() {
         !resp.signed_transaction.is_empty(),
         "signed transaction should be non-empty"
     );
+
+    // Verify the response deserializes back into a valid Transaction.
+    let _tx: sui_types::transaction::Transaction =
+        bcs::from_bytes(&resp.signed_transaction).expect("valid Transaction");
 }
 
 #[tokio::test]

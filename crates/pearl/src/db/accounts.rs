@@ -146,6 +146,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_private_key_returns_valid_bytes() {
+        let pool = test_pool().await;
+        let req = CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        };
+
+        let account = create_account(&pool, &req, "cred").await.unwrap();
+        let pk = get_private_key(&pool, &account.id).await.unwrap();
+
+        // Ed25519 private key is 32 bytes.
+        assert_eq!(pk.len(), 32);
+
+        // The key should reconstruct into a valid Ed25519KeyPair.
+        use fastcrypto::ed25519::Ed25519KeyPair;
+        Ed25519KeyPair::from_bytes(&pk).expect("valid Ed25519 private key");
+    }
+
+    #[tokio::test]
+    async fn get_private_key_not_found() {
+        let pool = test_pool().await;
+
+        let err = get_private_key(&pool, "nonexistent-id").await.unwrap_err();
+        assert!(
+            matches!(err, Error::AccountNotFound),
+            "expected AccountNotFound, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn unique_addresses_across_many_accounts() {
         let pool = test_pool().await;
         let req = CreateAccountRequest {

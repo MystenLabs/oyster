@@ -3573,6 +3573,7 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "bcs",
  "blake2",
  "chrono",
  "hex",
@@ -3583,6 +3584,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "sui-types",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",

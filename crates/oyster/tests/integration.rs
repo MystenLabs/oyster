@@ -666,6 +666,40 @@ async fn pearl_client_create_and_get_wallets() {
 }
 
 #[tokio::test]
+async fn pearl_client_sign_transaction_success() {
+    use sui_types::{
+        base_types::{ObjectDigest, ObjectID, SuiAddress},
+        programmable_transaction_builder::ProgrammableTransactionBuilder,
+        transaction::TransactionData,
+    };
+
+    let pearl = start_pearl().await;
+
+    let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
+
+    let sender: SuiAddress = create_resp.address.parse().expect("valid SuiAddress");
+    let gas_ref = (
+        ObjectID::random(),
+        sui_types::base_types::SequenceNumber::new(),
+        ObjectDigest::random(),
+    );
+    let pt = ProgrammableTransactionBuilder::new().finish();
+    let tx_data = TransactionData::new_programmable(sender, vec![gas_ref], pt, 5_000_000, 1_000);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let resp = pearl
+        .sign_transaction(&create_resp.account_id, tx_data_bytes)
+        .await
+        .unwrap();
+
+    assert!(!resp.signed_transaction.is_empty());
+
+    // Verify the response deserializes back into a valid Transaction.
+    let _tx: sui_types::transaction::Transaction =
+        bcs::from_bytes(&resp.signed_transaction).expect("valid Transaction");
+}
+
+#[tokio::test]
 async fn pearl_client_sign_transaction_invalid_tx_data() {
     let pearl = start_pearl().await;
 
