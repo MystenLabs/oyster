@@ -78,6 +78,7 @@ pub async fn store_blob(
         content_type,
         body.len() as i64,
         &expires_at,
+        None,
     )
     .await?;
 
@@ -87,6 +88,7 @@ pub async fn store_blob(
             object_id: metadata.object_id,
             blob_id: metadata.blob_id,
             size: metadata.size,
+            sui_object_id: metadata.sui_object_id,
             created_at: metadata.created_at,
             expires_at: metadata.expires_at,
         }),

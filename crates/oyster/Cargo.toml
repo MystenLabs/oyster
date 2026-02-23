@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = "0.8.8"
 base64 = "0.22.1"
+bcs = "0.1.6"
 blake2 = "0.10.6"
 chrono = { workspace = true }
 hex = "0.4.3"
@@ -15,6 +16,8 @@ reqwest = { version = "0.13.2", features = ["json"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sqlx = { workspace = true }
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.65.1" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.65.1" }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tonic = "0.14.5"
@@ -26,12 +29,12 @@ utoipa = { version = "5.4.0", features = ["axum_extras"] }
 utoipa-axum = "0.2.0"
 utoipa-scalar = { version = "0.3.0", features = ["axum"] }
 uuid = { workspace = true }
+walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", version = "1.42.1" }
+walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", features = ["backoff"] }
 
 [dev-dependencies]
-bcs = "0.1.6"
 http-body-util = "0.1.3"
 pearl = { path = "../pearl" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
 tempfile = "3.25.0"
 tokio-stream = "0.1.18"
 tower = { version = "0.5.3", features = ["util"] }

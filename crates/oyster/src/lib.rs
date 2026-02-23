@@ -3,6 +3,7 @@ pub mod blob_store;
 pub mod config;
 pub mod db;
 pub mod error;
+pub mod extension_task;
 pub mod models;
 pub mod pagination;
 pub mod pearl_client;

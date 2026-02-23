@@ -42,6 +42,7 @@ pub struct BlobMetadata {
     pub content_type: String,
     pub size: i64,
     pub auto_extend_duration: Option<String>,
+    pub sui_object_id: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
 }
@@ -72,6 +73,7 @@ pub struct StoreBlobResponse {
     pub object_id: String,
     pub blob_id: String,
     pub size: i64,
+    pub sui_object_id: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
 }

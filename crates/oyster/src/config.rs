@@ -11,6 +11,13 @@ pub struct Config {
     pub walrus_publisher_url: Option<String>,
     pub walrus_aggregator_url: Option<String>,
     pub walrus_default_epochs: u32,
+    pub sui_rpc_url: Option<String>,
+    pub walrus_system_object: Option<String>,
+    pub walrus_staking_object: Option<String>,
+    pub pearl_account_id: Option<String>,
+    pub blob_extend_interval_secs: u64,
+    pub blob_extend_lookahead_days: u32,
+    pub blob_extend_epochs: u32,
 }
 
 impl Config {
@@ -31,6 +38,22 @@ impl Config {
             walrus_publisher_url: std::env::var("WALRUS_PUBLISHER_URL").ok(),
             walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
             walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            sui_rpc_url: std::env::var("SUI_RPC_URL").ok(),
+            walrus_system_object: std::env::var("WALRUS_SYSTEM_OBJECT").ok(),
+            walrus_staking_object: std::env::var("WALRUS_STAKING_OBJECT").ok(),
+            pearl_account_id: std::env::var("PEARL_ACCOUNT_ID").ok(),
+            blob_extend_interval_secs: std::env::var("BLOB_EXTEND_INTERVAL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3600),
+            blob_extend_lookahead_days: std::env::var("BLOB_EXTEND_LOOKAHEAD_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7),
+            blob_extend_epochs: std::env::var("BLOB_EXTEND_EPOCHS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),

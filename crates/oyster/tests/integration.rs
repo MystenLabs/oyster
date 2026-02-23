@@ -27,6 +27,13 @@ async fn test_app() -> (Router, TempDir) {
         walrus_publisher_url: None,
         walrus_aggregator_url: None,
         walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        pearl_account_id: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();

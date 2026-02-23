@@ -62,6 +62,34 @@ async fn main() {
         }
     };
 
+    // Spawn blob extension task if Pearl + Sui RPC + Walrus config are all present.
+    if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj), Some(acct_id)) = (
+        &pearl,
+        &config.sui_rpc_url,
+        &config.walrus_system_object,
+        &config.walrus_staking_object,
+        &config.pearl_account_id,
+    ) {
+        use sui_types::base_types::ObjectID;
+        let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
+        let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
+        let ext_config = oyster::extension_task::ExtensionConfig {
+            check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
+            lookahead_days: config.blob_extend_lookahead_days,
+            extend_epochs: config.blob_extend_epochs,
+        };
+        tracing::info!("spawning blob extension background task");
+        tokio::spawn(oyster::extension_task::run_extension_loop(
+            db.clone(),
+            pearl_conn.clone(),
+            acct_id.clone(),
+            rpc_url.clone(),
+            system_object,
+            staking_object,
+            ext_config,
+        ));
+    }
+
     let state = AppState {
         db,
         blob_store,
