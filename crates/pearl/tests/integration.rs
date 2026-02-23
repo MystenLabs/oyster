@@ -1,9 +1,16 @@
+use fastcrypto::ed25519::Ed25519KeyPair;
 use pearl::{
     auth::check_service_secret,
     grpc::{
         PearlService,
         proto::{self, pearl_client::PearlClient, pearl_server::PearlServer},
     },
+};
+use sui_types::{
+    base_types::{ObjectDigest, ObjectID, SuiAddress},
+    crypto::get_key_pair,
+    programmable_transaction_builder::ProgrammableTransactionBuilder,
+    transaction::TransactionData,
 };
 use tonic::{Request, transport::Channel};
 
@@ -138,11 +145,20 @@ async fn get_wallets_nonexistent_account() {
     assert_eq!(status.code(), tonic::Code::NotFound);
 }
 
+fn mock_transaction_data(sender: SuiAddress) -> TransactionData {
+    let gas_ref = (
+        ObjectID::random(),
+        sui_types::base_types::SequenceNumber::new(),
+        ObjectDigest::random(),
+    );
+    let pt = ProgrammableTransactionBuilder::new().finish();
+    TransactionData::new_programmable(sender, vec![gas_ref], pt, 5_000_000, 1_000)
+}
+
 #[tokio::test]
-async fn sign_transaction_unimplemented() {
+async fn sign_transaction_invalid_tx_data() {
     let mut client = start_server().await;
 
-    // Create an account first so the request is otherwise valid.
     let create_resp = client
         .create_account(authenticated(proto::CreateAccountRequest {
             min_sui_balance: 0,
@@ -162,7 +178,61 @@ async fn sign_transaction_unimplemented() {
         .await
         .unwrap_err();
 
-    assert_eq!(status.code(), tonic::Code::Unimplemented);
+    assert_eq!(status.code(), tonic::Code::InvalidArgument);
+}
+
+#[tokio::test]
+async fn sign_transaction_success() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Parse the account's address to build a valid TransactionData.
+    let sender: SuiAddress = create_resp.address.parse().expect("valid SuiAddress");
+    let tx_data = mock_transaction_data(sender);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let resp = client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: create_resp.account_id,
+            tx_data: tx_data_bytes,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(
+        !resp.signed_transaction.is_empty(),
+        "signed transaction should be non-empty"
+    );
+}
+
+#[tokio::test]
+async fn sign_transaction_account_not_found() {
+    let mut client = start_server().await;
+
+    let (sender, _kp): (SuiAddress, Ed25519KeyPair) = get_key_pair();
+    let tx_data = mock_transaction_data(sender);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let status = client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: "nonexistent-account-id".to_string(),
+            tx_data: tx_data_bytes,
+        }))
+        .await
+        .unwrap_err();
+
+    assert_eq!(status.code(), tonic::Code::NotFound);
 }
 
 #[tokio::test]

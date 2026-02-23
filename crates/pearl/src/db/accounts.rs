@@ -1,18 +1,19 @@
+use fastcrypto::traits::ToFromBytes;
+use sui_types::{
+    base_types::SuiAddress,
+    crypto::{AccountKeyPair, get_account_key_pair},
+};
+
 use super::DbPool;
 use crate::{
     error::Error,
     models::{Account, CreateAccountRequest, WalletInfo},
 };
 
-/// Generate a stub keypair. Returns (address_hex, private_key_bytes).
-///
-/// This is a placeholder — real Sui keypair generation will be added in Phase 5
-/// when we integrate the Sui SDK.
-fn generate_stub_keypair() -> (String, Vec<u8>) {
-    let private_key: [u8; 32] = rand::random();
-    // Derive a fake "address" by hashing the private key bytes.
-    let address = hex::encode(&private_key[..20]);
-    (format!("0x{address}"), private_key.to_vec())
+fn generate_sui_keypair() -> (String, Vec<u8>) {
+    let (address, ed25519_kp): (SuiAddress, AccountKeyPair) = get_account_key_pair();
+    let private_key = ed25519_kp.as_bytes().to_vec();
+    (address.to_string(), private_key)
 }
 
 pub async fn create_account(
@@ -21,7 +22,7 @@ pub async fn create_account(
     credentials: &str,
 ) -> Result<Account, Error> {
     let id = uuid::Uuid::new_v4().to_string();
-    let (address, private_key) = generate_stub_keypair();
+    let (address, private_key) = generate_sui_keypair();
 
     sqlx::query(
         "INSERT INTO accounts (id, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, address, private_key, credentials)
@@ -50,6 +51,14 @@ pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     .fetch_optional(pool)
     .await?
     .ok_or(Error::AccountNotFound)
+}
+
+pub async fn get_private_key(pool: &DbPool, account_id: &str) -> Result<Vec<u8>, Error> {
+    let row: Option<(Vec<u8>,)> = sqlx::query_as("SELECT private_key FROM accounts WHERE id = ?")
+        .bind(account_id)
+        .fetch_optional(pool)
+        .await?;
+    row.map(|(pk,)| pk).ok_or(Error::AccountNotFound)
 }
 
 pub async fn get_account_wallets(pool: &DbPool, id: &str) -> Result<Vec<WalletInfo>, Error> {
@@ -91,6 +100,8 @@ mod tests {
 
         assert!(!account.id.is_empty());
         assert!(account.address.starts_with("0x"));
+        // Real Sui address: 0x + 64 hex chars = 66 chars total.
+        assert_eq!(account.address.len(), 66);
         assert_eq!(account.min_sui_balance, 100);
         assert_eq!(account.min_wal_balance, 200);
         assert_eq!(account.top_up_target_sui, 500);

@@ -666,7 +666,7 @@ async fn pearl_client_create_and_get_wallets() {
 }
 
 #[tokio::test]
-async fn pearl_client_sign_transaction_unimplemented() {
+async fn pearl_client_sign_transaction_invalid_tx_data() {
     let pearl = start_pearl().await;
 
     let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
@@ -675,5 +675,5 @@ async fn pearl_client_sign_transaction_unimplemented() {
         .sign_transaction(&create_resp.account_id, vec![1, 2, 3])
         .await
         .unwrap_err();
-    assert_eq!(err.code(), tonic::Code::Unimplemented);
+    assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }

@@ -4,12 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bcs = "0.1.6"
 chrono = { workspace = true, features = ["serde"] }
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "db643fd05a1b1c4cd52de3939766b53e12ce137e", version = "0.1.9" }
 hex = "0.4.3"
 prost = "0.14.3"
 rand = "0.10.0"
 serde = { workspace = true, features = ["derive"] }
+shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.0.0" }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.1.0" }
 thiserror.workspace = true
 tokio = { workspace = true }
 tonic = { version = "0.14.5", features = ["default"] }

@@ -66,11 +66,17 @@ impl Pearl for PearlService {
 
     async fn sign_transaction(
         &self,
-        _request: Request<proto::SignTransactionRequest>,
+        request: Request<proto::SignTransactionRequest>,
     ) -> Result<Response<proto::SignTransactionResponse>, Status> {
-        Err(Status::unimplemented(
-            "transaction signing requires Sui SDK integration (Phase 5)",
-        ))
+        let req = request.into_inner();
+        let private_key = db::accounts::get_private_key(&self.db, &req.account_id)
+            .await
+            .map_err(to_status)?;
+        let signed_bytes =
+            crate::signing::sign_transaction(&private_key, &req.tx_data).map_err(to_status)?;
+        Ok(Response::new(proto::SignTransactionResponse {
+            signed_transaction: signed_bytes,
+        }))
     }
 }
 
@@ -79,5 +85,12 @@ fn to_status(err: crate::error::Error) -> Status {
         crate::error::Error::AccountNotFound => Status::not_found("account not found"),
         crate::error::Error::InvalidCredentials => Status::unauthenticated("invalid credentials"),
         crate::error::Error::Db(e) => Status::internal(format!("database error: {e}")),
+        crate::error::Error::InvalidPrivateKey(e) => {
+            Status::internal(format!("invalid private key: {e}"))
+        }
+        crate::error::Error::InvalidTransactionData(e) => {
+            Status::invalid_argument(format!("invalid transaction data: {e}"))
+        }
+        crate::error::Error::SigningError(e) => Status::internal(format!("signing error: {e}")),
     }
 }

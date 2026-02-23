@@ -8,4 +8,13 @@ pub enum Error {
 
     #[error("invalid credentials")]
     InvalidCredentials,
+
+    #[error("invalid private key: {0}")]
+    InvalidPrivateKey(String),
+
+    #[error("invalid transaction data: {0}")]
+    InvalidTransactionData(String),
+
+    #[error("signing error: {0}")]
+    SigningError(String),
 }
