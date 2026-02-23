@@ -23,6 +23,8 @@ pub enum BlobStoreError {
     NotFound(String),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("http error: {0}")]
+    Http(String),
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

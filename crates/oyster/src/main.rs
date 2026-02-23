@@ -7,6 +7,7 @@ use oyster::{
     db,
     pearl_client::PearlConnection,
     routes,
+    walrus_blob_store::WalrusBlobStore,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -21,9 +22,30 @@ async fn main() {
         .await
         .expect("failed to create database pool");
 
-    let blob_store = LocalBlobStore::new(config.blob_store_path.clone())
-        .await
-        .expect("failed to initialize blob store");
+    let blob_store: Arc<dyn oyster::blob_store::BlobStore> =
+        match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
+            (Some(pub_url), Some(agg_url)) => {
+                tracing::info!(
+                    "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
+                );
+                Arc::new(WalrusBlobStore::new(
+                    pub_url.clone(),
+                    agg_url.clone(),
+                    config.walrus_default_epochs,
+                ))
+            }
+            (Some(_), None) => {
+                panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
+            }
+            _ => {
+                tracing::info!("using local blob store at {:?}", config.blob_store_path);
+                Arc::new(
+                    LocalBlobStore::new(config.blob_store_path.clone())
+                        .await
+                        .expect("failed to initialize blob store"),
+                )
+            }
+        };
 
     let pearl = match &config.pearl_grpc_url {
         Some(url) => {
@@ -42,7 +64,7 @@ async fn main() {
 
     let state = AppState {
         db,
-        blob_store: Arc::new(blob_store),
+        blob_store,
         pearl,
         config: config.clone(),
     };

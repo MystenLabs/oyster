@@ -24,6 +24,9 @@ async fn test_app() -> (Router, TempDir) {
         enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
+        walrus_publisher_url: None,
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();

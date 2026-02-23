@@ -8,6 +8,9 @@ pub struct Config {
     pub enable_debug_endpoints: bool,
     pub pearl_grpc_url: Option<String>,
     pub pearl_service_secret: String,
+    pub walrus_publisher_url: Option<String>,
+    pub walrus_aggregator_url: Option<String>,
+    pub walrus_default_epochs: u32,
 }
 
 impl Config {
@@ -25,6 +28,12 @@ impl Config {
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
             pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
                 .unwrap_or_else(|_| "dev-secret".into()),
+            walrus_publisher_url: std::env::var("WALRUS_PUBLISHER_URL").ok(),
+            walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
+            walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
         }
     }
 }

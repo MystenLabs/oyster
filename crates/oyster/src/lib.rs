@@ -7,6 +7,7 @@ pub mod models;
 pub mod pagination;
 pub mod pearl_client;
 pub mod routes;
+pub mod walrus_blob_store;
 
 use std::sync::Arc;
 
