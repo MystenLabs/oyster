@@ -65,3 +65,89 @@ pub async fn get_account_wallets(pool: &DbPool, id: &str) -> Result<Vec<WalletIn
         top_up_target_wal: account.top_up_target_wal,
     }])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db;
+
+    async fn test_pool() -> DbPool {
+        db::create_pool("sqlite::memory:")
+            .await
+            .expect("in-memory pool")
+    }
+
+    #[tokio::test]
+    async fn create_account_returns_well_formed_account() {
+        let pool = test_pool().await;
+        let req = CreateAccountRequest {
+            min_sui_balance: 100,
+            min_wal_balance: 200,
+            top_up_target_sui: 500,
+            top_up_target_wal: 1000,
+        };
+
+        let account = create_account(&pool, &req, "cred-abc").await.unwrap();
+
+        assert!(!account.id.is_empty());
+        assert!(account.address.starts_with("0x"));
+        assert_eq!(account.min_sui_balance, 100);
+        assert_eq!(account.min_wal_balance, 200);
+        assert_eq!(account.top_up_target_sui, 500);
+        assert_eq!(account.top_up_target_wal, 1000);
+        assert_eq!(account.credentials, "cred-abc");
+        assert!(!account.created_at.is_empty());
+        assert!(!account.updated_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_account_not_found() {
+        let pool = test_pool().await;
+
+        let err = get_account(&pool, "nonexistent-id").await.unwrap_err();
+        assert!(
+            matches!(err, Error::AccountNotFound),
+            "expected AccountNotFound, got: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_account_wallets_returns_matching_wallet() {
+        let pool = test_pool().await;
+        let req = CreateAccountRequest {
+            min_sui_balance: 10,
+            min_wal_balance: 20,
+            top_up_target_sui: 30,
+            top_up_target_wal: 40,
+        };
+
+        let account = create_account(&pool, &req, "cred").await.unwrap();
+        let wallets = get_account_wallets(&pool, &account.id).await.unwrap();
+
+        assert_eq!(wallets.len(), 1);
+        let w = &wallets[0];
+        assert_eq!(w.account_id, account.id);
+        assert_eq!(w.address, account.address);
+        assert_eq!(w.min_sui_balance, 10);
+        assert_eq!(w.min_wal_balance, 20);
+        assert_eq!(w.top_up_target_sui, 30);
+        assert_eq!(w.top_up_target_wal, 40);
+    }
+
+    #[tokio::test]
+    async fn unique_addresses_across_many_accounts() {
+        let pool = test_pool().await;
+        let req = CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        };
+
+        let mut addrs = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let account = create_account(&pool, &req, "cred").await.unwrap();
+            assert!(addrs.insert(account.address), "duplicate address generated");
+        }
+    }
+}
