@@ -6,11 +6,18 @@ edition = "2024"
 [dependencies]
 chrono = { workspace = true, features = ["serde"] }
 hex = "0.4.3"
+prost = "0.14.3"
 rand = "0.10.0"
 serde = { workspace = true, features = ["derive"] }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
 thiserror.workspace = true
 tokio = { workspace = true }
+tonic = { version = "0.14.5", features = ["default"] }
+tonic-prost = "0.14.5"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { workspace = true, features = ["v4", "serde"] }
+
+[build-dependencies]
+tonic-build = "0.14.5"
+tonic-prost-build = "0.14.5"
