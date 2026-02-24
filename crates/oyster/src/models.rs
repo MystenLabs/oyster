@@ -4,6 +4,7 @@ use utoipa::{IntoParams, ToSchema};
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Account {
     pub id: String,
+    pub pearl_account_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -87,6 +88,17 @@ pub struct CreateAccountResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WalletsResponse {
+    pub provisioned: bool,
+    pub wallets: Vec<WalletInfo>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WalletInfo {
+    pub address: String,
 }
 
 // Query parameter types

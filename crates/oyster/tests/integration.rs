@@ -105,6 +105,10 @@ async fn store_test_blob(
         .unwrap();
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, StatusCode::CREATED);
+    assert!(
+        body.get("sui_object_id").is_some(),
+        "response should include sui_object_id field"
+    );
     let object_id = body["object_id"].as_str().unwrap().to_string();
     let blob_id = body["blob_id"].as_str().unwrap().to_string();
     (object_id, blob_id)
@@ -163,6 +167,7 @@ async fn full_lifecycle() {
     let blobs = body["data"].as_array().unwrap();
     assert_eq!(blobs.len(), 1);
     assert_eq!(blobs[0]["object_id"].as_str().unwrap(), object_id);
+    assert!(blobs[0].get("sui_object_id").is_some());
 
     // 7. Update blob metadata
     let (status, body) = json_response(
@@ -602,6 +607,24 @@ async fn blob_content_type_preserved() {
             .unwrap(),
         "image/png"
     );
+}
+
+#[tokio::test]
+async fn wallets_returns_not_provisioned_in_local_mode() {
+    let (app, _tmp) = test_app().await;
+    let (_, key) = create_test_account(&app).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::get("/account/wallets")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["provisioned"].as_bool(), Some(false));
+    assert_eq!(body["wallets"].as_array().unwrap().len(), 0);
 }
 
 // ---------------------------------------------------------------------------

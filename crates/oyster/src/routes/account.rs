@@ -9,7 +9,7 @@ use crate::{
     auth::{self, AuthenticatedAccount},
     db,
     error::AppError,
-    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse},
+    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse, WalletInfo, WalletsResponse},
 };
 
 #[utoipa::path(
@@ -108,6 +108,56 @@ pub async fn transfer() -> Result<StatusCode, AppError> {
     Err(AppError::NotImplemented)
 }
 
+#[utoipa::path(
+    get,
+    path = "/account/wallets",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Wallet information", body = WalletsResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// Get wallet information for the authenticated account.
+pub async fn get_wallets(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+) -> Result<Json<WalletsResponse>, AppError> {
+    let account = db::accounts::get_account(&state.db, &auth.account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let Some(pearl_account_id) = account.pearl_account_id else {
+        return Ok(Json(WalletsResponse {
+            provisioned: false,
+            wallets: vec![],
+        }));
+    };
+
+    let Some(ref pearl) = state.pearl else {
+        return Ok(Json(WalletsResponse {
+            provisioned: true,
+            wallets: vec![],
+        }));
+    };
+
+    let resp = pearl
+        .get_account_wallets(&pearl_account_id)
+        .await
+        .map_err(|e| AppError::Internal(format!("Pearl get_account_wallets failed: {e}")))?;
+
+    let wallets = resp
+        .wallets
+        .into_iter()
+        .map(|w| WalletInfo { address: w.address })
+        .collect();
+
+    Ok(Json(WalletsResponse {
+        provisioned: true,
+        wallets,
+    }))
+}
+
 // Debug endpoint
 
 #[utoipa::path(
@@ -119,10 +169,21 @@ pub async fn transfer() -> Result<StatusCode, AppError> {
     ),
 )]
 /// Create a new account with an initial API key. Only available when debug endpoints are enabled.
+/// If Pearl is connected, automatically provisions a wallet for the new account.
 pub async fn debug_create_account(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let account = db::accounts::create_account(&state.db).await?;
+    let pearl_account_id = if let Some(ref pearl) = state.pearl {
+        let resp = pearl
+            .create_account(0, 0, 0, 0)
+            .await
+            .map_err(|e| AppError::Internal(format!("Pearl account creation failed: {e}")))?;
+        Some(resp.account_id)
+    } else {
+        None
+    };
+
+    let account = db::accounts::create_account(&state.db, pearl_account_id.as_deref()).await?;
 
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
