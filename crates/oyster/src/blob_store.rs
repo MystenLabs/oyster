@@ -36,7 +36,11 @@ pub enum BlobStoreError {
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait BlobStore: Send + Sync + 'static {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
+    fn store(
+        &self,
+        data: &[u8],
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
     fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
@@ -70,7 +74,11 @@ fn compute_blob_id(data: &[u8]) -> BlobId {
 }
 
 impl BlobStore for LocalBlobStore {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+    fn store(
+        &self,
+        data: &[u8],
+        _pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let blob_id = compute_blob_id(data);
         let path = self.blob_path(&blob_id);
         let data = data.to_vec();

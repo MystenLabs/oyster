@@ -57,12 +57,19 @@ pub async fn store_blob(
         .await?
         .ok_or(AppError::NotFound)?;
 
+    let account = db::accounts::get_account(&state.db, &auth.account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
 
-    let result = state.blob_store.store(&body).await?;
+    let result = state
+        .blob_store
+        .store(&body, account.pearl_account_id.as_deref())
+        .await?;
 
     let expires_at = chrono::Utc::now()
         .checked_add_days(chrono::Days::new(DEFAULT_DURATION_DAYS as u64))

@@ -69,7 +69,21 @@ impl DirectWalrusBlobStore {
         })
     }
 
-    async fn store_impl(&self, data: &[u8]) -> Result<StoreResult, BlobStoreError> {
+    async fn store_impl(
+        &self,
+        data: &[u8],
+        pearl_account_id: Option<&str>,
+    ) -> Result<StoreResult, BlobStoreError> {
+        // Resolve which Pearl account and sender address to use.
+        let pearl_account_id = pearl_account_id.unwrap_or(&self.pearl_account_id);
+        let sender_address = if pearl_account_id == self.pearl_account_id {
+            self.sender_address
+        } else {
+            sui_transaction::resolve_sender_address(&self.pearl, pearl_account_id)
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("resolve sender address error: {e}")))?
+        };
+
         // 1. Encode the blob data.
         let encoding_config = self.node_client.encoding_config();
         let encoding = encoding_config.get_for_type(walrus_core::EncodingType::RS2);
@@ -82,7 +96,7 @@ impl DirectWalrusBlobStore {
         let walrus_blob_id = *metadata.blob_id();
 
         // 2. Register on-chain (reserve_space + register_blob in one PTB).
-        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), self.sender_address);
+        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
         let storage_arg = ptb
             .reserve_space(blob_obj_metadata.encoded_size, self.epochs)
             .await
@@ -103,14 +117,10 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
-        let register_resp = sui_transaction::sign_and_submit(
-            &self.pearl,
-            &self.pearl_account_id,
-            &self.rpc_url,
-            tx_data,
-        )
-        .await
-        .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
+        let register_resp =
+            sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
 
         // Extract the created blob object ID from object_changes.
         let blob_sui_object_id = register_resp
@@ -150,7 +160,7 @@ impl DirectWalrusBlobStore {
             .map_err(|e| BlobStoreError::Http(format!("sliver upload error: {e}")))?;
 
         // 4. Certify on-chain.
-        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), self.sender_address);
+        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
         ptb.certify_blob(blob_sui_object_id.into(), &certificate)
             .await
             .map_err(|e| BlobStoreError::Http(format!("certify_blob error: {e}")))?;
@@ -160,14 +170,9 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
-        sui_transaction::sign_and_submit(
-            &self.pearl,
-            &self.pearl_account_id,
-            &self.rpc_url,
-            tx_data,
-        )
-        .await
-        .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
+        sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
 
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id.to_string()),
@@ -177,9 +182,14 @@ impl DirectWalrusBlobStore {
 }
 
 impl BlobStore for DirectWalrusBlobStore {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+    fn store(
+        &self,
+        data: &[u8],
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
-        Box::pin(async move { self.store_impl(&data).await })
+        let pearl_account_id = pearl_account_id.map(String::from);
+        Box::pin(async move { self.store_impl(&data, pearl_account_id.as_deref()).await })
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {

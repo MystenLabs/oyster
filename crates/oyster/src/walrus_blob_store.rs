@@ -23,7 +23,11 @@ impl WalrusBlobStore {
 }
 
 impl BlobStore for WalrusBlobStore {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+    fn store(
+        &self,
+        data: &[u8],
+        _pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
         Box::pin(async move {
             let url = format!(
@@ -149,7 +153,7 @@ mod tests {
             .await;
 
         let store = WalrusBlobStore::new(server.uri(), "http://unused".into(), 5);
-        let result = store.store(b"hello walrus").await.unwrap();
+        let result = store.store(b"hello walrus", None).await.unwrap();
         assert_eq!(result.blob_id.as_str(), "blob-abc-123");
         assert!(result.sui_object_id.is_none());
     }
@@ -168,7 +172,7 @@ mod tests {
             .await;
 
         let store = WalrusBlobStore::new(server.uri(), "http://unused".into(), 5);
-        let result = store.store(b"duplicate data").await.unwrap();
+        let result = store.store(b"duplicate data", None).await.unwrap();
         assert_eq!(result.blob_id.as_str(), "blob-existing-456");
         assert!(result.sui_object_id.is_none());
     }
@@ -183,7 +187,7 @@ mod tests {
             .await;
 
         let store = WalrusBlobStore::new(server.uri(), "http://unused".into(), 5);
-        let err = store.store(b"fail").await.unwrap_err();
+        let err = store.store(b"fail", None).await.unwrap_err();
         assert!(matches!(err, BlobStoreError::Http(_)));
     }
 
