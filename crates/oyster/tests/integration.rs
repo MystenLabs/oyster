@@ -1,4 +1,8 @@
-use std::sync::Arc;
+use std::{
+    future::Future,
+    pin::Pin,
+    sync::{Arc, Mutex},
+};
 
 use axum::{
     Router,
@@ -6,10 +10,68 @@ use axum::{
     http::{Request, StatusCode},
 };
 use http_body_util::BodyExt;
-use oyster::{AppState, blob_store::LocalBlobStore, config::Config, db, routes};
+use oyster::{
+    AppState,
+    auth,
+    blob_store::{BlobId, BlobStore, BlobStoreError, LocalBlobStore, StoreResult},
+    config::Config,
+    db,
+    routes,
+};
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
+
+// ---------------------------------------------------------------------------
+// SpyBlobStore – wraps LocalBlobStore and records pearl_account_id from store()
+// ---------------------------------------------------------------------------
+
+struct SpyBlobStore {
+    inner: LocalBlobStore,
+    /// Each `store()` call appends the `pearl_account_id` argument here.
+    calls: Mutex<Vec<Option<String>>>,
+}
+
+impl SpyBlobStore {
+    fn new(inner: LocalBlobStore) -> Self {
+        Self {
+            inner,
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn recorded_calls(&self) -> Vec<Option<String>> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+impl BlobStore for SpyBlobStore {
+    fn store(
+        &self,
+        data: &[u8],
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(pearl_account_id.map(|s| s.to_string()));
+        self.inner.store(data, pearl_account_id)
+    }
+
+    fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
+        self.inner.read(blob_id)
+    }
+
+    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+        self.inner.delete(blob_id)
+    }
+
+    fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
+        self.inner.exists(blob_id)
+    }
+}
 
 /// Build a fresh app with an in-memory SQLite DB and a temp blob store directory.
 /// Returns `(Router, TempDir)` — hold onto the TempDir so it isn't dropped mid-test.
@@ -47,6 +109,58 @@ async fn test_app() -> (Router, TempDir) {
     };
 
     (routes::build_router(state), tmp)
+}
+
+/// Like `test_app()` but accepts an externally-created blob store and also returns the `DbPool`
+/// (needed to create accounts with specific `pearl_account_id` values directly via the DB).
+async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, db::DbPool) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path,
+        enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        walrus_publisher_url: None,
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        pearl_account_id: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: blob_store as Arc<dyn BlobStore>,
+        pearl: None,
+        config,
+    };
+
+    (routes::build_router(state), tmp, pool)
+}
+
+/// Helper: create an account directly via DB with an optional pearl_account_id,
+/// returns the raw API key secret.
+async fn create_account_with_pearl(pool: &db::DbPool, pearl_account_id: Option<&str>) -> String {
+    let account = db::accounts::create_account(pool, pearl_account_id)
+        .await
+        .unwrap();
+    let raw_key = auth::generate_api_key();
+    let key_hash = auth::hash_api_key(&raw_key);
+    let prefix = auth::key_prefix(&raw_key);
+    db::api_keys::create_api_key(pool, &account.id, &key_hash, &prefix, &raw_key)
+        .await
+        .unwrap();
+    raw_key
 }
 
 /// Helper: send a request and return (StatusCode, body as Value).
@@ -743,4 +857,67 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
+}
+
+// ---------------------------------------------------------------------------
+// Per-account pearl_account_id threading through BlobStore::store()
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn store_blob_passes_none_pearl_account_id() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let key = create_account_with_pearl(&pool, None).await;
+    let bucket_id = create_test_bucket(&app, &key, "no-pearl").await;
+
+    store_test_blob(&app, &key, &bucket_id, "text/plain", b"data").await;
+
+    let calls = spy.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0], None);
+}
+
+#[tokio::test]
+async fn store_blob_passes_pearl_account_id() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let key = create_account_with_pearl(&pool, Some("pearl-acct-42")).await;
+    let bucket_id = create_test_bucket(&app, &key, "with-pearl").await;
+
+    store_test_blob(&app, &key, &bucket_id, "text/plain", b"data").await;
+
+    let calls = spy.recorded_calls();
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0], Some("pearl-acct-42".to_string()));
+}
+
+#[tokio::test]
+async fn store_blob_distinguishes_pearl_accounts() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+
+    let key_none = create_account_with_pearl(&pool, None).await;
+    let key_pearl = create_account_with_pearl(&pool, Some("pearl-acct-99")).await;
+
+    let bucket_none = create_test_bucket(&app, &key_none, "bucket-none").await;
+    let bucket_pearl = create_test_bucket(&app, &key_pearl, "bucket-pearl").await;
+
+    // Store from account without pearl
+    store_test_blob(&app, &key_none, &bucket_none, "text/plain", b"aaa").await;
+    // Store from account with pearl
+    store_test_blob(&app, &key_pearl, &bucket_pearl, "text/plain", b"bbb").await;
+
+    let calls = spy.recorded_calls();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0], None);
+    assert_eq!(calls[1], Some("pearl-acct-99".to_string()));
 }
