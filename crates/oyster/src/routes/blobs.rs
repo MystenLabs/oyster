@@ -62,7 +62,7 @@ pub async fn store_blob(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
 
-    let blob_id = state.blob_store.store(&body).await?;
+    let result = state.blob_store.store(&body).await?;
 
     let expires_at = chrono::Utc::now()
         .checked_add_days(chrono::Days::new(DEFAULT_DURATION_DAYS as u64))
@@ -72,13 +72,13 @@ pub async fn store_blob(
 
     let metadata = db::blobs::insert_blob(
         &state.db,
-        blob_id.as_str(),
+        result.blob_id.as_str(),
         &bucket_id,
         &auth.account_id,
         content_type,
         body.len() as i64,
         &expires_at,
-        None,
+        result.sui_object_id.as_deref(),
     )
     .await?;
 

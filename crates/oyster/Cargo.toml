@@ -29,6 +29,8 @@ utoipa = { version = "5.4.0", features = ["axum_extras"] }
 utoipa-axum = "0.2.0"
 utoipa-scalar = { version = "0.3.0", features = ["axum"] }
 uuid = { workspace = true }
+walrus-core = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", version = "1.42.1", features = ["sui-types"] }
+walrus-sdk = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", version = "1.42.1" }
 walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", version = "1.42.1" }
 walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.42.1", features = ["backoff"] }
 

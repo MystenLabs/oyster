@@ -1,6 +1,6 @@
 use std::{future::Future, pin::Pin};
 
-use crate::blob_store::{BlobId, BlobStore, BlobStoreError};
+use crate::blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -23,7 +23,7 @@ impl WalrusBlobStore {
 }
 
 impl BlobStore for WalrusBlobStore {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<BlobId, BlobStoreError>> {
+    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
         Box::pin(async move {
             let url = format!(
@@ -57,7 +57,10 @@ impl BlobStore for WalrusBlobStore {
                     BlobStoreError::Http(format!("unexpected publisher response: {body}"))
                 })?;
 
-            Ok(BlobId(blob_id.to_string()))
+            Ok(StoreResult {
+                blob_id: BlobId(blob_id.to_string()),
+                sui_object_id: None,
+            })
         })
     }
 
@@ -146,8 +149,9 @@ mod tests {
             .await;
 
         let store = WalrusBlobStore::new(server.uri(), "http://unused".into(), 5);
-        let blob_id = store.store(b"hello walrus").await.unwrap();
-        assert_eq!(blob_id.as_str(), "blob-abc-123");
+        let result = store.store(b"hello walrus").await.unwrap();
+        assert_eq!(result.blob_id.as_str(), "blob-abc-123");
+        assert!(result.sui_object_id.is_none());
     }
 
     #[tokio::test]
@@ -164,8 +168,9 @@ mod tests {
             .await;
 
         let store = WalrusBlobStore::new(server.uri(), "http://unused".into(), 5);
-        let blob_id = store.store(b"duplicate data").await.unwrap();
-        assert_eq!(blob_id.as_str(), "blob-existing-456");
+        let result = store.store(b"duplicate data").await.unwrap();
+        assert_eq!(result.blob_id.as_str(), "blob-existing-456");
+        assert!(result.sui_object_id.is_none());
     }
 
     #[tokio::test]

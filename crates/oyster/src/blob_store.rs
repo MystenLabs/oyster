@@ -5,6 +5,12 @@ use blake2::{Blake2s256, Digest};
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlobId(pub String);
 
+#[derive(Debug)]
+pub struct StoreResult {
+    pub blob_id: BlobId,
+    pub sui_object_id: Option<String>,
+}
+
 impl BlobId {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -30,7 +36,7 @@ pub enum BlobStoreError {
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 pub trait BlobStore: Send + Sync + 'static {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<BlobId, BlobStoreError>>;
+    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
     fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
@@ -64,18 +70,24 @@ fn compute_blob_id(data: &[u8]) -> BlobId {
 }
 
 impl BlobStore for LocalBlobStore {
-    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<BlobId, BlobStoreError>> {
+    fn store(&self, data: &[u8]) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let blob_id = compute_blob_id(data);
         let path = self.blob_path(&blob_id);
         let data = data.to_vec();
         Box::pin(async move {
             if path.exists() {
-                return Ok(blob_id);
+                return Ok(StoreResult {
+                    blob_id,
+                    sui_object_id: None,
+                });
             }
             let parent = path.parent().expect("blob path must have parent");
             tokio::fs::create_dir_all(parent).await?;
             tokio::fs::write(&path, &data).await?;
-            Ok(blob_id)
+            Ok(StoreResult {
+                blob_id,
+                sui_object_id: None,
+            })
         })
     }
 

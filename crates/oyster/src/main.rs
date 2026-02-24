@@ -5,6 +5,7 @@ use oyster::{
     blob_store::LocalBlobStore,
     config::Config,
     db,
+    direct_walrus_store::DirectWalrusBlobStore,
     pearl_client::PearlConnection,
     routes,
     walrus_blob_store::WalrusBlobStore,
@@ -22,7 +23,54 @@ async fn main() {
         .await
         .expect("failed to create database pool");
 
-    let blob_store: Arc<dyn oyster::blob_store::BlobStore> =
+    let pearl = match &config.pearl_grpc_url {
+        Some(url) => {
+            tracing::info!("connecting to Pearl at {url}");
+            let conn = PearlConnection::connect(url, config.pearl_service_secret.clone())
+                .await
+                .expect("failed to connect to Pearl");
+            tracing::info!("pearl connected");
+            Some(conn)
+        }
+        None => {
+            tracing::info!("PEARL_GRPC_URL not set, running in local-only mode");
+            None
+        }
+    };
+
+    let blob_store: Arc<dyn oyster::blob_store::BlobStore> = if let (
+        Some(pearl_conn),
+        Some(rpc_url),
+        Some(sys_obj),
+        Some(stk_obj),
+        Some(acct_id),
+        Some(agg_url),
+    ) = (
+        &pearl,
+        &config.sui_rpc_url,
+        &config.walrus_system_object,
+        &config.walrus_staking_object,
+        &config.pearl_account_id,
+        &config.walrus_aggregator_url,
+    ) {
+        use sui_types::base_types::ObjectID;
+        let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
+        let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
+        tracing::info!("using direct Walrus blob store (aggregator={agg_url})");
+        Arc::new(
+            DirectWalrusBlobStore::new(
+                rpc_url.clone(),
+                agg_url.clone(),
+                system_object,
+                staking_object,
+                pearl_conn.clone(),
+                acct_id.clone(),
+                config.walrus_default_epochs,
+            )
+            .await
+            .expect("failed to initialize direct Walrus blob store"),
+        )
+    } else {
         match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
             (Some(pub_url), Some(agg_url)) => {
                 tracing::info!(
@@ -45,20 +93,6 @@ async fn main() {
                         .expect("failed to initialize blob store"),
                 )
             }
-        };
-
-    let pearl = match &config.pearl_grpc_url {
-        Some(url) => {
-            tracing::info!("connecting to Pearl at {url}");
-            let conn = PearlConnection::connect(url, config.pearl_service_secret.clone())
-                .await
-                .expect("failed to connect to Pearl");
-            tracing::info!("pearl connected");
-            Some(conn)
-        }
-        None => {
-            tracing::info!("PEARL_GRPC_URL not set, running in local-only mode");
-            None
         }
     };
 

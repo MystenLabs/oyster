@@ -2,12 +2,14 @@ pub mod auth;
 pub mod blob_store;
 pub mod config;
 pub mod db;
+pub mod direct_walrus_store;
 pub mod error;
 pub mod extension_task;
 pub mod models;
 pub mod pagination;
 pub mod pearl_client;
 pub mod routes;
+pub mod sui_transaction;
 pub mod walrus_blob_store;
 
 use std::sync::Arc;
