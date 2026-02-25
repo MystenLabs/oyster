@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use axum::Router;
 use oyster::{
@@ -14,15 +14,24 @@ use pearl::{
     auth::check_service_secret,
     grpc::{PearlService, proto::pearl_server::PearlServer},
 };
+use sui_sdk::SuiClientBuilder;
+use sui_types::{
+    base_types::SuiAddress,
+    programmable_transaction_builder::ProgrammableTransactionBuilder,
+    transaction::TransactionData,
+};
 use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
     StorageNodeHandle,
     TestCluster,
     test_cluster::{AggregatorHandle, E2eTestSetupBuilder},
 };
-use walrus_sui::test_utils::TestClusterHandle;
+use walrus_sui::{client::SuiContractClient, test_utils::TestClusterHandle};
+use walrus_test_utils::WithTempDir;
 
 const PEARL_SECRET: &str = "e2e-test-pearl-secret";
+const GAS_BUDGET: u64 = 50_000_000;
+const WAL_FUND_AMOUNT: u64 = 500_000_000_000; // 500 WAL in FROST
 
 /// Holds all the running components of an Oyster E2E test environment.
 pub struct OysterTestHarness {
@@ -42,6 +51,8 @@ pub struct OysterTestHarness {
     pub aggregator: AggregatorHandle,
     /// Oyster database pool (for direct DB operations in tests).
     pub db: db::DbPool,
+    /// Keep the walrus admin client alive (its temp_dir holds the admin wallet config).
+    _walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
 }
 
 impl OysterTestHarness {
@@ -50,7 +61,7 @@ impl OysterTestHarness {
     /// This is expensive (~10-30s) so tests should share a single harness where possible.
     pub async fn start() -> Self {
         // 1. Boot the Walrus test cluster with an aggregator.
-        let (sui_cluster, walrus_cluster, _walrus_client, system_ctx, aggregator) =
+        let (sui_cluster, walrus_cluster, walrus_client, system_ctx, aggregator) =
             E2eTestSetupBuilder::new()
                 .with_aggregator()
                 .build()
@@ -83,18 +94,21 @@ impl OysterTestHarness {
         let operator_address = create_resp.address;
 
         // 4. Fund the operator wallet with SUI (needed for gas).
-        // Use walrus-sui's sui_types::SuiAddress (v1.66.1) for fund_addresses_with_sui.
+        let operator_sui_addr: SuiAddress = operator_address.parse().expect("valid SuiAddress");
         {
-            let addr: sui_types::base_types::SuiAddress =
-                operator_address.parse().expect("valid SuiAddress");
             let cluster = sui_cluster.lock().await;
             cluster
-                .fund_addresses_with_sui(vec![addr], None)
+                .fund_addresses_with_sui(vec![operator_sui_addr], None)
                 .await
-                .expect("failed to fund operator wallet");
+                .expect("failed to fund operator wallet with SUI");
         }
 
-        // 5. Build DirectWalrusBlobStore pointing at the test cluster.
+        // 5. Fund the operator wallet with WAL (needed for reserve_space).
+        // The admin wallet (inside walrus_client) has WAL from contract deployment.
+        // Load it from the temp_dir, find WAL coins, and transfer to the operator.
+        fund_with_wal(&walrus_client, &rpc_url, operator_sui_addr, WAL_FUND_AMOUNT).await;
+
+        // 6. Build DirectWalrusBlobStore pointing at the test cluster.
         // Use oyster's re-exported sui_types::ObjectID (v1.65.1) to match DirectWalrusBlobStore.
         let system_object: oyster::sui_types::base_types::ObjectID =
             system_object_str.parse().expect("valid system_object");
@@ -113,7 +127,7 @@ impl OysterTestHarness {
         .await
         .expect("failed to create DirectWalrusBlobStore");
 
-        // 6. Build the Oyster AppState and Router.
+        // 7. Build the Oyster AppState and Router.
         let oyster_db = db::create_pool("sqlite::memory:")
             .await
             .expect("failed to create in-memory oyster db");
@@ -155,18 +169,118 @@ impl OysterTestHarness {
             walrus_cluster,
             aggregator,
             db: oyster_db,
+            _walrus_client: walrus_client,
         }
     }
 
     /// Fund an address with SUI from the test cluster's admin wallet.
     pub async fn fund_address(&self, address: &str) {
-        let addr: sui_types::base_types::SuiAddress = address.parse().expect("valid SuiAddress");
+        let addr: SuiAddress = address.parse().expect("valid SuiAddress");
         let cluster = self.sui_cluster.lock().await;
         cluster
             .fund_addresses_with_sui(vec![addr], None)
             .await
             .expect("failed to fund address");
     }
+}
+
+/// Transfer WAL from the admin wallet (inside walrus_client) to the given recipient.
+///
+/// The admin wallet has WAL from deploying the Walrus contracts during test setup.
+/// We load it from the temp_dir's wallet config, find WAL coins, and send them.
+async fn fund_with_wal(
+    walrus_client: &WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
+    rpc_url: &str,
+    recipient: SuiAddress,
+    amount: u64,
+) {
+    let wallet_config_path = walrus_client.temp_dir.path().join("wallet_config.yaml");
+    #[allow(deprecated)]
+    let wallet =
+        walrus_sui::config::load_wallet_context_from_path(Some(&wallet_config_path), None)
+            .expect("load admin wallet from walrus client temp_dir");
+
+    let sender = wallet.active_address();
+
+    // Query all coins to find the WAL coin type (it's the non-SUI coin).
+    let sui_client = SuiClientBuilder::default()
+        .build(rpc_url)
+        .await
+        .expect("build SuiClient for WAL funding");
+
+    let all_balances = sui_client
+        .coin_read_api()
+        .get_all_balances(sender)
+        .await
+        .expect("query admin balances");
+
+    let wal_balance = all_balances
+        .iter()
+        .find(|b| b.coin_type != "0x2::sui::SUI")
+        .unwrap_or_else(|| {
+            panic!(
+                "admin wallet {sender} has no non-SUI coins (expected WAL). Balances: {all_balances:?}"
+            )
+        });
+    let wal_coin_type = wal_balance.coin_type.clone();
+
+    tracing::info!(
+        "funding {recipient} with {amount} WAL (type: {wal_coin_type}) from admin {sender}"
+    );
+
+    // Get specific WAL coins.
+    let coins = sui_client
+        .coin_read_api()
+        .get_coins(sender, Some(wal_coin_type), None, None)
+        .await
+        .expect("query admin WAL coins");
+
+    let coin = coins
+        .data
+        .first()
+        .expect("admin should have at least one WAL coin");
+
+    assert!(
+        coin.balance >= amount,
+        "admin WAL coin balance ({}) < requested amount ({amount})",
+        coin.balance
+    );
+
+    // Build a PAY transaction to transfer WAL.
+    let coin_ref = coin.object_ref();
+    let mut ptb = ProgrammableTransactionBuilder::new();
+    ptb.pay(vec![coin_ref], vec![recipient], vec![amount])
+        .expect("build pay tx");
+
+    #[allow(deprecated)]
+    let gas_obj = wallet
+        .gas_for_owner_budget(sender, GAS_BUDGET, BTreeSet::new())
+        .await
+        .expect("find gas coin for WAL transfer");
+    let gas_ref = gas_obj.1.compute_object_reference();
+
+    #[allow(deprecated)]
+    let gas_price = wallet
+        .get_reference_gas_price()
+        .await
+        .expect("get gas price");
+
+    let tx_data = TransactionData::new_programmable(
+        sender,
+        vec![gas_ref],
+        ptb.finish(),
+        GAS_BUDGET,
+        gas_price,
+    );
+
+    let signed = wallet.sign_transaction(&tx_data).await;
+    #[allow(deprecated)]
+    wallet
+        .execute_transaction_may_fail(signed)
+        .await
+        .expect("execute WAL transfer to operator");
+
+    tracing::info!("funded {recipient} with {amount} WAL");
 }
 
 /// Start Pearl's gRPC server in-process on a random port and return a connected PearlConnection.

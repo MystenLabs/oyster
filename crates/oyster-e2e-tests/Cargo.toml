@@ -24,10 +24,12 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 rustls = { version = "0.23", features = ["aws-lc-rs"] }
 
-# Sui types (same version as walrus uses).
+# Sui (same version as walrus uses).
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
 
 # Walrus test infrastructure (path deps to local walrus checkout).
+walrus-sdk = { path = "../../../walrus/crates/walrus-sdk" }
 walrus-service = { path = "../../../walrus/crates/walrus-service", features = ["test-utils"] }
 walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-utils"] }
 walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }
