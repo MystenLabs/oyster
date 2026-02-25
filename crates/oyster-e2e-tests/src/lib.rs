@@ -196,9 +196,8 @@ async fn fund_with_wal(
 ) {
     let wallet_config_path = walrus_client.temp_dir.path().join("wallet_config.yaml");
     #[allow(deprecated)]
-    let wallet =
-        walrus_sui::config::load_wallet_context_from_path(Some(&wallet_config_path), None)
-            .expect("load admin wallet from walrus client temp_dir");
+    let wallet = walrus_sui::config::load_wallet_context_from_path(Some(&wallet_config_path), None)
+        .expect("load admin wallet from walrus client temp_dir");
 
     let sender = wallet.active_address();
 

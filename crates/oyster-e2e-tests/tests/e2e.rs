@@ -4,14 +4,22 @@ use oyster_e2e_tests::OysterTestHarness;
 use serde_json::Value;
 use tower::ServiceExt;
 
-/// Build a tokio runtime with 32MB worker thread stacks.
+/// Run an async test body on a tokio runtime with 32MB worker thread stacks.
+///
 /// The walrus encoding pipeline is deeply recursive and overflows the default 2MB stack.
-fn build_runtime() -> tokio::runtime::Runtime {
-    tokio::runtime::Builder::new_multi_thread()
+/// `cargo test` runs each `#[test]` on a thread with the default 2MB stack, so we must
+/// ensure the heavy work runs on a runtime worker thread (which has the enlarged stack)
+/// rather than on the test thread via `block_on`.
+fn run_e2e<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(32 * 1024 * 1024)
         .build()
-        .expect("build tokio runtime")
+        .expect("build tokio runtime");
+    rt.block_on(async {
+        // Spawn onto a worker thread with the enlarged stack.
+        tokio::spawn(f).await.expect("e2e test panicked");
+    });
 }
 
 /// Helper: send a request and return (status, body as JSON Value).
@@ -63,7 +71,7 @@ async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
 #[test]
 #[ignore = "requires walrus test cluster (~30s startup)"]
 fn e2e_blob_lifecycle() {
-    build_runtime().block_on(async {
+    run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         tracing_subscriber::fmt::try_init().ok();
 
@@ -168,7 +176,7 @@ fn e2e_blob_lifecycle() {
 #[test]
 #[ignore = "requires walrus test cluster (~30s startup)"]
 fn e2e_content_dedup() {
-    build_runtime().block_on(async {
+    run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         tracing_subscriber::fmt::try_init().ok();
 
@@ -217,7 +225,7 @@ fn e2e_content_dedup() {
 #[test]
 #[ignore = "requires walrus test cluster (~30s startup)"]
 fn e2e_wallet_provisioning() {
-    build_runtime().block_on(async {
+    run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         tracing_subscriber::fmt::try_init().ok();
 
