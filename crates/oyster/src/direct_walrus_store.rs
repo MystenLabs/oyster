@@ -122,6 +122,8 @@ impl DirectWalrusBlobStore {
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
 
+        tracing::info!("register tx digest: {:?}", register_resp.digest);
+
         // Extract the created blob object ID from object_changes.
         let blob_sui_object_id = register_resp
             .object_changes
