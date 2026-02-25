@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/oyster", "crates/oyster-cli", "crates/pearl"]
+members = ["crates/oyster", "crates/oyster-cli", "crates/oyster-e2e-tests", "crates/pearl"]
 resolver = "3"
 
 [workspace.dependencies]

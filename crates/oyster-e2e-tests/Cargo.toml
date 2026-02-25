@@ -1,0 +1,33 @@
+[package]
+name = "oyster-e2e-tests"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# This crate has no library or binary — it exists only for integration tests.
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+oyster = { path = "../oyster" }
+pearl = { path = "../pearl" }
+
+axum = "0.8.8"
+http-body-util = "0.1.3"
+reqwest = { version = "0.13.2", features = ["json"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+tokio-stream = "0.1.18"
+tonic = "0.14.5"
+tower = { version = "0.5.3", features = ["util"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
+
+# Sui types (same version as walrus uses).
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
+
+# Walrus test infrastructure (path deps to local walrus checkout).
+walrus-service = { path = "../../../walrus/crates/walrus-service", features = ["test-utils"] }
+walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-utils"] }
+walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }

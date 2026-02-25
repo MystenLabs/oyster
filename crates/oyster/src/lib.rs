@@ -17,6 +17,7 @@ use std::sync::Arc;
 use blob_store::BlobStore;
 use config::Config;
 use pearl_client::PearlConnection;
+pub use sui_types;
 
 #[derive(Clone)]
 pub struct AppState {
