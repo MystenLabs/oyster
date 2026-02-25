@@ -48,6 +48,16 @@ pub struct BlobMetadata {
     pub expires_at: Option<String>,
 }
 
+/// Internal-only struct for the extension task — contains the minimal fields
+/// needed to extend a blob, including the owning account's Pearl wallet ID.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ExpiringBlob {
+    pub sui_object_id: String,
+    pub size: i64,
+    pub expires_at: String,
+    pub pearl_account_id: String,
+}
+
 // Request types
 
 #[derive(Debug, Deserialize, ToSchema)]

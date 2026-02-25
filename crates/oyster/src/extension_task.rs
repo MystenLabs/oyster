@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
@@ -19,7 +22,6 @@ pub struct ExtensionConfig {
 pub async fn run_extension_loop(
     db: DbPool,
     pearl: PearlConnection,
-    pearl_account_id: String,
     rpc_url: String,
     system_object: ObjectID,
     staking_object: ObjectID,
@@ -42,34 +44,8 @@ pub async fn run_extension_loop(
             }
         };
 
-    // Resolve the Pearl account's Sui address once at startup.
-    let sender_address: SuiAddress =
-        match sui_transaction::resolve_sender_address(&pearl, &pearl_account_id).await {
-            Ok(addr) => addr,
-            Err(e) => {
-                tracing::error!("failed to resolve sender address: {e}");
-                return;
-            }
-        };
-
-    tracing::info!("extension task sender address: {sender_address}");
-
     loop {
         tokio::time::sleep(config.check_interval).await;
-
-        // Balance pre-check: skip cycle if wallet is below minimum.
-        match pearl.get_balance(&pearl_account_id).await {
-            Ok(bal) if bal.cached_wal_balance < bal.min_wal_balance => {
-                tracing::warn!("WAL below minimum, skipping extension cycle");
-                continue;
-            }
-            Ok(bal) if bal.cached_sui_balance < bal.min_sui_balance => {
-                tracing::warn!("SUI below minimum, skipping extension cycle");
-                continue;
-            }
-            Err(e) => tracing::warn!("balance check failed, proceeding anyway: {e}"),
-            _ => {}
-        }
 
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(config.lookahead_days as u64))
@@ -77,7 +53,7 @@ pub async fn run_extension_loop(
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        let blobs = match db::blobs::get_expiring_blobs(&db, &cutoff, 100).await {
+        let blobs = match db::blobs::get_expiring_blobs_with_accounts(&db, &cutoff, 100).await {
             Ok(b) => b,
             Err(e) => {
                 tracing::error!("failed to query expiring blobs: {e}");
@@ -94,27 +70,73 @@ pub async fn run_extension_loop(
 
         let mut extended = 0u32;
         let mut errors = 0u32;
+        let mut address_cache: HashMap<String, SuiAddress> = HashMap::new();
+        let mut low_balance_accounts: HashSet<String> = HashSet::new();
 
         for blob in &blobs {
-            let sui_object_id = match &blob.sui_object_id {
-                Some(id) => id,
-                None => continue,
+            if low_balance_accounts.contains(&blob.pearl_account_id) {
+                continue;
+            }
+
+            // Check balance on first encounter of this account.
+            if !address_cache.contains_key(&blob.pearl_account_id) {
+                match pearl.get_balance(&blob.pearl_account_id).await {
+                    Ok(bal)
+                        if bal.cached_wal_balance < bal.min_wal_balance
+                            || bal.cached_sui_balance < bal.min_sui_balance =>
+                    {
+                        tracing::warn!(
+                            pearl_account_id = %blob.pearl_account_id,
+                            "balance below minimum, skipping account"
+                        );
+                        low_balance_accounts.insert(blob.pearl_account_id.clone());
+                        continue;
+                    }
+                    Err(e) => {
+                        tracing::warn!("balance check failed, proceeding anyway: {e}");
+                    }
+                    _ => {}
+                }
+            }
+
+            // Resolve sender address (cached per account per cycle).
+            let sender_address = match address_cache.get(&blob.pearl_account_id) {
+                Some(&addr) => addr,
+                None => {
+                    match sui_transaction::resolve_sender_address(&pearl, &blob.pearl_account_id)
+                        .await
+                    {
+                        Ok(addr) => {
+                            address_cache.insert(blob.pearl_account_id.clone(), addr);
+                            addr
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                pearl_account_id = %blob.pearl_account_id,
+                                error = %e,
+                                "failed to resolve sender address, skipping blob"
+                            );
+                            errors += 1;
+                            continue;
+                        }
+                    }
+                }
             };
 
             if let Err(e) = extend_single_blob(
                 &read_client,
                 &pearl,
-                &pearl_account_id,
+                &blob.pearl_account_id,
                 &rpc_url,
                 sender_address,
-                sui_object_id,
+                &blob.sui_object_id,
                 blob.size as u64,
                 config.extend_epochs,
             )
             .await
             {
                 tracing::warn!(
-                    sui_object_id,
+                    sui_object_id = %blob.sui_object_id,
                     error = %e,
                     "failed to extend blob"
                 );
@@ -122,19 +144,22 @@ pub async fn run_extension_loop(
                 continue;
             }
 
-            // Compute new expiry (approximate: current expires_at + extend_epochs * ~epoch_duration)
-            // For now, just bump by extend_epochs days as an approximation.
+            // Compute new expiry (approximate: current expires_at + extend_epochs * ~epoch_duration).
             // The actual on-chain expiry is authoritative.
-            if let Some(ref expires_at) = blob.expires_at
-                && let Ok(parsed) =
-                    chrono::NaiveDateTime::parse_from_str(expires_at, "%Y-%m-%d %H:%M:%S")
+            if let Ok(parsed) =
+                chrono::NaiveDateTime::parse_from_str(&blob.expires_at, "%Y-%m-%d %H:%M:%S")
             {
                 let new_expires = parsed + chrono::Duration::days(config.extend_epochs as i64);
                 let new_expires_str = new_expires.format("%Y-%m-%d %H:%M:%S").to_string();
                 if let Err(e) =
-                    db::blobs::update_blob_expires_at(&db, sui_object_id, &new_expires_str).await
+                    db::blobs::update_blob_expires_at(&db, &blob.sui_object_id, &new_expires_str)
+                        .await
                 {
-                    tracing::warn!(sui_object_id, error = %e, "failed to update expires_at in DB");
+                    tracing::warn!(
+                        sui_object_id = %blob.sui_object_id,
+                        error = %e,
+                        "failed to update expires_at in DB"
+                    );
                 }
             }
 

@@ -104,12 +104,11 @@ async fn main() {
     };
 
     // Spawn blob extension task if Pearl + Sui RPC + Walrus config are all present.
-    if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj), Some(acct_id)) = (
+    if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj)) = (
         &pearl,
         &config.sui_rpc_url,
         &config.walrus_system_object,
         &config.walrus_staking_object,
-        &config.pearl_account_id,
     ) {
         use sui_types::base_types::ObjectID;
         let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
@@ -123,7 +122,6 @@ async fn main() {
         tokio::spawn(oyster::extension_task::run_extension_loop(
             db.clone(),
             pearl_conn.clone(),
-            acct_id.clone(),
             rpc_url.clone(),
             system_object,
             staking_object,
