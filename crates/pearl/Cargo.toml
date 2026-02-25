@@ -13,6 +13,7 @@ rand = "0.10.0"
 serde = { workspace = true, features = ["derive"] }
 shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.0.0" }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.1.0" }
 thiserror.workspace = true
 tokio = { workspace = true }

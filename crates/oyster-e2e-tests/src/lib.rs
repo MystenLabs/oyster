@@ -288,7 +288,16 @@ async fn start_pearl_in_process() -> PearlConnection {
         .await
         .expect("in-memory pearl pool");
 
-    let service = PearlService { db };
+    let config = pearl::config::Config {
+        database_url: "sqlite::memory:".into(),
+        bind_addr: "127.0.0.1:0".into(),
+        service_secret: PEARL_SECRET.into(),
+        sui_rpc_url: None,
+        wal_coin_type: None,
+        reconciliation_interval_secs: 300,
+        pending_tx_timeout_minutes: 30,
+    };
+    let service = PearlService { db, config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 

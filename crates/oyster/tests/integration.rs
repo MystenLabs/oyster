@@ -749,6 +749,7 @@ async fn wallets_returns_not_provisioned_in_local_mode() {
 async fn start_pearl() -> oyster::pearl_client::PearlConnection {
     use pearl::{
         auth::check_service_secret,
+        config::Config,
         grpc::{PearlService, proto::pearl_server::PearlServer},
     };
 
@@ -758,7 +759,17 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
         .await
         .expect("in-memory pool");
 
-    let service = PearlService { db };
+    let config = Config {
+        database_url: "sqlite::memory:".into(),
+        bind_addr: "127.0.0.1:0".into(),
+        service_secret: PEARL_SECRET.into(),
+        sui_rpc_url: None,
+        wal_coin_type: None,
+        reconciliation_interval_secs: 300,
+        pending_tx_timeout_minutes: 30,
+    };
+
+    let service = PearlService { db, config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
@@ -835,11 +846,12 @@ async fn pearl_client_sign_transaction_success() {
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 
     let resp = pearl
-        .sign_transaction(&create_resp.account_id, tx_data_bytes)
+        .sign_transaction(&create_resp.account_id, tx_data_bytes, 0, 0)
         .await
         .unwrap();
 
     assert!(!resp.signed_transaction.is_empty());
+    assert!(!resp.pending_transaction_id.is_empty());
 
     // Verify the response deserializes back into a valid Transaction.
     let _tx: sui_types::transaction::Transaction =
@@ -853,7 +865,7 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
     let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
 
     let err = pearl
-        .sign_transaction(&create_resp.account_id, vec![1, 2, 3])
+        .sign_transaction(&create_resp.account_id, vec![1, 2, 3], 0, 0)
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -920,4 +932,100 @@ async fn store_blob_distinguishes_pearl_accounts() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], None);
     assert_eq!(calls[1], Some("pearl-acct-99".to_string()));
+}
+
+// ---------------------------------------------------------------------------
+// Balance tracking via PearlConnection
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pearl_client_get_balance() {
+    let pearl = start_pearl().await;
+
+    let create_resp = pearl.create_account(100, 200, 500, 1000).await.unwrap();
+
+    let bal = pearl.get_balance(&create_resp.account_id).await.unwrap();
+
+    assert_eq!(bal.account_id, create_resp.account_id);
+    assert_eq!(bal.cached_sui_balance, 0);
+    assert_eq!(bal.cached_wal_balance, 0);
+    assert_eq!(bal.min_sui_balance, 100);
+    assert_eq!(bal.min_wal_balance, 200);
+}
+
+#[tokio::test]
+async fn pearl_client_confirm_transaction() {
+    use sui_types::{
+        base_types::{ObjectDigest, ObjectID, SuiAddress},
+        programmable_transaction_builder::ProgrammableTransactionBuilder,
+        transaction::TransactionData,
+    };
+
+    let pearl = start_pearl().await;
+    let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
+
+    let sender: SuiAddress = create_resp.address.parse().unwrap();
+    let gas_ref = (
+        ObjectID::random(),
+        sui_types::base_types::SequenceNumber::new(),
+        ObjectDigest::random(),
+    );
+    let pt = ProgrammableTransactionBuilder::new().finish();
+    let tx_data = TransactionData::new_programmable(sender, vec![gas_ref], pt, 5_000_000, 1_000);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let sign_resp = pearl
+        .sign_transaction(&create_resp.account_id, tx_data_bytes, 500, 0)
+        .await
+        .unwrap();
+
+    assert!(!sign_resp.pending_transaction_id.is_empty());
+
+    // Confirm as successful.
+    let confirm_resp = pearl
+        .confirm_transaction(
+            &sign_resp.pending_transaction_id,
+            "test-digest",
+            true,
+            300,
+            0,
+        )
+        .await
+        .unwrap();
+
+    // Balance: 0 - 500 (deducted) + 200 (correction: 500 - 300) = -300
+    assert_eq!(confirm_resp.cached_sui_balance, -300);
+}
+
+#[tokio::test]
+async fn pearl_client_sign_with_estimates() {
+    use sui_types::{
+        base_types::{ObjectDigest, ObjectID, SuiAddress},
+        programmable_transaction_builder::ProgrammableTransactionBuilder,
+        transaction::TransactionData,
+    };
+
+    let pearl = start_pearl().await;
+    let create_resp = pearl.create_account(0, 0, 0, 0).await.unwrap();
+
+    let sender: SuiAddress = create_resp.address.parse().unwrap();
+    let gas_ref = (
+        ObjectID::random(),
+        sui_types::base_types::SequenceNumber::new(),
+        ObjectDigest::random(),
+    );
+    let pt = ProgrammableTransactionBuilder::new().finish();
+    let tx_data = TransactionData::new_programmable(sender, vec![gas_ref], pt, 5_000_000, 1_000);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let resp = pearl
+        .sign_transaction(&create_resp.account_id, tx_data_bytes, 1000, 2000)
+        .await
+        .unwrap();
+
+    assert!(!resp.pending_transaction_id.is_empty());
+
+    let bal = pearl.get_balance(&create_resp.account_id).await.unwrap();
+    assert_eq!(bal.cached_sui_balance, -1000);
+    assert_eq!(bal.cached_wal_balance, -2000);
 }

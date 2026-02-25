@@ -1,6 +1,7 @@
 use fastcrypto::ed25519::Ed25519KeyPair;
 use pearl::{
     auth::check_service_secret,
+    config::Config,
     grpc::{
         PearlService,
         proto::{self, pearl_client::PearlClient, pearl_server::PearlServer},
@@ -16,6 +17,18 @@ use tonic::{Request, transport::Channel};
 
 const TEST_SECRET: &str = "test-secret-42";
 
+fn test_config() -> Config {
+    Config {
+        database_url: "sqlite::memory:".into(),
+        bind_addr: "127.0.0.1:0".into(),
+        service_secret: TEST_SECRET.into(),
+        sui_rpc_url: None,
+        wal_coin_type: None,
+        reconciliation_interval_secs: 300,
+        pending_tx_timeout_minutes: 30,
+    }
+}
+
 /// Stand up Pearl's gRPC server in-process on a random port.
 /// Returns a connected `PearlClient`.
 async fn start_server() -> PearlClient<Channel> {
@@ -23,7 +36,10 @@ async fn start_server() -> PearlClient<Channel> {
         .await
         .expect("in-memory pool");
 
-    let service = PearlService { db };
+    let service = PearlService {
+        db,
+        config: test_config(),
+    };
     let interceptor = check_service_secret(TEST_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
@@ -174,6 +190,8 @@ async fn sign_transaction_invalid_tx_data() {
         .sign_transaction(authenticated(proto::SignTransactionRequest {
             account_id: create_resp.account_id,
             tx_data: vec![1, 2, 3],
+            estimated_sui_cost: 0,
+            estimated_wal_cost: 0,
         }))
         .await
         .unwrap_err();
@@ -205,6 +223,8 @@ async fn sign_transaction_success() {
         .sign_transaction(authenticated(proto::SignTransactionRequest {
             account_id: create_resp.account_id,
             tx_data: tx_data_bytes,
+            estimated_sui_cost: 0,
+            estimated_wal_cost: 0,
         }))
         .await
         .unwrap()
@@ -232,6 +252,8 @@ async fn sign_transaction_account_not_found() {
         .sign_transaction(authenticated(proto::SignTransactionRequest {
             account_id: "nonexistent-account-id".to_string(),
             tx_data: tx_data_bytes,
+            estimated_sui_cost: 0,
+            estimated_wal_cost: 0,
         }))
         .await
         .unwrap_err();
@@ -296,4 +318,172 @@ async fn multiple_accounts_unique() {
         assert!(ids.insert(resp.account_id), "duplicate account_id");
         assert!(addrs.insert(resp.address), "duplicate address");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Balance tracking tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn sign_transaction_returns_pending_id() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sender: SuiAddress = create_resp.address.parse().unwrap();
+    let tx_data = mock_transaction_data(sender);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let resp = client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: create_resp.account_id,
+            tx_data: tx_data_bytes,
+            estimated_sui_cost: 100,
+            estimated_wal_cost: 200,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert!(
+        !resp.pending_transaction_id.is_empty(),
+        "pending_transaction_id should be non-empty"
+    );
+}
+
+#[tokio::test]
+async fn get_balance_rpc() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {
+            min_sui_balance: 100,
+            min_wal_balance: 200,
+            top_up_target_sui: 500,
+            top_up_target_wal: 1000,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let bal = client
+        .get_balance(authenticated(proto::GetBalanceRequest {
+            account_id: create_resp.account_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(bal.account_id, create_resp.account_id);
+    assert_eq!(bal.cached_sui_balance, 0);
+    assert_eq!(bal.cached_wal_balance, 0);
+    assert_eq!(bal.min_sui_balance, 100);
+    assert_eq!(bal.min_wal_balance, 200);
+}
+
+#[tokio::test]
+async fn confirm_transaction_rpc() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sender: SuiAddress = create_resp.address.parse().unwrap();
+    let tx_data = mock_transaction_data(sender);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    let sign_resp = client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: create_resp.account_id.clone(),
+            tx_data: tx_data_bytes,
+            estimated_sui_cost: 500,
+            estimated_wal_cost: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Balance should be deducted after signing.
+    let bal = client
+        .get_balance(authenticated(proto::GetBalanceRequest {
+            account_id: create_resp.account_id.clone(),
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(bal.cached_sui_balance, -500);
+
+    // Confirm the transaction as successful with actual cost of 300.
+    let confirm_resp = client
+        .confirm_transaction(authenticated(proto::ConfirmTransactionRequest {
+            pending_transaction_id: sign_resp.pending_transaction_id,
+            tx_digest: "test-digest".into(),
+            success: true,
+            actual_sui_cost: 300,
+            actual_wal_cost: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Balance should reflect the correction: -500 + (500 - 300) = -300
+    assert_eq!(confirm_resp.cached_sui_balance, -300);
+}
+
+#[tokio::test]
+async fn sign_with_estimates_deducts() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {
+            min_sui_balance: 0,
+            min_wal_balance: 0,
+            top_up_target_sui: 0,
+            top_up_target_wal: 0,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    let sender: SuiAddress = create_resp.address.parse().unwrap();
+    let tx_data = mock_transaction_data(sender);
+    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
+
+    client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: create_resp.account_id.clone(),
+            tx_data: tx_data_bytes,
+            estimated_sui_cost: 1000,
+            estimated_wal_cost: 2000,
+        }))
+        .await
+        .unwrap();
+
+    let bal = client
+        .get_balance(authenticated(proto::GetBalanceRequest {
+            account_id: create_resp.account_id,
+        }))
+        .await
+        .unwrap()
+        .into_inner();
+
+    assert_eq!(bal.cached_sui_balance, -1000);
+    assert_eq!(bal.cached_wal_balance, -2000);
 }

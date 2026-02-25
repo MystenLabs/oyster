@@ -117,10 +117,16 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
-        let register_resp =
-            sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
-                .await
-                .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
+        let register_resp = sui_transaction::sign_and_submit(
+            &self.pearl,
+            pearl_account_id,
+            &self.rpc_url,
+            tx_data,
+            0,
+            0,
+        )
+        .await
+        .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
 
         tracing::info!("register tx digest: {:?}", register_resp.digest);
 
@@ -172,9 +178,16 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
-        sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
-            .await
-            .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
+        sui_transaction::sign_and_submit(
+            &self.pearl,
+            pearl_account_id,
+            &self.rpc_url,
+            tx_data,
+            0,
+            0,
+        )
+        .await
+        .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
 
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id.to_string()),

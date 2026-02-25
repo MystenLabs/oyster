@@ -57,6 +57,20 @@ pub async fn run_extension_loop(
     loop {
         tokio::time::sleep(config.check_interval).await;
 
+        // Balance pre-check: skip cycle if wallet is below minimum.
+        match pearl.get_balance(&pearl_account_id).await {
+            Ok(bal) if bal.cached_wal_balance < bal.min_wal_balance => {
+                tracing::warn!("WAL below minimum, skipping extension cycle");
+                continue;
+            }
+            Ok(bal) if bal.cached_sui_balance < bal.min_sui_balance => {
+                tracing::warn!("SUI below minimum, skipping extension cycle");
+                continue;
+            }
+            Err(e) => tracing::warn!("balance check failed, proceeding anyway: {e}"),
+            _ => {}
+        }
+
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(config.lookahead_days as u64))
             .expect("valid date")
@@ -149,7 +163,7 @@ async fn extend_single_blob(
         .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data).await?;
+    sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data, 0, 0).await?;
 
     Ok(())
 }

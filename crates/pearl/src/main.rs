@@ -18,7 +18,21 @@ async fn main() {
 
     tracing::info!("database ready");
 
-    let service = PearlService { db };
+    if config.sui_rpc_url.is_some() {
+        let db_clone = db.clone();
+        let config_clone = config.clone();
+        tokio::spawn(async move {
+            pearl::reconciliation::run_reconciliation_loop(db_clone, config_clone).await;
+        });
+        tracing::info!("reconciliation task spawned");
+    } else {
+        tracing::info!("SUI_RPC_URL not set, reconciliation task disabled");
+    }
+
+    let service = PearlService {
+        db,
+        config: config.clone(),
+    };
     let interceptor = check_service_secret(config.service_secret);
     let svc = PearlServer::with_interceptor(service, interceptor);
 

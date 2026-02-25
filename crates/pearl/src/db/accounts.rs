@@ -7,7 +7,7 @@ use sui_types::{
 use super::DbPool;
 use crate::{
     error::Error,
-    models::{Account, CreateAccountRequest, WalletInfo},
+    models::{Account, CachedBalance, CreateAccountRequest, WalletInfo},
 };
 
 fn generate_sui_keypair() -> (String, Vec<u8>) {
@@ -44,7 +44,7 @@ pub async fn create_account(
 
 pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     sqlx::query_as::<_, Account>(
-        "SELECT id, due_date, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, address, credentials, created_at, updated_at
+        "SELECT id, due_date, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, address, credentials, cached_sui_balance, cached_wal_balance, balance_updated_at, created_at, updated_at
          FROM accounts WHERE id = ?",
     )
     .bind(id)
@@ -73,6 +73,47 @@ pub async fn get_account_wallets(pool: &DbPool, id: &str) -> Result<Vec<WalletIn
         top_up_target_sui: account.top_up_target_sui,
         top_up_target_wal: account.top_up_target_wal,
     }])
+}
+
+pub async fn get_balance(pool: &DbPool, account_id: &str) -> Result<CachedBalance, Error> {
+    let account = get_account(pool, account_id).await?;
+    Ok(CachedBalance {
+        cached_sui_balance: account.cached_sui_balance,
+        cached_wal_balance: account.cached_wal_balance,
+        min_sui_balance: account.min_sui_balance,
+        min_wal_balance: account.min_wal_balance,
+        balance_updated_at: account.balance_updated_at,
+    })
+}
+
+pub async fn set_cached_balance(
+    pool: &DbPool,
+    account_id: &str,
+    sui_balance: i64,
+    wal_balance: i64,
+) -> Result<(), Error> {
+    let rows = sqlx::query(
+        "UPDATE accounts SET cached_sui_balance = ?, cached_wal_balance = ?, balance_updated_at = datetime('now') WHERE id = ?",
+    )
+    .bind(sui_balance)
+    .bind(wal_balance)
+    .bind(account_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+
+    if rows == 0 {
+        return Err(Error::AccountNotFound);
+    }
+    Ok(())
+}
+
+pub async fn get_random_account_id(pool: &DbPool) -> Result<Option<String>, Error> {
+    let row: Option<(String,)> =
+        sqlx::query_as("SELECT id FROM accounts ORDER BY RANDOM() LIMIT 1")
+            .fetch_optional(pool)
+            .await?;
+    Ok(row.map(|(id,)| id))
 }
 
 #[cfg(test)]

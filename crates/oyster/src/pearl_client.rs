@@ -73,14 +73,54 @@ impl PearlConnection {
         &self,
         account_id: &str,
         tx_data: Vec<u8>,
+        estimated_sui_cost: i64,
+        estimated_wal_cost: i64,
     ) -> Result<proto::SignTransactionResponse, tonic::Status> {
         let req = self.authenticated(proto::SignTransactionRequest {
             account_id: account_id.to_string(),
             tx_data,
+            estimated_sui_cost,
+            estimated_wal_cost,
         });
         self.client
             .clone()
             .sign_transaction(req)
+            .await
+            .map(|r| r.into_inner())
+    }
+
+    pub async fn get_balance(
+        &self,
+        account_id: &str,
+    ) -> Result<proto::GetBalanceResponse, tonic::Status> {
+        let req = self.authenticated(proto::GetBalanceRequest {
+            account_id: account_id.to_string(),
+        });
+        self.client
+            .clone()
+            .get_balance(req)
+            .await
+            .map(|r| r.into_inner())
+    }
+
+    pub async fn confirm_transaction(
+        &self,
+        pending_transaction_id: &str,
+        tx_digest: &str,
+        success: bool,
+        actual_sui_cost: i64,
+        actual_wal_cost: i64,
+    ) -> Result<proto::ConfirmTransactionResponse, tonic::Status> {
+        let req = self.authenticated(proto::ConfirmTransactionRequest {
+            pending_transaction_id: pending_transaction_id.to_string(),
+            tx_digest: tx_digest.to_string(),
+            success,
+            actual_sui_cost,
+            actual_wal_cost,
+        });
+        self.client
+            .clone()
+            .confirm_transaction(req)
             .await
             .map(|r| r.into_inner())
     }

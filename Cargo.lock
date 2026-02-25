@@ -7932,6 +7932,7 @@ dependencies = [
  "serde",
  "shared-crypto 0.0.0 (git+https://github.com/MystenLabs/sui?tag=testnet-v1.66.1)",
  "sqlx",
+ "sui-sdk 1.66.1",
  "sui-types 0.1.0 (git+https://github.com/MystenLabs/sui?tag=testnet-v1.66.1)",
  "thiserror 2.0.18",
  "tokio",

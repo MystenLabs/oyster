@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use crate::{db, models};
+use crate::{config, db, models};
 
 pub mod proto {
     tonic::include_proto!("pearl");
@@ -10,6 +10,7 @@ use proto::pearl_server::Pearl;
 
 pub struct PearlService {
     pub db: db::DbPool,
+    pub config: config::Config,
 }
 
 #[tonic::async_trait]
@@ -74,8 +75,60 @@ impl Pearl for PearlService {
             .map_err(to_status)?;
         let signed_bytes =
             crate::signing::sign_transaction(&private_key, &req.tx_data).map_err(to_status)?;
+
+        let ptx = db::pending_transactions::create_pending_transaction(
+            &self.db,
+            &req.account_id,
+            req.estimated_sui_cost,
+            req.estimated_wal_cost,
+        )
+        .await
+        .map_err(to_status)?;
+
         Ok(Response::new(proto::SignTransactionResponse {
             signed_transaction: signed_bytes,
+            pending_transaction_id: ptx.id,
+        }))
+    }
+
+    async fn get_balance(
+        &self,
+        request: Request<proto::GetBalanceRequest>,
+    ) -> Result<Response<proto::GetBalanceResponse>, Status> {
+        let req = request.into_inner();
+        let bal = db::accounts::get_balance(&self.db, &req.account_id)
+            .await
+            .map_err(to_status)?;
+
+        Ok(Response::new(proto::GetBalanceResponse {
+            account_id: req.account_id,
+            cached_sui_balance: bal.cached_sui_balance,
+            cached_wal_balance: bal.cached_wal_balance,
+            min_sui_balance: bal.min_sui_balance,
+            min_wal_balance: bal.min_wal_balance,
+            balance_updated_at: bal.balance_updated_at.unwrap_or_default(),
+        }))
+    }
+
+    async fn confirm_transaction(
+        &self,
+        request: Request<proto::ConfirmTransactionRequest>,
+    ) -> Result<Response<proto::ConfirmTransactionResponse>, Status> {
+        let req = request.into_inner();
+        let bal = db::pending_transactions::confirm_transaction(
+            &self.db,
+            &req.pending_transaction_id,
+            &req.tx_digest,
+            req.success,
+            req.actual_sui_cost,
+            req.actual_wal_cost,
+        )
+        .await
+        .map_err(to_status)?;
+
+        Ok(Response::new(proto::ConfirmTransactionResponse {
+            cached_sui_balance: bal.cached_sui_balance,
+            cached_wal_balance: bal.cached_wal_balance,
         }))
     }
 }
@@ -92,5 +145,12 @@ fn to_status(err: crate::error::Error) -> Status {
             Status::invalid_argument(format!("invalid transaction data: {e}"))
         }
         crate::error::Error::SigningError(e) => Status::internal(format!("signing error: {e}")),
+        crate::error::Error::PendingTransactionNotFound => {
+            Status::not_found("pending transaction not found")
+        }
+        crate::error::Error::PendingTransactionAlreadyResolved => {
+            Status::failed_precondition("pending transaction already resolved")
+        }
+        crate::error::Error::SuiRpc(e) => Status::internal(format!("sui rpc error: {e}")),
     }
 }
