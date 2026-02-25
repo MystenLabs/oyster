@@ -323,6 +323,10 @@ fn cmd_info(out: &Output, config_path: Option<&std::path::Path>, url: &str, api_
 
 #[tokio::main]
 async fn main() {
+    // reqwest pulls in rustls which needs an explicit CryptoProvider when
+    // multiple backends (aws-lc-rs + ring) are in the dependency tree.
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+
     let cli = Cli::parse();
     let out = Output { json: cli.json };
 

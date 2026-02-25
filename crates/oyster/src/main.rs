@@ -14,6 +14,11 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 #[tokio::main]
 async fn main() {
+    // Walrus SDK pulls in both aws-lc-rs and ring; rustls can't auto-detect.
+    rustls::crypto::aws_lc_rs::default_provider()
+        .install_default()
+        .expect("failed to install default CryptoProvider");
+
     tracing_subscriber::fmt::init();
 
     let config = Config::from_env();
@@ -56,7 +61,9 @@ async fn main() {
         use sui_types::base_types::ObjectID;
         let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
         let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
-        tracing::info!("using direct Walrus blob store (aggregator={agg_url})");
+        tracing::info!(
+            "using direct Walrus blob store (aggregator={agg_url}, sui_rpc_url={rpc_url})"
+        );
         Arc::new(
             DirectWalrusBlobStore::new(
                 rpc_url.clone(),

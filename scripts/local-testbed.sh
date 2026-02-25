@@ -55,10 +55,21 @@ check_prereqs() {
   fi
 }
 
+kill_port() {
+  local port="$1" label="$2"
+  local pids
+  pids="$(lsof -ti :"$port" 2>/dev/null)" || true
+  if [[ -n "$pids" ]]; then
+    echo "$pids" | xargs kill 2>/dev/null && echo "  killed $label on port $port" || true
+  fi
+}
+
 cleanup() {
   echo "Stopping testbed sessions..."
-  tmux kill-session -t "$PEARL_TMUX" 2>/dev/null && echo "  killed $PEARL_TMUX" || true
-  tmux kill-session -t "$OYSTER_TMUX" 2>/dev/null && echo "  killed $OYSTER_TMUX" || true
+  tmux kill-session -t "$PEARL_TMUX" 2>/dev/null && echo "  killed $PEARL_TMUX session" || true
+  tmux kill-session -t "$OYSTER_TMUX" 2>/dev/null && echo "  killed $OYSTER_TMUX session" || true
+  kill_port "${PEARL_BIND_ADDR##*:}" "pearl"
+  kill_port "${OYSTER_BIND_ADDR##*:}" "oyster"
   echo "Done."
 }
 
@@ -95,7 +106,8 @@ wait_for_pearl() {
   echo -n "Waiting for Pearl to start"
   local elapsed=0
   while (( elapsed < STARTUP_TIMEOUT )); do
-    if grpcurl -plaintext "$PEARL_BIND_ADDR" list &>/dev/null; then
+    # Pearl doesn't support gRPC reflection, so just check TCP connectivity.
+    if nc -z "${PEARL_BIND_ADDR%%:*}" "${PEARL_BIND_ADDR##*:}" 2>/dev/null; then
       echo " ready (${elapsed}s)"
       return 0
     fi
@@ -111,7 +123,8 @@ wait_for_oyster() {
   echo -n "Waiting for Oyster to start"
   local elapsed=0
   while (( elapsed < STARTUP_TIMEOUT )); do
-    if curl -sf "http://$OYSTER_BIND_ADDR/buckets" &>/dev/null; then
+    # /buckets returns 401 without auth, so just check connectivity.
+    if curl -so /dev/null --connect-timeout 2 "http://$OYSTER_BIND_ADDR/buckets" 2>/dev/null; then
       echo " ready (${elapsed}s)"
       return 0
     fi
@@ -152,13 +165,8 @@ fund_wallet() {
   local wal_coin
   wal_coin="$(
     sui client --client.config "$admin_config" balance --json \
-      | jq -r '
-        .[]
-        | to_entries[]
-        | .value[]
-        | select(.coinType? // "" | contains("wal::WAL"))
-        | .coinObjectId
-      ' | head -1
+      | jq -r '.. | objects | select(.coinObjectId? and (.coinType? // "" | contains("WAL"))) | .coinObjectId' \
+      | head -1
   )"
   [[ -n "$wal_coin" && "$wal_coin" != "null" ]] \
     || die "could not find admin WAL coin for funding"
@@ -193,22 +201,16 @@ main() {
 
   check_prereqs
 
-  # Verify Walrus testbed is running.
+  # Verify Walrus testbed is running (aggregator returns 404 on /, so just check connectivity).
   echo "Checking Walrus aggregator at $WALRUS_AGGREGATOR_URL..."
-  curl -sf "$WALRUS_AGGREGATOR_URL" >/dev/null 2>&1 \
+  curl -so /dev/null --connect-timeout 5 "$WALRUS_AGGREGATOR_URL" 2>/dev/null \
     || die "Walrus aggregator not reachable at $WALRUS_AGGREGATOR_URL — start the testbed first"
   echo "  aggregator reachable"
 
   parse_config
 
-  # Check ports are free.
-  if curl -sf "http://$PEARL_BIND_ADDR" &>/dev/null \
-     || grpcurl -plaintext "$PEARL_BIND_ADDR" list &>/dev/null 2>&1; then
-    die "port $PEARL_BIND_ADDR already in use — run --stop first?"
-  fi
-  if curl -sf "http://$OYSTER_BIND_ADDR" &>/dev/null; then
-    die "port $OYSTER_BIND_ADDR already in use — run --stop first?"
-  fi
+  # Kill stale testbed sessions and orphaned processes from previous runs.
+  cleanup
 
   # --- Build ---
   echo "Building pearl and oyster..."
