@@ -269,14 +269,23 @@ pub async fn delete_blob(
     auth: AuthenticatedAccount,
     Path(object_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    let blob_id = db::blobs::delete_blob(&state.db, &object_id, &auth.account_id)
+    let info = db::blobs::delete_blob(&state.db, &object_id, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
 
     // Reference-counted deletion: only delete from store if no more references
-    let count = db::blobs::count_references(&state.db, &blob_id).await?;
+    let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
     if count == 0 {
-        let _ = state.blob_store.delete(&BlobId(blob_id)).await;
+        let account = db::accounts::get_account(&state.db, &auth.account_id).await?;
+        let pearl_account_id = account.and_then(|a| a.pearl_account_id);
+        let _ = state
+            .blob_store
+            .delete(
+                &BlobId(info.blob_id),
+                info.sui_object_id.as_deref(),
+                pearl_account_id.as_deref(),
+            )
+            .await;
     }
 
     Ok(StatusCode::NO_CONTENT)

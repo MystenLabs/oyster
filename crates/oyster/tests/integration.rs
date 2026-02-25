@@ -64,8 +64,13 @@ impl BlobStore for SpyBlobStore {
         self.inner.read(blob_id)
     }
 
-    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
-        self.inner.delete(blob_id)
+    fn delete(
+        &self,
+        blob_id: &BlobId,
+        sui_object_id: Option<&str>,
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+        self.inner.delete(blob_id, sui_object_id, pearl_account_id)
     }
 
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
@@ -92,7 +97,7 @@ async fn test_app() -> (Router, TempDir) {
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
-        pearl_account_id: None,
+
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
@@ -130,7 +135,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
-        pearl_account_id: None,
+
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,

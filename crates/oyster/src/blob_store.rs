@@ -42,7 +42,12 @@ pub trait BlobStore: Send + Sync + 'static {
         pearl_account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
-    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>>;
+    fn delete(
+        &self,
+        blob_id: &BlobId,
+        sui_object_id: Option<&str>,
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
 }
 
@@ -110,7 +115,12 @@ impl BlobStore for LocalBlobStore {
         })
     }
 
-    fn delete(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+    fn delete(
+        &self,
+        blob_id: &BlobId,
+        _sui_object_id: Option<&str>,
+        _pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);
         Box::pin(async move {
             if path.exists() {

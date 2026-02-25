@@ -160,18 +160,27 @@ pub async fn update_blob_metadata(
     get_blob_by_object_id(pool, object_id).await
 }
 
+pub struct DeletedBlobInfo {
+    pub blob_id: String,
+    pub sui_object_id: Option<String>,
+}
+
 pub async fn delete_blob(
     pool: &SqlitePool,
     object_id: &str,
     account_id: &str,
-) -> Result<Option<String>, sqlx::Error> {
-    let row =
-        sqlx::query("DELETE FROM blobs WHERE object_id = ? AND account_id = ? RETURNING blob_id")
-            .bind(object_id)
-            .bind(account_id)
-            .fetch_optional(pool)
-            .await?;
-    Ok(row.map(|r| r.get("blob_id")))
+) -> Result<Option<DeletedBlobInfo>, sqlx::Error> {
+    let row = sqlx::query(
+        "DELETE FROM blobs WHERE object_id = ? AND account_id = ? RETURNING blob_id, sui_object_id",
+    )
+    .bind(object_id)
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| DeletedBlobInfo {
+        blob_id: r.get("blob_id"),
+        sui_object_id: r.get("sui_object_id"),
+    }))
 }
 
 pub async fn count_references(pool: &SqlitePool, blob_id: &str) -> Result<i64, sqlx::Error> {
@@ -241,12 +250,19 @@ pub async fn update_blob_expires_at(
 pub async fn delete_blobs_in_bucket(
     pool: &SqlitePool,
     bucket_id: &str,
-) -> Result<Vec<String>, sqlx::Error> {
-    let rows = sqlx::query("DELETE FROM blobs WHERE bucket_id = ? RETURNING blob_id")
-        .bind(bucket_id)
-        .fetch_all(pool)
-        .await?;
-    Ok(rows.into_iter().map(|r| r.get("blob_id")).collect())
+) -> Result<Vec<DeletedBlobInfo>, sqlx::Error> {
+    let rows =
+        sqlx::query("DELETE FROM blobs WHERE bucket_id = ? RETURNING blob_id, sui_object_id")
+            .bind(bucket_id)
+            .fetch_all(pool)
+            .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| DeletedBlobInfo {
+            blob_id: r.get("blob_id"),
+            sui_object_id: r.get("sui_object_id"),
+        })
+        .collect())
 }
 
 #[cfg(test)]

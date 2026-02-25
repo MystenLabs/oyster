@@ -121,7 +121,6 @@ impl OysterTestHarness {
             system_object,
             staking_object,
             pearl.clone(),
-            operator_account_id.clone(),
             1, // 1 epoch for tests
         )
         .await
@@ -145,7 +144,6 @@ impl OysterTestHarness {
             sui_rpc_url: None,
             walrus_system_object: None,
             walrus_staking_object: None,
-            pearl_account_id: Some(operator_account_id.clone()),
             blob_extend_interval_secs: 3600,
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,

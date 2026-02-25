@@ -116,16 +116,24 @@ pub async fn delete_bucket(
     auth: AuthenticatedAccount,
     Path(bucket_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    // Look up the account's pearl_account_id once for on-chain deletions.
+    let account = db::accounts::get_account(&state.db, &auth.account_id).await?;
+    let pearl_account_id = account.and_then(|a| a.pearl_account_id);
+
     // First delete all blobs in the bucket
-    let blob_ids = db::blobs::delete_blobs_in_bucket(&state.db, &bucket_id).await?;
+    let deleted_blobs = db::blobs::delete_blobs_in_bucket(&state.db, &bucket_id).await?;
 
     // Clean up unreferenced blob data from the store
-    for blob_id in blob_ids {
-        let count = db::blobs::count_references(&state.db, &blob_id).await?;
+    for info in &deleted_blobs {
+        let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
         if count == 0 {
             let _ = state
                 .blob_store
-                .delete(&crate::blob_store::BlobId(blob_id))
+                .delete(
+                    &crate::blob_store::BlobId(info.blob_id.clone()),
+                    info.sui_object_id.as_deref(),
+                    pearl_account_id.as_deref(),
+                )
                 .await;
         }
     }

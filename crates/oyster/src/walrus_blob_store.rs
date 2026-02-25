@@ -96,7 +96,12 @@ impl BlobStore for WalrusBlobStore {
         })
     }
 
-    fn delete(&self, _blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+    fn delete(
+        &self,
+        _blob_id: &BlobId,
+        _sui_object_id: Option<&str>,
+        _pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         Box::pin(async move {
             tracing::warn!(
                 "walrus blob deletion requires Sui transaction signing (not yet implemented)"
@@ -226,7 +231,10 @@ mod tests {
     async fn delete_is_noop() {
         let store = WalrusBlobStore::new("http://unused".into(), "http://unused".into(), 5);
         // Should succeed without making any HTTP calls.
-        store.delete(&BlobId("any-blob".into())).await.unwrap();
+        store
+            .delete(&BlobId("any-blob".into()), None, None)
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

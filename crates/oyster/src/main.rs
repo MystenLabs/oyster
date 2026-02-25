@@ -43,65 +43,57 @@ async fn main() {
         }
     };
 
-    let blob_store: Arc<dyn oyster::blob_store::BlobStore> = if let (
-        Some(pearl_conn),
-        Some(rpc_url),
-        Some(sys_obj),
-        Some(stk_obj),
-        Some(acct_id),
-        Some(agg_url),
-    ) = (
-        &pearl,
-        &config.sui_rpc_url,
-        &config.walrus_system_object,
-        &config.walrus_staking_object,
-        &config.pearl_account_id,
-        &config.walrus_aggregator_url,
-    ) {
-        use sui_types::base_types::ObjectID;
-        let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
-        let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
-        tracing::info!(
-            "using direct Walrus blob store (aggregator={agg_url}, sui_rpc_url={rpc_url})"
-        );
-        Arc::new(
-            DirectWalrusBlobStore::new(
-                rpc_url.clone(),
-                agg_url.clone(),
-                system_object,
-                staking_object,
-                pearl_conn.clone(),
-                acct_id.clone(),
-                config.walrus_default_epochs,
-            )
-            .await
-            .expect("failed to initialize direct Walrus blob store"),
-        )
-    } else {
-        match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
-            (Some(pub_url), Some(agg_url)) => {
-                tracing::info!(
-                    "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
-                );
-                Arc::new(WalrusBlobStore::new(
-                    pub_url.clone(),
+    let blob_store: Arc<dyn oyster::blob_store::BlobStore> =
+        if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj), Some(agg_url)) = (
+            &pearl,
+            &config.sui_rpc_url,
+            &config.walrus_system_object,
+            &config.walrus_staking_object,
+            &config.walrus_aggregator_url,
+        ) {
+            use sui_types::base_types::ObjectID;
+            let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
+            let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
+            tracing::info!(
+                "using direct Walrus blob store (aggregator={agg_url}, sui_rpc_url={rpc_url})"
+            );
+            Arc::new(
+                DirectWalrusBlobStore::new(
+                    rpc_url.clone(),
                     agg_url.clone(),
+                    system_object,
+                    staking_object,
+                    pearl_conn.clone(),
                     config.walrus_default_epochs,
-                ))
-            }
-            (Some(_), None) => {
-                panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
-            }
-            _ => {
-                tracing::info!("using local blob store at {:?}", config.blob_store_path);
-                Arc::new(
-                    LocalBlobStore::new(config.blob_store_path.clone())
-                        .await
-                        .expect("failed to initialize blob store"),
                 )
+                .await
+                .expect("failed to initialize direct Walrus blob store"),
+            )
+        } else {
+            match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
+                (Some(pub_url), Some(agg_url)) => {
+                    tracing::info!(
+                        "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
+                    );
+                    Arc::new(WalrusBlobStore::new(
+                        pub_url.clone(),
+                        agg_url.clone(),
+                        config.walrus_default_epochs,
+                    ))
+                }
+                (Some(_), None) => {
+                    panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
+                }
+                _ => {
+                    tracing::info!("using local blob store at {:?}", config.blob_store_path);
+                    Arc::new(
+                        LocalBlobStore::new(config.blob_store_path.clone())
+                            .await
+                            .expect("failed to initialize blob store"),
+                    )
+                }
             }
-        }
-    };
+        };
 
     // Spawn blob extension task if Pearl + Sui RPC + Walrus config are all present.
     if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj)) = (

@@ -1,7 +1,7 @@
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use sui_sdk::rpc_types::ObjectChange;
-use sui_types::base_types::{ObjectID, SuiAddress};
+use sui_types::base_types::ObjectID;
 use walrus_core::{encoding::EncodingFactory as _, messages::BlobPersistenceType};
 use walrus_sdk::{client::WalrusNodeClient, config::ClientConfig, uploader::TailHandling};
 use walrus_sui::client::{
@@ -23,8 +23,6 @@ pub struct DirectWalrusBlobStore {
     node_client: WalrusNodeClient<SuiReadClient>,
     read_client: Arc<SuiReadClient>,
     pearl: PearlConnection,
-    pearl_account_id: String,
-    sender_address: SuiAddress,
     rpc_url: String,
     epochs: u32,
     aggregator_url: String,
@@ -38,7 +36,6 @@ impl DirectWalrusBlobStore {
         system_object: ObjectID,
         staking_object: ObjectID,
         pearl: PearlConnection,
-        pearl_account_id: String,
         epochs: u32,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let read_client =
@@ -51,17 +48,10 @@ impl DirectWalrusBlobStore {
             WalrusNodeClient::new_read_client_with_refresher(client_config, (*read_client).clone())
                 .await?;
 
-        let sender_address =
-            sui_transaction::resolve_sender_address(&pearl, &pearl_account_id).await?;
-
-        tracing::info!("direct walrus store sender address: {sender_address}");
-
         Ok(Self {
             node_client,
             read_client,
             pearl,
-            pearl_account_id,
-            sender_address,
             rpc_url,
             epochs,
             aggregator_url,
@@ -74,15 +64,12 @@ impl DirectWalrusBlobStore {
         data: &[u8],
         pearl_account_id: Option<&str>,
     ) -> Result<StoreResult, BlobStoreError> {
-        // Resolve which Pearl account and sender address to use.
-        let pearl_account_id = pearl_account_id.unwrap_or(&self.pearl_account_id);
-        let sender_address = if pearl_account_id == self.pearl_account_id {
-            self.sender_address
-        } else {
-            sui_transaction::resolve_sender_address(&self.pearl, pearl_account_id)
-                .await
-                .map_err(|e| BlobStoreError::Http(format!("resolve sender address error: {e}")))?
-        };
+        let pearl_account_id = pearl_account_id.ok_or_else(|| {
+            BlobStoreError::Http("pearl_account_id required for on-chain storage".to_string())
+        })?;
+        let sender_address = sui_transaction::resolve_sender_address(&self.pearl, pearl_account_id)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
 
         // 1. Encode the blob data.
         let encoding_config = self.node_client.encoding_config();
@@ -235,11 +222,41 @@ impl BlobStore for DirectWalrusBlobStore {
         })
     }
 
-    fn delete(&self, _blob_id: &BlobId) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+    fn delete(
+        &self,
+        _blob_id: &BlobId,
+        sui_object_id: Option<&str>,
+        pearl_account_id: Option<&str>,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+        let sui_object_id = sui_object_id.map(String::from);
+        let pearl_account_id = pearl_account_id.map(String::from);
         Box::pin(async move {
-            tracing::warn!(
-                "walrus blob deletion via Sui transaction not yet implemented (Phase 6.4)"
-            );
+            let Some(sui_oid) = sui_object_id else {
+                return Ok(());
+            };
+            let Some(ref pearl_acct) = pearl_account_id else {
+                return Ok(());
+            };
+
+            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, pearl_acct)
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
+            let object_id: ObjectID = sui_oid
+                .parse()
+                .map_err(|e| BlobStoreError::Http(format!("invalid sui_object_id: {e}")))?;
+
+            let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
+            ptb.delete_blob(object_id.into())
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("delete_blob PTB: {e}")))?;
+            let tx_data = ptb
+                .build_transaction_data(None)
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
+            sui_transaction::sign_and_submit(&self.pearl, pearl_acct, &self.rpc_url, tx_data, 0, 0)
+                .await
+                .map_err(|e| BlobStoreError::Http(format!("delete tx: {e}")))?;
+
             Ok(())
         })
     }

@@ -14,7 +14,6 @@ pub struct Config {
     pub sui_rpc_url: Option<String>,
     pub walrus_system_object: Option<String>,
     pub walrus_staking_object: Option<String>,
-    pub pearl_account_id: Option<String>,
     pub blob_extend_interval_secs: u64,
     pub blob_extend_lookahead_days: u32,
     pub blob_extend_epochs: u32,
@@ -44,7 +43,6 @@ impl Config {
             sui_rpc_url: std::env::var("SUI_RPC_URL").ok(),
             walrus_system_object: std::env::var("WALRUS_SYSTEM_OBJECT").ok(),
             walrus_staking_object: std::env::var("WALRUS_STAKING_OBJECT").ok(),
-            pearl_account_id: std::env::var("PEARL_ACCOUNT_ID").ok(),
             blob_extend_interval_secs: std::env::var("BLOB_EXTEND_INTERVAL_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())
