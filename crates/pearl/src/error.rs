@@ -17,4 +17,7 @@ pub enum Error {
 
     #[error("signing error: {0}")]
     SigningError(String),
+
+    #[error("key derivation error: {0}")]
+    DerivationError(String),
 }

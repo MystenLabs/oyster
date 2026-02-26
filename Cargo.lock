@@ -7693,6 +7693,7 @@ name = "oyster-e2e-tests"
 version = "0.1.0"
 dependencies = [
  "axum 0.8.8",
+ "hex",
  "http-body-util",
  "oyster",
  "pearl",
@@ -7927,9 +7928,10 @@ dependencies = [
  "chrono",
  "fastcrypto 0.1.9 (git+https://github.com/MystenLabs/fastcrypto?rev=db643fd05a1b1c4cd52de3939766b53e12ce137e)",
  "hex",
+ "hkdf",
  "prost 0.14.3",
- "rand 0.10.0",
  "serde",
+ "sha2 0.10.9",
  "shared-crypto 0.0.0 (git+https://github.com/MystenLabs/sui?tag=testnet-v1.66.1)",
  "sqlx",
  "sui-types 0.1.0 (git+https://github.com/MystenLabs/sui?tag=testnet-v1.66.1)",

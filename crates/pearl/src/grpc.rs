@@ -1,6 +1,6 @@
 use tonic::{Request, Response, Status};
 
-use crate::{config, db};
+use crate::{config, db, derivation};
 
 pub mod proto {
     tonic::include_proto!("pearl");
@@ -25,9 +25,11 @@ impl Pearl for PearlService {
             .await
             .map_err(to_status)?;
 
+        let address = derivation::derive_address(&self.config.master_seed, &account.id);
+
         Ok(Response::new(proto::CreateAccountResponse {
             account_id: account.id,
-            address: account.address,
+            address,
         }))
     }
 
@@ -36,9 +38,11 @@ impl Pearl for PearlService {
         request: Request<proto::GetAddressRequest>,
     ) -> Result<Response<proto::GetAddressResponse>, Status> {
         let req = request.into_inner();
-        let address = db::accounts::get_address(&self.db, &req.account_id)
+        db::accounts::account_exists(&self.db, &req.account_id)
             .await
             .map_err(to_status)?;
+
+        let address = derivation::derive_address(&self.config.master_seed, &req.account_id);
 
         Ok(Response::new(proto::GetAddressResponse { address }))
     }
@@ -48,9 +52,11 @@ impl Pearl for PearlService {
         request: Request<proto::SignTransactionRequest>,
     ) -> Result<Response<proto::SignTransactionResponse>, Status> {
         let req = request.into_inner();
-        let private_key = db::accounts::get_private_key(&self.db, &req.account_id)
+        db::accounts::account_exists(&self.db, &req.account_id)
             .await
             .map_err(to_status)?;
+
+        let private_key = derivation::derive_private_key(&self.config.master_seed, &req.account_id);
         let signed_bytes =
             crate::signing::sign_transaction(&private_key, &req.tx_data).map_err(to_status)?;
 
@@ -72,5 +78,8 @@ fn to_status(err: crate::error::Error) -> Status {
             Status::invalid_argument(format!("invalid transaction data: {e}"))
         }
         crate::error::Error::SigningError(e) => Status::internal(format!("signing error: {e}")),
+        crate::error::Error::DerivationError(e) => {
+            Status::internal(format!("key derivation error: {e}"))
+        }
     }
 }

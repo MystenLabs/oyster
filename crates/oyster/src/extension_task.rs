@@ -215,9 +215,10 @@ fn should_skip_for_balance(
         return Some("SUI balance below threshold");
     }
     if let Some(wal) = balance.wal_balance
-        && wal < min_wal_balance as u128 {
-            return Some("WAL balance below threshold");
-        }
+        && wal < min_wal_balance as u128
+    {
+        return Some("WAL balance below threshold");
+    }
     None
 }
 

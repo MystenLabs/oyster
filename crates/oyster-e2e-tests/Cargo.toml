@@ -33,3 +33,4 @@ walrus-sdk = { path = "../../../walrus/crates/walrus-sdk" }
 walrus-service = { path = "../../../walrus/crates/walrus-service", features = ["test-utils"] }
 walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-utils"] }
 walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }
+hex = "0.4.3"

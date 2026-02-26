@@ -1,4 +1,3 @@
-use fastcrypto::ed25519::Ed25519KeyPair;
 use pearl::{
     auth::check_service_secret,
     config::Config,
@@ -9,7 +8,6 @@ use pearl::{
 };
 use sui_types::{
     base_types::{ObjectDigest, ObjectID, SuiAddress},
-    crypto::get_key_pair,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::TransactionData,
 };
@@ -17,11 +15,16 @@ use tonic::{Request, transport::Channel};
 
 const TEST_SECRET: &str = "test-secret-42";
 
+fn test_seed() -> Vec<u8> {
+    hex::decode("ab".repeat(32)).unwrap()
+}
+
 fn test_config() -> Config {
     Config {
         database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: TEST_SECRET.into(),
+        master_seed: test_seed(),
     }
 }
 
@@ -209,7 +212,8 @@ async fn sign_transaction_success() {
 async fn sign_transaction_account_not_found() {
     let mut client = start_server().await;
 
-    let (sender, _kp): (SuiAddress, Ed25519KeyPair) = get_key_pair();
+    let (sender, _kp): (SuiAddress, fastcrypto::ed25519::Ed25519KeyPair) =
+        sui_types::crypto::get_key_pair();
     let tx_data = mock_transaction_data(sender);
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 

@@ -770,6 +770,7 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
         database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
+        master_seed: hex::decode("ab".repeat(32)).expect("valid hex seed"),
     };
 
     let service = PearlService { db, config };
