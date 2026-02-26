@@ -119,31 +119,18 @@ pub async fn run_extension_loop(
                 }
             }
 
-            if let Some(balance) = balance_cache.get(&blob.pearl_account_id) {
-                let min_sui = blob.min_sui_balance as u128;
-                let min_wal = blob.min_wal_balance as u128;
-                if balance.sui_balance < min_sui {
-                    tracing::warn!(
-                        pearl_account_id = %blob.pearl_account_id,
-                        sui_balance = balance.sui_balance,
-                        min_sui_balance = min_sui,
-                        "SUI balance below threshold, skipping blob"
-                    );
-                    skipped += 1;
-                    continue;
-                }
-                if let Some(wal_balance) = balance.wal_balance
-                    && wal_balance < min_wal
-                {
-                    tracing::warn!(
-                        pearl_account_id = %blob.pearl_account_id,
-                        wal_balance = wal_balance,
-                        min_wal_balance = min_wal,
-                        "WAL balance below threshold, skipping blob"
-                    );
-                    skipped += 1;
-                    continue;
-                }
+            if let Some(reason) = should_skip_for_balance(
+                balance_cache.get(&blob.pearl_account_id),
+                blob.min_sui_balance,
+                blob.min_wal_balance,
+            ) {
+                tracing::warn!(
+                    pearl_account_id = %blob.pearl_account_id,
+                    reason,
+                    "skipping blob due to insufficient balance"
+                );
+                skipped += 1;
+                continue;
             }
 
             if let Err(e) = extend_single_blob(
@@ -214,4 +201,83 @@ async fn extend_single_blob(
     sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data).await?;
 
     Ok(())
+}
+
+/// Returns `Some(reason)` if the blob should be skipped due to insufficient balance,
+/// or `None` if the blob should proceed to extension.
+fn should_skip_for_balance(
+    balance: Option<&BalanceInfo>,
+    min_sui_balance: i64,
+    min_wal_balance: i64,
+) -> Option<&'static str> {
+    let balance = balance?;
+    if balance.sui_balance < min_sui_balance as u128 {
+        return Some("SUI balance below threshold");
+    }
+    if let Some(wal) = balance.wal_balance
+        && wal < min_wal_balance as u128 {
+            return Some("WAL balance below threshold");
+        }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skip_when_sui_below_threshold() {
+        let balance = BalanceInfo {
+            sui_balance: 100,
+            wal_balance: Some(1000),
+        };
+        let result = should_skip_for_balance(Some(&balance), 500, 0);
+        assert_eq!(result, Some("SUI balance below threshold"));
+    }
+
+    #[test]
+    fn skip_when_wal_below_threshold() {
+        let balance = BalanceInfo {
+            sui_balance: 1000,
+            wal_balance: Some(50),
+        };
+        let result = should_skip_for_balance(Some(&balance), 500, 100);
+        assert_eq!(result, Some("WAL balance below threshold"));
+    }
+
+    #[test]
+    fn no_skip_when_balances_sufficient() {
+        let balance = BalanceInfo {
+            sui_balance: 1000,
+            wal_balance: Some(500),
+        };
+        let result = should_skip_for_balance(Some(&balance), 500, 100);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn no_skip_when_balance_unavailable() {
+        let result = should_skip_for_balance(None, 500, 100);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn no_skip_when_thresholds_zero() {
+        let balance = BalanceInfo {
+            sui_balance: 0,
+            wal_balance: Some(0),
+        };
+        let result = should_skip_for_balance(Some(&balance), 0, 0);
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn no_skip_when_wal_balance_absent() {
+        let balance = BalanceInfo {
+            sui_balance: 1000,
+            wal_balance: None,
+        };
+        let result = should_skip_for_balance(Some(&balance), 500, 100);
+        assert_eq!(result, None);
+    }
 }

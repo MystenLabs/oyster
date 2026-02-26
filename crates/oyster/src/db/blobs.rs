@@ -529,6 +529,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_expiring_blobs_with_accounts_custom_thresholds() {
+        let pool = test_pool().await;
+        let account_id = uuid::Uuid::new_v4().to_string();
+        let bucket_id = uuid::Uuid::new_v4().to_string();
+        sqlx::query(
+            "INSERT INTO accounts (id, pearl_account_id, min_sui_balance, min_wal_balance) VALUES (?, ?, ?, ?)",
+        )
+        .bind(&account_id)
+        .bind("pearl-thresh")
+        .bind(1_000_000i64)
+        .bind(500_000i64)
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?)")
+            .bind(&bucket_id)
+            .bind(&account_id)
+            .bind("test-bucket")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let expires_at = chrono::Utc::now()
+            .checked_add_days(chrono::Days::new(3))
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+
+        insert_blob(
+            &pool,
+            "blob-hash-thresh",
+            &bucket_id,
+            &account_id,
+            "text/plain",
+            100,
+            &expires_at,
+            Some("0xthresh1"),
+        )
+        .await
+        .unwrap();
+
+        let cutoff = chrono::Utc::now()
+            .checked_add_days(chrono::Days::new(7))
+            .unwrap()
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string();
+        let blobs = get_expiring_blobs_with_accounts(&pool, &cutoff, 100)
+            .await
+            .unwrap();
+        assert_eq!(blobs.len(), 1);
+        assert_eq!(blobs[0].pearl_account_id, "pearl-thresh");
+        assert_eq!(blobs[0].min_sui_balance, 1_000_000);
+        assert_eq!(blobs[0].min_wal_balance, 500_000);
+    }
+
+    #[tokio::test]
     async fn get_expiring_blobs_with_accounts_mixed() {
         let pool = test_pool().await;
         // Account with pearl
