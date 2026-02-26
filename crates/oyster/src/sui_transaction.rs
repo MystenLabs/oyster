@@ -13,6 +13,37 @@ use walrus_utils::backoff::ExponentialBackoffConfig;
 
 use crate::pearl_client::PearlConnection;
 
+pub struct BalanceInfo {
+    pub sui_balance: u128,
+    pub wal_balance: Option<u128>,
+}
+
+pub async fn check_balance(
+    rpc_url: &str,
+    address: SuiAddress,
+    wal_coin_type: Option<&str>,
+) -> Result<BalanceInfo, Box<dyn std::error::Error + Send + Sync>> {
+    let sui_client = SuiClientBuilder::default().build(rpc_url).await?;
+    let sui_bal = sui_client
+        .coin_read_api()
+        .get_balance(address, None)
+        .await?;
+    let wal_balance = match wal_coin_type {
+        Some(coin_type) => {
+            let wal_bal = sui_client
+                .coin_read_api()
+                .get_balance(address, Some(coin_type.to_string()))
+                .await?;
+            Some(wal_bal.total_balance)
+        }
+        None => None,
+    };
+    Ok(BalanceInfo {
+        sui_balance: sui_bal.total_balance,
+        wal_balance,
+    })
+}
+
 pub async fn build_sui_read_client(
     rpc_url: &str,
     system_object: ObjectID,

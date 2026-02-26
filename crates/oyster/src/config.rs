@@ -17,6 +17,7 @@ pub struct Config {
     pub blob_extend_interval_secs: u64,
     pub blob_extend_lookahead_days: u32,
     pub blob_extend_epochs: u32,
+    pub wal_coin_type: Option<String>,
 }
 
 impl Config {
@@ -55,6 +56,7 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
+            wal_coin_type: std::env::var("WAL_COIN_TYPE").ok(),
         }
     }
 }

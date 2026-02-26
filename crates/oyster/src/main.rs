@@ -109,6 +109,7 @@ async fn main() {
             check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
             lookahead_days: config.blob_extend_lookahead_days,
             extend_epochs: config.blob_extend_epochs,
+            wal_coin_type: config.wal_coin_type.clone(),
         };
         tracing::info!("spawning blob extension background task");
         tokio::spawn(oyster::extension_task::run_extension_loop(

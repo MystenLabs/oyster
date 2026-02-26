@@ -147,6 +147,7 @@ impl OysterTestHarness {
             blob_extend_interval_secs: 3600,
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,
+            wal_coin_type: None,
         };
 
         let state = AppState {

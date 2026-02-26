@@ -217,7 +217,8 @@ pub async fn get_expiring_blobs_with_accounts(
     limit: i64,
 ) -> Result<Vec<ExpiringBlob>, sqlx::Error> {
     sqlx::query_as::<_, ExpiringBlob>(
-        "SELECT b.sui_object_id, b.size, b.expires_at, a.pearl_account_id \
+        "SELECT b.sui_object_id, b.size, b.expires_at, a.pearl_account_id, \
+                a.min_sui_balance, a.min_wal_balance \
          FROM blobs b \
          JOIN accounts a ON b.account_id = a.id \
          WHERE b.sui_object_id IS NOT NULL \
@@ -488,6 +489,8 @@ mod tests {
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].sui_object_id, "0xpa1");
         assert_eq!(blobs[0].pearl_account_id, "pearl-123");
+        assert_eq!(blobs[0].min_sui_balance, 0);
+        assert_eq!(blobs[0].min_wal_balance, 0);
     }
 
     #[tokio::test]
@@ -576,5 +579,7 @@ mod tests {
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].sui_object_id, "0xmixed1");
         assert_eq!(blobs[0].pearl_account_id, "pearl-mixed");
+        assert_eq!(blobs[0].min_sui_balance, 0);
+        assert_eq!(blobs[0].min_wal_balance, 0);
     }
 }

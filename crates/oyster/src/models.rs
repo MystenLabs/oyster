@@ -60,6 +60,8 @@ pub struct ExpiringBlob {
     pub size: i64,
     pub expires_at: String,
     pub pearl_account_id: String,
+    pub min_sui_balance: i64,
+    pub min_wal_balance: i64,
 }
 
 // Request types

@@ -6,7 +6,7 @@ use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
 use crate::{
     db::{self, DbPool},
     pearl_client::PearlConnection,
-    sui_transaction,
+    sui_transaction::{self, BalanceInfo},
 };
 
 #[derive(Clone, Debug)]
@@ -14,6 +14,7 @@ pub struct ExtensionConfig {
     pub check_interval: std::time::Duration,
     pub lookahead_days: u32,
     pub extend_epochs: u32,
+    pub wal_coin_type: Option<String>,
 }
 
 pub async fn run_extension_loop(
@@ -67,7 +68,9 @@ pub async fn run_extension_loop(
 
         let mut extended = 0u32;
         let mut errors = 0u32;
+        let mut skipped = 0u32;
         let mut address_cache: HashMap<String, SuiAddress> = HashMap::new();
+        let mut balance_cache: HashMap<String, BalanceInfo> = HashMap::new();
 
         for blob in &blobs {
             // Resolve sender address (cached per account per cycle).
@@ -93,6 +96,55 @@ pub async fn run_extension_loop(
                     }
                 }
             };
+
+            // Check balance (cached per account per cycle).
+            if !balance_cache.contains_key(&blob.pearl_account_id) {
+                match sui_transaction::check_balance(
+                    &rpc_url,
+                    sender_address,
+                    config.wal_coin_type.as_deref(),
+                )
+                .await
+                {
+                    Ok(info) => {
+                        balance_cache.insert(blob.pearl_account_id.clone(), info);
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            pearl_account_id = %blob.pearl_account_id,
+                            error = %e,
+                            "failed to check balance, proceeding anyway"
+                        );
+                    }
+                }
+            }
+
+            if let Some(balance) = balance_cache.get(&blob.pearl_account_id) {
+                let min_sui = blob.min_sui_balance as u128;
+                let min_wal = blob.min_wal_balance as u128;
+                if balance.sui_balance < min_sui {
+                    tracing::warn!(
+                        pearl_account_id = %blob.pearl_account_id,
+                        sui_balance = balance.sui_balance,
+                        min_sui_balance = min_sui,
+                        "SUI balance below threshold, skipping blob"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+                if let Some(wal_balance) = balance.wal_balance
+                    && wal_balance < min_wal
+                {
+                    tracing::warn!(
+                        pearl_account_id = %blob.pearl_account_id,
+                        wal_balance = wal_balance,
+                        min_wal_balance = min_wal,
+                        "WAL balance below threshold, skipping blob"
+                    );
+                    skipped += 1;
+                    continue;
+                }
+            }
 
             if let Err(e) = extend_single_blob(
                 &read_client,
@@ -137,7 +189,7 @@ pub async fn run_extension_loop(
             extended += 1;
         }
 
-        tracing::info!(extended, errors, "extension cycle complete");
+        tracing::info!(extended, errors, skipped, "extension cycle complete");
     }
 }
 
