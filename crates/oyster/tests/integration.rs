@@ -26,10 +26,14 @@ use tower::ServiceExt;
 // SpyBlobStore – wraps LocalBlobStore and records pearl_account_id from store()
 // ---------------------------------------------------------------------------
 
+type DeleteCall = (String, Option<String>, Option<String>);
+
 struct SpyBlobStore {
     inner: LocalBlobStore,
     /// Each `store()` call appends the `pearl_account_id` argument here.
     calls: Mutex<Vec<Option<String>>>,
+    /// Each `delete()` call appends (blob_id, sui_object_id, pearl_account_id) here.
+    delete_calls: Mutex<Vec<DeleteCall>>,
 }
 
 impl SpyBlobStore {
@@ -37,11 +41,16 @@ impl SpyBlobStore {
         Self {
             inner,
             calls: Mutex::new(Vec::new()),
+            delete_calls: Mutex::new(Vec::new()),
         }
     }
 
     fn recorded_calls(&self) -> Vec<Option<String>> {
         self.calls.lock().unwrap().clone()
+    }
+
+    fn recorded_delete_calls(&self) -> Vec<DeleteCall> {
+        self.delete_calls.lock().unwrap().clone()
     }
 }
 
@@ -70,6 +79,11 @@ impl BlobStore for SpyBlobStore {
         sui_object_id: Option<&str>,
         pearl_account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+        self.delete_calls.lock().unwrap().push((
+            blob_id.0.clone(),
+            sui_object_id.map(|s| s.to_string()),
+            pearl_account_id.map(|s| s.to_string()),
+        ));
         self.inner.delete(blob_id, sui_object_id, pearl_account_id)
     }
 
@@ -864,6 +878,78 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
 }
 
+/// Build a fresh app backed by an in-process Pearl server and `LocalBlobStore`.
+/// Returns `(Router, TempDir)` — hold onto the TempDir so it isn't dropped mid-test.
+async fn test_app_with_pearl() -> (Router, TempDir) {
+    let pearl = start_pearl().await;
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        walrus_publisher_url: None,
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
+        wal_coin_type: None,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
+
+    let state = AppState {
+        db: pool,
+        blob_store: Arc::new(blob_store),
+        pearl: Some(pearl),
+        config,
+    };
+
+    (routes::build_router(state), tmp)
+}
+
+#[tokio::test]
+async fn wallets_with_pearl_returns_address() {
+    let (app, _tmp) = test_app_with_pearl().await;
+
+    // Create account via debug endpoint — Pearl is connected so it provisions a wallet.
+    let (_account_id, api_key) = create_test_account(&app).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::get("/account/wallets")
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["provisioned"].as_bool(), Some(true));
+
+    let wallets = body["wallets"].as_array().unwrap();
+    assert_eq!(wallets.len(), 1, "should have exactly one wallet");
+
+    let address = wallets[0]["address"].as_str().unwrap();
+    assert!(
+        address.starts_with("0x"),
+        "address should start with 0x, got: {address}"
+    );
+    assert_eq!(
+        address.len(),
+        66,
+        "Sui address should be 66 chars (0x + 64 hex), got: {address}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Per-account pearl_account_id threading through BlobStore::store()
 // ---------------------------------------------------------------------------
@@ -925,4 +1011,42 @@ async fn store_blob_distinguishes_pearl_accounts() {
     assert_eq!(calls.len(), 2);
     assert_eq!(calls[0], None);
     assert_eq!(calls[1], Some("pearl-acct-99".to_string()));
+}
+
+#[tokio::test]
+async fn delete_blob_threads_pearl_account_id() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let key = create_account_with_pearl(&pool, Some("pearl-acct-delete")).await;
+    let bucket_id = create_test_bucket(&app, &key, "delete-test").await;
+
+    let (object_id, _blob_id) =
+        store_test_blob(&app, &key, &bucket_id, "text/plain", b"delete me").await;
+
+    // Delete the blob via the API.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/blobs/{object_id}"))
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let delete_calls = spy.recorded_delete_calls();
+    assert_eq!(delete_calls.len(), 1, "expected exactly one delete call");
+    let (ref _blob_id, ref sui_object_id, ref pearl_account_id) = delete_calls[0];
+    // sui_object_id is None because LocalBlobStore::store() returns StoreResult { sui_object_id: None }.
+    assert_eq!(*sui_object_id, None);
+    assert_eq!(
+        *pearl_account_id,
+        Some("pearl-acct-delete".to_string()),
+        "pearl_account_id should be threaded through to delete()"
+    );
 }

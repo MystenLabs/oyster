@@ -254,6 +254,33 @@ async fn auth_rejection_wrong_token() {
 }
 
 #[tokio::test]
+async fn get_address_deterministic() {
+    let mut client = start_server().await;
+
+    let create_resp = client
+        .create_account(authenticated(proto::CreateAccountRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+
+    // Call get_address 3 times with the same account_id — all should return the identical address.
+    for i in 0..3 {
+        let resp = client
+            .get_address(authenticated(proto::GetAddressRequest {
+                account_id: create_resp.account_id.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(
+            resp.address, create_resp.address,
+            "get_address call {i} returned a different address"
+        );
+    }
+}
+
+#[tokio::test]
 async fn multiple_accounts_unique() {
     let mut client = start_server().await;
 

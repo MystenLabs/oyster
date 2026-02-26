@@ -146,7 +146,7 @@ fn e2e_blob_lifecycle() {
         assert_eq!(blobs.len(), 1, "should have exactly one blob");
         assert_eq!(blobs[0]["object_id"].as_str().unwrap(), object_id);
 
-        // 7. Delete the blob (DB record removed; on-chain deletion is a no-op for now).
+        // 7. Delete the blob (DB record removed; on-chain blob object deleted via delete_blob PTB).
         let resp = app
             .clone()
             .oneshot(
@@ -253,6 +253,66 @@ fn e2e_wallet_provisioning() {
         assert!(
             address.starts_with("0x"),
             "wallet address should start with 0x, got: {address}"
+        );
+    });
+}
+
+/// Verify deterministic wallet address derivation through the full Oyster→Pearl stack.
+#[test]
+#[ignore = "requires walrus test cluster (~30s startup)"]
+fn e2e_deterministic_wallet_address() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_account_id, api_key) = create_test_account(app).await;
+
+        // Fetch wallets twice — should return the same address both times.
+        let mut addresses = Vec::new();
+        for _ in 0..2 {
+            let (status, body) = json_response(
+                app,
+                Request::get("/account/wallets")
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            let addr = body["wallets"][0]["address"].as_str().unwrap().to_string();
+            addresses.push(addr);
+        }
+        assert_eq!(
+            addresses[0], addresses[1],
+            "wallet address should be deterministic across calls"
+        );
+
+        // Store a blob, then verify the address is still the same.
+        let bucket_id = create_test_bucket(app, &api_key, "determinism-bucket").await;
+        let _store_req = Request::put(format!("/buckets/{bucket_id}/blobs"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "text/plain")
+            .body(Body::from(b"determinism test".to_vec()))
+            .unwrap();
+        let (status, _) = json_response(app, _store_req).await;
+        assert_eq!(status, axum::http::StatusCode::CREATED);
+
+        let (status, body) = json_response(
+            app,
+            Request::get("/account/wallets")
+                .header("authorization", format!("Bearer {api_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let addr_after_store = body["wallets"][0]["address"].as_str().unwrap();
+        assert_eq!(
+            addresses[0], addr_after_store,
+            "wallet address should remain stable after storing a blob"
         );
     });
 }
