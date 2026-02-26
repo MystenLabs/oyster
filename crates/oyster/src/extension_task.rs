@@ -1,7 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
@@ -71,34 +68,8 @@ pub async fn run_extension_loop(
         let mut extended = 0u32;
         let mut errors = 0u32;
         let mut address_cache: HashMap<String, SuiAddress> = HashMap::new();
-        let mut low_balance_accounts: HashSet<String> = HashSet::new();
 
         for blob in &blobs {
-            if low_balance_accounts.contains(&blob.pearl_account_id) {
-                continue;
-            }
-
-            // Check balance on first encounter of this account.
-            if !address_cache.contains_key(&blob.pearl_account_id) {
-                match pearl.get_balance(&blob.pearl_account_id).await {
-                    Ok(bal)
-                        if bal.cached_wal_balance < bal.min_wal_balance
-                            || bal.cached_sui_balance < bal.min_sui_balance =>
-                    {
-                        tracing::warn!(
-                            pearl_account_id = %blob.pearl_account_id,
-                            "balance below minimum, skipping account"
-                        );
-                        low_balance_accounts.insert(blob.pearl_account_id.clone());
-                        continue;
-                    }
-                    Err(e) => {
-                        tracing::warn!("balance check failed, proceeding anyway: {e}");
-                    }
-                    _ => {}
-                }
-            }
-
             // Resolve sender address (cached per account per cycle).
             let sender_address = match address_cache.get(&blob.pearl_account_id) {
                 Some(&addr) => addr,
@@ -188,7 +159,7 @@ async fn extend_single_blob(
         .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data, 0, 0).await?;
+    sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data).await?;
 
     Ok(())
 }

@@ -141,20 +141,14 @@ pub async fn get_wallets(
         }));
     };
 
-    let resp = pearl
-        .get_account_wallets(&pearl_account_id)
+    let address = pearl
+        .get_address(&pearl_account_id)
         .await
-        .map_err(|e| AppError::Internal(format!("Pearl get_account_wallets failed: {e}")))?;
-
-    let wallets = resp
-        .wallets
-        .into_iter()
-        .map(|w| WalletInfo { address: w.address })
-        .collect();
+        .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 
     Ok(Json(WalletsResponse {
         provisioned: true,
-        wallets,
+        wallets: vec![WalletInfo { address }],
     }))
 }
 
@@ -175,7 +169,7 @@ pub async fn debug_create_account(
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
     let pearl_account_id = if let Some(ref pearl) = state.pearl {
         let resp = pearl
-            .create_account(0, 0, 0, 0)
+            .create_account()
             .await
             .map_err(|e| AppError::Internal(format!("Pearl account creation failed: {e}")))?;
         Some(resp.account_id)

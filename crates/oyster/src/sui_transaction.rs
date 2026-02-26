@@ -2,11 +2,7 @@ use std::sync::Arc;
 
 use sui_sdk::{
     SuiClientBuilder,
-    rpc_types::{
-        SuiTransactionBlockEffectsAPI,
-        SuiTransactionBlockResponse,
-        SuiTransactionBlockResponseOptions,
-    },
+    rpc_types::{SuiTransactionBlockResponse, SuiTransactionBlockResponseOptions},
 };
 use sui_types::{
     base_types::{ObjectID, SuiAddress},
@@ -37,11 +33,8 @@ pub async fn resolve_sender_address(
     pearl: &PearlConnection,
     pearl_account_id: &str,
 ) -> Result<SuiAddress, Box<dyn std::error::Error + Send + Sync>> {
-    let resp = pearl.get_account_wallets(pearl_account_id).await?;
-    if resp.wallets.is_empty() {
-        return Err(format!("pearl account {pearl_account_id} has no wallets").into());
-    }
-    let addr = resp.wallets[0].address.parse()?;
+    let address = pearl.get_address(pearl_account_id).await?;
+    let addr = address.parse()?;
     Ok(addr)
 }
 
@@ -50,22 +43,14 @@ pub async fn sign_and_submit(
     pearl_account_id: &str,
     rpc_url: &str,
     tx_data: TransactionData,
-    estimated_sui_cost: i64,
-    estimated_wal_cost: i64,
 ) -> Result<SuiTransactionBlockResponse, Box<dyn std::error::Error + Send + Sync>> {
     let tx_bytes = bcs::to_bytes(&tx_data)?;
-    let sign_resp = pearl
-        .sign_transaction(
-            pearl_account_id,
-            tx_bytes,
-            estimated_sui_cost,
-            estimated_wal_cost,
-        )
+    let signed_bytes = pearl
+        .sign_transaction(pearl_account_id, tx_bytes)
         .await
         .map_err(|e| format!("pearl sign error: {e}"))?;
 
-    let pending_tx_id = sign_resp.pending_transaction_id.clone();
-    let signed_tx: Transaction = bcs::from_bytes(&sign_resp.signed_transaction)?;
+    let signed_tx: Transaction = bcs::from_bytes(&signed_bytes)?;
     let sui_client = SuiClientBuilder::default().build(rpc_url).await?;
     let result = sui_client
         .quorum_driver_api()
@@ -77,33 +62,6 @@ pub async fn sign_and_submit(
             None,
         )
         .await;
-
-    // Best-effort confirm transaction with Pearl.
-    match &result {
-        Ok(resp) => {
-            let digest = resp.digest.to_string();
-            // Extract gas cost from effects if available.
-            let gas_cost = resp
-                .effects
-                .as_ref()
-                .map(|e| {
-                    let summary = e.gas_cost_summary();
-                    (summary.computation_cost
-                        + summary.storage_cost
-                        + summary.non_refundable_storage_fee)
-                        .saturating_sub(summary.storage_rebate) as i64
-                })
-                .unwrap_or(0);
-            let _ = pearl
-                .confirm_transaction(&pending_tx_id, &digest, true, gas_cost, 0)
-                .await;
-        }
-        Err(_) => {
-            let _ = pearl
-                .confirm_transaction(&pending_tx_id, "", false, 0, 0)
-                .await;
-        }
-    }
 
     Ok(result?)
 }

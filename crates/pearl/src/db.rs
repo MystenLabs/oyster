@@ -1,5 +1,4 @@
 pub mod accounts;
-pub mod pending_transactions;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 

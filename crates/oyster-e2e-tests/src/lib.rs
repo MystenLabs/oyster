@@ -87,7 +87,7 @@ impl OysterTestHarness {
 
         // 3. Create an operator account in Pearl.
         let create_resp = pearl
-            .create_account(0, 0, 0, 0)
+            .create_account()
             .await
             .expect("failed to create operator Pearl account");
         let operator_account_id = create_resp.account_id;
@@ -290,10 +290,6 @@ async fn start_pearl_in_process() -> PearlConnection {
         database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
-        sui_rpc_url: None,
-        wal_coin_type: None,
-        reconciliation_interval_secs: 300,
-        pending_tx_timeout_minutes: 30,
     };
     let service = PearlService { db, config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());

@@ -17,13 +17,4 @@ pub enum Error {
 
     #[error("signing error: {0}")]
     SigningError(String),
-
-    #[error("pending transaction not found")]
-    PendingTransactionNotFound,
-
-    #[error("pending transaction already resolved")]
-    PendingTransactionAlreadyResolved,
-
-    #[error("sui rpc error: {0}")]
-    SuiRpc(String),
 }
