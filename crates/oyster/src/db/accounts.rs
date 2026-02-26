@@ -9,7 +9,7 @@ pub async fn create_account(
 ) -> Result<Account, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
     let row = sqlx::query(
-        "INSERT INTO accounts (id, pearl_account_id) VALUES (?, ?) RETURNING id, pearl_account_id, created_at, updated_at",
+        "INSERT INTO accounts (id, pearl_account_id) VALUES (?, ?) RETURNING id, pearl_account_id, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, created_at, updated_at",
     )
     .bind(&id)
     .bind(pearl_account_id)
@@ -19,6 +19,10 @@ pub async fn create_account(
     Ok(Account {
         id: row.get("id"),
         pearl_account_id: row.get("pearl_account_id"),
+        min_sui_balance: row.get("min_sui_balance"),
+        min_wal_balance: row.get("min_wal_balance"),
+        top_up_target_sui: row.get("top_up_target_sui"),
+        top_up_target_wal: row.get("top_up_target_wal"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -26,7 +30,7 @@ pub async fn create_account(
 
 pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT id, pearl_account_id, created_at, updated_at FROM accounts WHERE id = ?",
+        "SELECT id, pearl_account_id, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, created_at, updated_at FROM accounts WHERE id = ?",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -35,6 +39,10 @@ pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>,
     Ok(row.map(|r| Account {
         id: r.get("id"),
         pearl_account_id: r.get("pearl_account_id"),
+        min_sui_balance: r.get("min_sui_balance"),
+        min_wal_balance: r.get("min_wal_balance"),
+        top_up_target_sui: r.get("top_up_target_sui"),
+        top_up_target_wal: r.get("top_up_target_wal"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }))
@@ -94,6 +102,16 @@ mod tests {
 
         let fetched = get_account(&pool, &account.id).await.unwrap().unwrap();
         assert_eq!(fetched.pearl_account_id.as_deref(), Some("pearl-456"));
+    }
+
+    #[tokio::test]
+    async fn create_account_has_zero_balance_thresholds() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, None).await.unwrap();
+        assert_eq!(account.min_sui_balance, 0);
+        assert_eq!(account.min_wal_balance, 0);
+        assert_eq!(account.top_up_target_sui, 0);
+        assert_eq!(account.top_up_target_wal, 0);
     }
 
     #[tokio::test]

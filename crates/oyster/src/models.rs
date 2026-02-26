@@ -5,6 +5,10 @@ use utoipa::{IntoParams, ToSchema};
 pub struct Account {
     pub id: String,
     pub pearl_account_id: Option<String>,
+    pub min_sui_balance: i64,
+    pub min_wal_balance: i64,
+    pub top_up_target_sui: i64,
+    pub top_up_target_wal: i64,
     pub created_at: String,
     pub updated_at: String,
 }
