@@ -1,6 +1,7 @@
 use super::DbPool;
 use crate::{error::Error, models::Account};
 
+/// Insert a new account with the given credentials.
 pub async fn create_account(pool: &DbPool, credentials: &str) -> Result<Account, Error> {
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -13,6 +14,7 @@ pub async fn create_account(pool: &DbPool, credentials: &str) -> Result<Account,
     get_account(pool, &id).await
 }
 
+/// Fetch an account by ID, returning `AccountNotFound` if it does not exist.
 pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     sqlx::query_as::<_, Account>(
         "SELECT id, credentials, created_at, updated_at
@@ -24,6 +26,7 @@ pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     .ok_or(Error::AccountNotFound)
 }
 
+/// Check that an account exists, returning `AccountNotFound` if not.
 pub async fn account_exists(pool: &DbPool, id: &str) -> Result<(), Error> {
     let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM accounts WHERE id = ?")
         .bind(id)

@@ -18,6 +18,7 @@ fn row_to_blob(row: sqlx::sqlite::SqliteRow) -> BlobMetadata {
     }
 }
 
+/// Insert a new blob metadata row and return it.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_blob(
     pool: &SqlitePool,
@@ -51,6 +52,7 @@ pub async fn insert_blob(
     Ok(row_to_blob(row))
 }
 
+/// Fetch blob metadata by its internal object ID.
 pub async fn get_blob_by_object_id(
     pool: &SqlitePool,
     object_id: &str,
@@ -66,6 +68,7 @@ pub async fn get_blob_by_object_id(
     Ok(row.map(row_to_blob))
 }
 
+/// Fetch blob metadata by its content-addressed blob ID.
 #[allow(dead_code)]
 pub async fn get_blob_by_blob_id(
     pool: &SqlitePool,
@@ -82,6 +85,7 @@ pub async fn get_blob_by_blob_id(
     Ok(row.map(row_to_blob))
 }
 
+/// List blobs in a bucket with cursor-based pagination.
 pub async fn list_blobs_in_bucket(
     pool: &SqlitePool,
     bucket_id: &str,
@@ -120,6 +124,7 @@ pub async fn list_blobs_in_bucket(
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
 
+/// Update a blob's content type and/or auto-extend duration.
 pub async fn update_blob_metadata(
     pool: &SqlitePool,
     object_id: &str,
@@ -160,11 +165,15 @@ pub async fn update_blob_metadata(
     get_blob_by_object_id(pool, object_id).await
 }
 
+/// Information returned when a blob is deleted.
 pub struct DeletedBlobInfo {
+    /// Content-addressed blob ID.
     pub blob_id: String,
+    /// On-chain Sui object ID, if applicable.
     pub sui_object_id: Option<String>,
 }
 
+/// Delete a blob by object ID and account, returning its IDs if it existed.
 pub async fn delete_blob(
     pool: &SqlitePool,
     object_id: &str,
@@ -183,6 +192,7 @@ pub async fn delete_blob(
     }))
 }
 
+/// Count how many blob metadata rows reference the given blob ID.
 pub async fn count_references(pool: &SqlitePool, blob_id: &str) -> Result<i64, sqlx::Error> {
     let row = sqlx::query("SELECT COUNT(*) as count FROM blobs WHERE blob_id = ?")
         .bind(blob_id)
@@ -191,6 +201,7 @@ pub async fn count_references(pool: &SqlitePool, blob_id: &str) -> Result<i64, s
     Ok(row.get::<i32, _>("count") as i64)
 }
 
+/// Fetch blobs with on-chain storage that expire before the given cutoff.
 pub async fn get_expiring_blobs(
     pool: &SqlitePool,
     before: &str,
@@ -211,6 +222,7 @@ pub async fn get_expiring_blobs(
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
 
+/// Fetch expiring blobs joined with their owning account's Pearl wallet info.
 pub async fn get_expiring_blobs_with_accounts(
     pool: &SqlitePool,
     before: &str,
@@ -235,6 +247,7 @@ pub async fn get_expiring_blobs_with_accounts(
     .await
 }
 
+/// Update the expiration timestamp for a blob identified by its Sui object ID.
 pub async fn update_blob_expires_at(
     pool: &SqlitePool,
     sui_object_id: &str,
@@ -248,6 +261,7 @@ pub async fn update_blob_expires_at(
     Ok(())
 }
 
+/// Delete all blobs in a bucket, returning their IDs for backend cleanup.
 pub async fn delete_blobs_in_bucket(
     pool: &SqlitePool,
     bucket_id: &str,

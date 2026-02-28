@@ -12,6 +12,7 @@ fn row_to_bucket(row: sqlx::sqlite::SqliteRow) -> Bucket {
     }
 }
 
+/// Create a new bucket for the given account.
 pub async fn create_bucket(
     pool: &SqlitePool,
     account_id: &str,
@@ -30,6 +31,7 @@ pub async fn create_bucket(
     Ok(row_to_bucket(row))
 }
 
+/// List buckets for an account with cursor-based pagination.
 pub async fn list_buckets(
     pool: &SqlitePool,
     account_id: &str,
@@ -65,6 +67,7 @@ pub async fn list_buckets(
     Ok(rows.into_iter().map(row_to_bucket).collect())
 }
 
+/// Fetch a single bucket by ID, scoped to the given account.
 pub async fn get_bucket(
     pool: &SqlitePool,
     bucket_id: &str,
@@ -81,6 +84,7 @@ pub async fn get_bucket(
     Ok(row.map(row_to_bucket))
 }
 
+/// Delete a bucket. Returns `true` if the bucket existed.
 pub async fn delete_bucket(
     pool: &SqlitePool,
     bucket_id: &str,

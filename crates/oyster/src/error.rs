@@ -3,24 +3,34 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+/// Application-level error type, mapped to HTTP status codes.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
+    /// Resource not found (404).
     #[error("not found")]
     NotFound,
+    /// Authentication failed (401).
     #[error("unauthorized")]
     Unauthorized,
+    /// Invalid request parameters (400).
     #[error("bad request: {0}")]
     BadRequest(String),
+    /// Resource conflict (409).
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Feature not yet implemented (501).
     #[error("not implemented")]
     NotImplemented,
+    /// Request body exceeds size limit (413).
     #[error("payload too large")]
     PayloadTooLarge,
+    /// Unexpected internal error (500).
     #[error("internal error: {0}")]
     Internal(String),
+    /// Database error (500).
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    /// Blob store error (500).
     #[error("blob store error: {0}")]
     BlobStore(#[from] crate::blob_store::BlobStoreError),
 }

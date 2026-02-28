@@ -1,11 +1,13 @@
 use tonic::{Request, transport::Channel};
 
+#[allow(missing_docs)]
 pub mod proto {
     tonic::include_proto!("pearl");
 }
 
 use proto::pearl_client::PearlClient;
 
+/// gRPC client wrapper for the Pearl signing service.
 #[derive(Clone)]
 pub struct PearlConnection {
     client: PearlClient<Channel>,
@@ -13,6 +15,7 @@ pub struct PearlConnection {
 }
 
 impl PearlConnection {
+    /// Connect to a Pearl gRPC server at the given URL.
     pub async fn connect(
         url: &str,
         service_secret: String,
@@ -48,6 +51,7 @@ impl PearlConnection {
         req
     }
 
+    /// Create a new Pearl account and return its ID and wallet address.
     pub async fn create_account(&self) -> Result<proto::CreateAccountResponse, tonic::Status> {
         let req = self.authenticated(proto::CreateAccountRequest {});
         self.client
@@ -57,6 +61,7 @@ impl PearlConnection {
             .map(|r| r.into_inner())
     }
 
+    /// Get the Sui wallet address for a Pearl account.
     pub async fn get_address(&self, account_id: &str) -> Result<String, tonic::Status> {
         let req = self.authenticated(proto::GetAddressRequest {
             account_id: account_id.to_string(),
@@ -68,6 +73,7 @@ impl PearlConnection {
             .map(|r| r.into_inner().address)
     }
 
+    /// Sign a transaction using the Pearl account's derived key.
     pub async fn sign_transaction(
         &self,
         account_id: &str,

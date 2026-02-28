@@ -1,11 +1,17 @@
 /// Pearl service configuration, read from environment variables.
 #[derive(Clone)]
 pub struct Config {
+    /// SQLite database URL.
     pub database_url: String,
+    /// Socket address to bind the gRPC server to.
     pub bind_addr: String,
+    /// Shared secret for authenticating incoming gRPC requests.
     pub service_secret: String,
+    /// Master seed bytes for deterministic key derivation.
     pub master_seed: Vec<u8>,
+    /// Optional path to a TLS certificate file for gRPC.
     pub tls_cert_path: Option<String>,
+    /// Optional path to a TLS private key file for gRPC.
     pub tls_key_path: Option<String>,
 }
 
@@ -23,6 +29,7 @@ impl std::fmt::Debug for Config {
 }
 
 impl Config {
+    /// Load configuration from environment variables.
     pub fn from_env() -> Self {
         let master_seed_hex =
             std::env::var("PEARL_MASTER_SEED").expect("PEARL_MASTER_SEED env var is required");

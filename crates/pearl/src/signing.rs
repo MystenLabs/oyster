@@ -7,6 +7,7 @@ use sui_types::{
 
 use crate::error::Error;
 
+/// Sign a BCS-encoded `TransactionData` and return a BCS-encoded `Transaction`.
 pub fn sign_transaction(private_key_bytes: &[u8], tx_data_bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let ed25519_kp = Ed25519KeyPair::from_bytes(private_key_bytes)
         .map_err(|e| Error::InvalidPrivateKey(e.to_string()))?;

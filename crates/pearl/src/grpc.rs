@@ -2,14 +2,18 @@ use tonic::{Request, Response, Status};
 
 use crate::{config, db, derivation};
 
+#[allow(missing_docs)]
 pub mod proto {
     tonic::include_proto!("pearl");
 }
 
 use proto::pearl_server::Pearl;
 
+/// The Pearl gRPC service implementation.
 pub struct PearlService {
+    /// Database connection pool.
     pub db: db::DbPool,
+    /// Service configuration (contains master seed for key derivation).
     pub config: config::Config,
 }
 

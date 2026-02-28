@@ -13,11 +13,15 @@ use walrus_utils::backoff::ExponentialBackoffConfig;
 
 use crate::pearl_client::PearlConnection;
 
+/// SUI and WAL balance information for a wallet address.
 pub struct BalanceInfo {
+    /// Total SUI balance in MIST.
     pub sui_balance: u128,
+    /// Total WAL balance in FROST, if a WAL coin type was queried.
     pub wal_balance: Option<u128>,
 }
 
+/// Query the SUI and optionally WAL balance for the given address.
 pub async fn check_balance(
     rpc_url: &str,
     address: SuiAddress,
@@ -44,6 +48,7 @@ pub async fn check_balance(
     })
 }
 
+/// Build a `SuiReadClient` connected to the given RPC and Walrus contracts.
 pub async fn build_sui_read_client(
     rpc_url: &str,
     system_object: ObjectID,
@@ -60,6 +65,7 @@ pub async fn build_sui_read_client(
     Ok(Arc::new(read_client))
 }
 
+/// Resolve a Pearl account ID to its Sui wallet address.
 pub async fn resolve_sender_address(
     pearl: &PearlConnection,
     pearl_account_id: &str,
@@ -69,6 +75,7 @@ pub async fn resolve_sender_address(
     Ok(addr)
 }
 
+/// Sign transaction data via Pearl and submit it to the Sui network.
 pub async fn sign_and_submit(
     pearl: &PearlConnection,
     pearl_account_id: &str,

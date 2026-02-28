@@ -19,6 +19,7 @@ use crate::{
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Blob store that writes directly to Walrus via on-chain Sui transactions.
 pub struct DirectWalrusBlobStore {
     node_client: WalrusNodeClient<SuiReadClient>,
     read_client: Arc<SuiReadClient>,
@@ -30,6 +31,7 @@ pub struct DirectWalrusBlobStore {
 }
 
 impl DirectWalrusBlobStore {
+    /// Create a new direct Walrus blob store connected to the given Sui RPC and Walrus cluster.
     pub async fn new(
         rpc_url: String,
         aggregator_url: String,

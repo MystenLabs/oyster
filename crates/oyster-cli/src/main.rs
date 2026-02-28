@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 mod client;
 mod config;
 mod output;

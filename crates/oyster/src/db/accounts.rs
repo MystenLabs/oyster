@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::models::Account;
 
+/// Insert a new account, optionally linked to a Pearl wallet.
 pub async fn create_account(
     pool: &SqlitePool,
     pearl_account_id: Option<&str>,
@@ -28,6 +29,7 @@ pub async fn create_account(
     })
 }
 
+/// Fetch an account by ID, returning `None` if it does not exist.
 pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>, sqlx::Error> {
     let row = sqlx::query(
         "SELECT id, pearl_account_id, min_sui_balance, min_wal_balance, top_up_target_sui, top_up_target_wal, created_at, updated_at FROM accounts WHERE id = ?",
@@ -48,6 +50,7 @@ pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>,
     }))
 }
 
+/// Link an existing account to a Pearl wallet. Returns `true` if a row was updated.
 pub async fn set_pearl_account_id(
     pool: &SqlitePool,
     account_id: &str,

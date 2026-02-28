@@ -1,5 +1,8 @@
+/// Account and API key management endpoints.
 pub mod account;
+/// Blob storage and retrieval endpoints.
 pub mod blobs;
+/// Bucket CRUD endpoints.
 pub mod buckets;
 
 use axum::Router;
@@ -47,6 +50,7 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Build the Axum router with all API routes and OpenAPI docs.
 pub fn build_router(state: AppState) -> Router {
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         // Account / API keys

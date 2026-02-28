@@ -5,6 +5,9 @@ edition = "2024"
 publish = false
 
 # This crate has no library or binary — it exists only for integration tests.
+[lints]
+workspace = true
+
 [lib]
 path = "src/lib.rs"
 

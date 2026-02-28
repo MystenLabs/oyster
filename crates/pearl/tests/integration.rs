@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use pearl::{
     auth::check_service_secret,
     config::Config,

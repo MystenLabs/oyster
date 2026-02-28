@@ -9,14 +9,20 @@ use crate::{
     sui_transaction::{self, BalanceInfo},
 };
 
+/// Configuration for the background blob extension task.
 #[derive(Clone, Debug)]
 pub struct ExtensionConfig {
+    /// How often to check for expiring blobs.
     pub check_interval: std::time::Duration,
+    /// How many days ahead to look for expiring blobs.
     pub lookahead_days: u32,
+    /// Number of Walrus epochs to extend blobs by.
     pub extend_epochs: u32,
+    /// Optional WAL coin type string for balance checks.
     pub wal_coin_type: Option<String>,
 }
 
+/// Run the background loop that periodically extends expiring blobs on Walrus.
 pub async fn run_extension_loop(
     db: DbPool,
     pearl: PearlConnection,

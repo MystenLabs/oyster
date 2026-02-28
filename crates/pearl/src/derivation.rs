@@ -18,11 +18,13 @@ fn derive_keypair(master_seed: &[u8], account_id: &str) -> (SuiAddress, Vec<u8>)
     (address, private_key_bytes)
 }
 
+/// Derive the Sui wallet address for an account (without exposing the private key).
 pub fn derive_address(master_seed: &[u8], account_id: &str) -> String {
     let (address, _) = derive_keypair(master_seed, account_id);
     address.to_string()
 }
 
+/// Derive the Ed25519 private key bytes for an account.
 pub fn derive_private_key(master_seed: &[u8], account_id: &str) -> Vec<u8> {
     let (_, private_key) = derive_keypair(master_seed, account_id);
     private_key

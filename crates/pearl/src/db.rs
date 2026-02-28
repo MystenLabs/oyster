@@ -1,9 +1,12 @@
+/// Account database operations.
 pub mod accounts;
 
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
+/// SQLite connection pool type alias.
 pub type DbPool = sqlx::SqlitePool;
 
+/// Create and migrate a SQLite connection pool.
 pub async fn create_pool(database_url: &str) -> Result<DbPool, sqlx::Error> {
     let options: SqliteConnectOptions = database_url
         .parse::<SqliteConnectOptions>()?

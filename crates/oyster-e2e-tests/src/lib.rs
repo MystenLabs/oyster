@@ -1,3 +1,5 @@
+//! End-to-end test harness for Oyster, spinning up Sui, Walrus, Pearl, and Oyster in-process.
+
 use std::{collections::BTreeSet, sync::Arc};
 
 use axum::Router;

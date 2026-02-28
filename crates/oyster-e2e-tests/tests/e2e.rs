@@ -1,3 +1,5 @@
+#![allow(missing_docs)]
+
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
 use oyster_e2e_tests::OysterTestHarness;

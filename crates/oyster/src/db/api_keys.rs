@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::models::{ApiKey, ApiKeyWithSecret};
 
+/// Insert a new API key and return it with the plaintext secret.
 pub async fn create_api_key(
     pool: &SqlitePool,
     account_id: &str,
@@ -29,6 +30,7 @@ pub async fn create_api_key(
     })
 }
 
+/// Look up an active (non-revoked) API key by its hash.
 pub async fn find_by_hash(
     pool: &SqlitePool,
     key_hash: &str,
@@ -49,6 +51,7 @@ pub async fn find_by_hash(
     }))
 }
 
+/// Revoke an API key. Returns `true` if a key was actually revoked.
 pub async fn revoke_api_key(
     pool: &SqlitePool,
     key_id: &str,

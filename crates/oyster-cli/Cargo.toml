@@ -7,6 +7,9 @@ edition = "2024"
 name = "oyster"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 clap = { workspace = true }
 reqwest = { workspace = true }

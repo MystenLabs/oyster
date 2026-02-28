@@ -4,6 +4,7 @@ use crate::blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult};
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Blob store backed by the Walrus publisher/aggregator HTTP API.
 pub struct WalrusBlobStore {
     client: reqwest::Client,
     publisher_url: String,
@@ -12,6 +13,7 @@ pub struct WalrusBlobStore {
 }
 
 impl WalrusBlobStore {
+    /// Create a new Walrus HTTP blob store.
     pub fn new(publisher_url: String, aggregator_url: String, default_epochs: u32) -> Self {
         Self {
             client: reqwest::Client::new(),
