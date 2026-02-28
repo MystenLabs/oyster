@@ -7639,6 +7639,7 @@ dependencies = [
  "bcs",
  "blake2",
  "chrono",
+ "clap",
  "hex",
  "http-body-util",
  "pearl",

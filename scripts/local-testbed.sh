@@ -266,7 +266,7 @@ main() {
      WALRUS_AGGREGATOR_URL='$WALRUS_AGGREGATOR_URL' \
      PEARL_ACCOUNT_ID='$OPERATOR_ACCOUNT_ID' \
      RUST_LOG=info \
-     cargo run -p oyster; \
+     cargo run -p oyster -- serve; \
      echo 'Oyster exited. Press Enter to close.'; read"
 
   wait_for_oyster

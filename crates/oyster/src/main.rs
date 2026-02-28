@@ -1,5 +1,6 @@
 use std::sync::Arc;
 
+use clap::{Parser, Subcommand};
 use oyster::{
     AppState,
     blob_store::LocalBlobStore,
@@ -12,6 +13,21 @@ use oyster::{
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
+#[derive(Parser)]
+#[command(name = "oyster", about = "Oyster object storage service")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Start the HTTP API server (default)
+    Serve,
+    /// Run the blob extension background worker
+    Extend,
+}
+
 #[tokio::main]
 async fn main() {
     // Walrus SDK pulls in both aws-lc-rs and ring; rustls can't auto-detect.
@@ -21,8 +37,8 @@ async fn main() {
 
     tracing_subscriber::fmt::init();
 
+    let cli = Cli::parse();
     let config = Config::from_env();
-    tracing::info!("starting oyster on {}", config.bind_addr);
 
     let db = db::create_pool(&config.database_url)
         .await
@@ -43,100 +59,124 @@ async fn main() {
         }
     };
 
-    let blob_store: Arc<dyn oyster::blob_store::BlobStore> =
-        if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj), Some(agg_url)) = (
-            &pearl,
-            &config.sui_rpc_url,
-            &config.walrus_system_object,
-            &config.walrus_staking_object,
-            &config.walrus_aggregator_url,
-        ) {
+    match cli.command.unwrap_or(Command::Serve) {
+        Command::Serve => {
+            tracing::info!("starting oyster server on {}", config.bind_addr);
+
+            let blob_store: Arc<dyn oyster::blob_store::BlobStore> = if let (
+                Some(pearl_conn),
+                Some(rpc_url),
+                Some(sys_obj),
+                Some(stk_obj),
+                Some(agg_url),
+            ) = (
+                &pearl,
+                &config.sui_rpc_url,
+                &config.walrus_system_object,
+                &config.walrus_staking_object,
+                &config.walrus_aggregator_url,
+            ) {
+                use sui_types::base_types::ObjectID;
+                let system_object: ObjectID =
+                    sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
+                let staking_object: ObjectID =
+                    stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
+                tracing::info!(
+                    "using direct Walrus blob store (aggregator={agg_url}, sui_rpc_url={rpc_url})"
+                );
+                Arc::new(
+                    DirectWalrusBlobStore::new(
+                        rpc_url.clone(),
+                        agg_url.clone(),
+                        system_object,
+                        staking_object,
+                        pearl_conn.clone(),
+                        config.walrus_default_epochs,
+                    )
+                    .await
+                    .expect("failed to initialize direct Walrus blob store"),
+                )
+            } else {
+                match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
+                    (Some(pub_url), Some(agg_url)) => {
+                        tracing::info!(
+                            "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
+                        );
+                        Arc::new(WalrusBlobStore::new(
+                            pub_url.clone(),
+                            agg_url.clone(),
+                            config.walrus_default_epochs,
+                        ))
+                    }
+                    (Some(_), None) => {
+                        panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
+                    }
+                    _ => {
+                        tracing::info!("using local blob store at {:?}", config.blob_store_path);
+                        Arc::new(
+                            LocalBlobStore::new(config.blob_store_path.clone())
+                                .await
+                                .expect("failed to initialize blob store"),
+                        )
+                    }
+                }
+            };
+
+            let state = AppState {
+                db,
+                blob_store,
+                pearl,
+                config: config.clone(),
+            };
+
+            let app = routes::build_router(state)
+                .layer(CorsLayer::permissive())
+                .layer(TraceLayer::new_for_http());
+
+            let listener = tokio::net::TcpListener::bind(&config.bind_addr)
+                .await
+                .expect("failed to bind");
+
+            tracing::info!("listening on {}", config.bind_addr);
+            axum::serve(listener, app).await.expect("server error");
+        }
+        Command::Extend => {
+            tracing::info!("starting oyster extension worker");
+
+            let pearl_conn = pearl.expect("PEARL_GRPC_URL is required for the extend worker");
+            let rpc_url = config
+                .sui_rpc_url
+                .clone()
+                .expect("SUI_RPC_URL is required for the extend worker");
+            let sys_obj = config
+                .walrus_system_object
+                .as_ref()
+                .expect("WALRUS_SYSTEM_OBJECT is required for the extend worker");
+            let stk_obj = config
+                .walrus_staking_object
+                .as_ref()
+                .expect("WALRUS_STAKING_OBJECT is required for the extend worker");
+
             use sui_types::base_types::ObjectID;
             let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
             let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
-            tracing::info!(
-                "using direct Walrus blob store (aggregator={agg_url}, sui_rpc_url={rpc_url})"
-            );
-            Arc::new(
-                DirectWalrusBlobStore::new(
-                    rpc_url.clone(),
-                    agg_url.clone(),
-                    system_object,
-                    staking_object,
-                    pearl_conn.clone(),
-                    config.walrus_default_epochs,
-                )
-                .await
-                .expect("failed to initialize direct Walrus blob store"),
+
+            let ext_config = oyster::extension_task::ExtensionConfig {
+                check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
+                lookahead_days: config.blob_extend_lookahead_days,
+                extend_epochs: config.blob_extend_epochs,
+                wal_coin_type: config.wal_coin_type.clone(),
+            };
+
+            oyster::extension_task::run_extension_loop(
+                db,
+                pearl_conn,
+                rpc_url,
+                system_object,
+                staking_object,
+                ext_config,
             )
-        } else {
-            match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
-                (Some(pub_url), Some(agg_url)) => {
-                    tracing::info!(
-                        "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
-                    );
-                    Arc::new(WalrusBlobStore::new(
-                        pub_url.clone(),
-                        agg_url.clone(),
-                        config.walrus_default_epochs,
-                    ))
-                }
-                (Some(_), None) => {
-                    panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
-                }
-                _ => {
-                    tracing::info!("using local blob store at {:?}", config.blob_store_path);
-                    Arc::new(
-                        LocalBlobStore::new(config.blob_store_path.clone())
-                            .await
-                            .expect("failed to initialize blob store"),
-                    )
-                }
-            }
-        };
-
-    // Spawn blob extension task if Pearl + Sui RPC + Walrus config are all present.
-    if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj)) = (
-        &pearl,
-        &config.sui_rpc_url,
-        &config.walrus_system_object,
-        &config.walrus_staking_object,
-    ) {
-        use sui_types::base_types::ObjectID;
-        let system_object: ObjectID = sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
-        let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
-        let ext_config = oyster::extension_task::ExtensionConfig {
-            check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
-            lookahead_days: config.blob_extend_lookahead_days,
-            extend_epochs: config.blob_extend_epochs,
-            wal_coin_type: config.wal_coin_type.clone(),
-        };
-        tracing::info!("spawning blob extension background task");
-        tokio::spawn(oyster::extension_task::run_extension_loop(
-            db.clone(),
-            pearl_conn.clone(),
-            rpc_url.clone(),
-            system_object,
-            staking_object,
-            ext_config,
-        ));
+            .await;
+        }
     }
-
-    let state = AppState {
-        db,
-        blob_store,
-        pearl,
-        config: config.clone(),
-    };
-
-    let app = routes::build_router(state)
-        .layer(CorsLayer::permissive())
-        .layer(TraceLayer::new_for_http());
-
-    let listener = tokio::net::TcpListener::bind(&config.bind_addr)
-        .await
-        .expect("failed to bind");
-
-    tracing::info!("listening on {}", config.bind_addr);
-    axum::serve(listener, app).await.expect("server error");
 }

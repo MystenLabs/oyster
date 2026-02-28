@@ -9,6 +9,7 @@ base64 = "0.22.1"
 bcs = "0.1.6"
 blake2 = "0.10.6"
 chrono = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 hex = "0.4.3"
 prost = "0.14.3"
 rand = "0.10.0"
