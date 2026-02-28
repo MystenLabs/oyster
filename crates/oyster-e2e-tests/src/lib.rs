@@ -292,6 +292,8 @@ async fn start_pearl_in_process() -> PearlConnection {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
         master_seed: hex::decode("ab".repeat(32)).expect("valid hex seed"),
+        tls_cert_path: None,
+        tls_key_path: None,
     };
     let service = PearlService { db, config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());

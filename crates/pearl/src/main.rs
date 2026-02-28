@@ -28,7 +28,24 @@ async fn main() {
     let addr = config.bind_addr.parse().expect("invalid bind address");
     tracing::info!("gRPC server listening on {}", addr);
 
-    Server::builder()
+    let mut builder = Server::builder();
+
+    if let (Some(cert_path), Some(key_path)) = (&config.tls_cert_path, &config.tls_key_path) {
+        let cert_pem = std::fs::read(cert_path)
+            .unwrap_or_else(|e| panic!("failed to read TLS cert at {cert_path}: {e}"));
+        let key_pem = std::fs::read(key_path)
+            .unwrap_or_else(|e| panic!("failed to read TLS key at {key_path}: {e}"));
+        let identity = tonic::transport::Identity::from_pem(cert_pem, key_pem);
+        let tls_config = tonic::transport::ServerTlsConfig::new().identity(identity);
+        builder = builder
+            .tls_config(tls_config)
+            .expect("invalid TLS configuration");
+        tracing::info!("TLS enabled (cert={cert_path}, key={key_path})");
+    } else {
+        tracing::info!("TLS not configured, serving plaintext");
+    }
+
+    builder
         .add_service(svc)
         .serve(addr)
         .await

@@ -5,6 +5,8 @@ pub struct Config {
     pub bind_addr: String,
     pub service_secret: String,
     pub master_seed: Vec<u8>,
+    pub tls_cert_path: Option<String>,
+    pub tls_key_path: Option<String>,
 }
 
 impl std::fmt::Debug for Config {
@@ -14,6 +16,8 @@ impl std::fmt::Debug for Config {
             .field("bind_addr", &self.bind_addr)
             .field("service_secret", &"[redacted]")
             .field("master_seed", &"[redacted]")
+            .field("tls_cert_path", &self.tls_cert_path)
+            .field("tls_key_path", &self.tls_key_path)
             .finish()
     }
 }
@@ -30,6 +34,15 @@ impl Config {
             master_seed.len()
         );
 
+        let tls_cert_path = std::env::var("PEARL_TLS_CERT_PATH").ok();
+        let tls_key_path = std::env::var("PEARL_TLS_KEY_PATH").ok();
+        match (&tls_cert_path, &tls_key_path) {
+            (Some(_), None) | (None, Some(_)) => {
+                panic!("PEARL_TLS_CERT_PATH and PEARL_TLS_KEY_PATH must both be set or both unset");
+            }
+            _ => {}
+        }
+
         Self {
             database_url: std::env::var("PEARL_DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite:pearl.db?mode=rwc".into()),
@@ -37,6 +50,8 @@ impl Config {
             service_secret: std::env::var("PEARL_SERVICE_SECRET")
                 .unwrap_or_else(|_| "dev-secret".into()),
             master_seed,
+            tls_cert_path,
+            tls_key_path,
         }
     }
 }

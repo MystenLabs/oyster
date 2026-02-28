@@ -7,6 +7,10 @@ set -euo pipefail
 # details.
 # ---------------------------------------------------------------------------
 
+# Optional TLS (encryption-only, requires a publicly-trusted cert for Oyster to verify):
+#   PEARL_TLS_CERT_PATH=server.crt PEARL_TLS_KEY_PATH=server.key
+#   PEARL_GRPC_URL=https://...  (on the Oyster side)
+
 PEARL_BIND_ADDR="127.0.0.1:50051"
 OYSTER_BIND_ADDR="127.0.0.1:3000"
 PEARL_SERVICE_SECRET="testbed-secret"

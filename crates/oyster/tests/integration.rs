@@ -785,6 +785,8 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
         master_seed: hex::decode("ab".repeat(32)).expect("valid hex seed"),
+        tls_cert_path: None,
+        tls_key_path: None,
     };
 
     let service = PearlService { db, config };

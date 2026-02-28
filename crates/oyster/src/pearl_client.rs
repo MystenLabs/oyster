@@ -17,7 +17,20 @@ impl PearlConnection {
         url: &str,
         service_secret: String,
     ) -> Result<Self, tonic::transport::Error> {
-        let client = PearlClient::connect(url.to_string()).await?;
+        let channel = if url.starts_with("https://") {
+            let tls_config = tonic::transport::ClientTlsConfig::new().with_enabled_roots();
+            tonic::transport::Endpoint::from_shared(url.to_string())
+                .expect("invalid Pearl gRPC URL")
+                .tls_config(tls_config)?
+                .connect()
+                .await?
+        } else {
+            tonic::transport::Endpoint::from_shared(url.to_string())
+                .expect("invalid Pearl gRPC URL")
+                .connect()
+                .await?
+        };
+        let client = PearlClient::new(channel);
         Ok(Self {
             client,
             service_secret,
