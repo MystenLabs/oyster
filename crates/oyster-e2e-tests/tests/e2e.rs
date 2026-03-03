@@ -53,6 +53,23 @@ async fn create_test_account(app: &Router) -> (String, String) {
     (account_id, secret)
 }
 
+/// Helper: get the wallet address for an account and fund it with SUI + WAL.
+async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
+    let (status, body) = json_response(
+        app,
+        Request::get("/account/wallets")
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, axum::http::StatusCode::OK);
+    let address = body["wallets"][0]["address"]
+        .as_str()
+        .expect("wallet address");
+    harness.fund_wallet(address).await;
+}
+
 /// Helper: create a bucket.
 async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
     let req = Request::post("/buckets")
@@ -82,10 +99,13 @@ fn e2e_blob_lifecycle() {
         // 1. Create an account (provisions a Pearl wallet automatically).
         let (_account_id, api_key) = create_test_account(app).await;
 
-        // 2. Create a bucket.
+        // 2. Fund the test account's wallet with SUI (gas) and WAL (storage).
+        fund_test_wallet(&harness, app, &api_key).await;
+
+        // 3. Create a bucket.
         let bucket_id = create_test_bucket(app, &api_key, "e2e-test-bucket").await;
 
-        // 3. Store a blob.
+        // 4. Store a blob.
         let blob_data = b"Hello from the Oyster E2E test!";
         let store_req = Request::put(format!("/buckets/{bucket_id}/blobs"))
             .header("authorization", format!("Bearer {api_key}"))
@@ -111,7 +131,7 @@ fn e2e_blob_lifecycle() {
             "sui_object_id should be present in direct walrus mode"
         );
 
-        // 4. Read the blob back by object_id.
+        // 5. Read the blob back by object_id.
         let (status, body) = raw_response(
             app,
             Request::get(format!("/blobs/{object_id}"))
@@ -122,7 +142,7 @@ fn e2e_blob_lifecycle() {
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(body, blob_data, "read blob data should match stored data");
 
-        // 5. Read the blob by blob_id.
+        // 6. Read the blob by blob_id.
         let (status, body) = raw_response(
             app,
             Request::get(format!("/blobs/by-blob-id/{blob_id}"))
@@ -133,7 +153,7 @@ fn e2e_blob_lifecycle() {
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(body, blob_data, "read by blob_id should match stored data");
 
-        // 6. List blobs in the bucket.
+        // 7. List blobs in the bucket.
         let (status, list_body) = json_response(
             app,
             Request::get(format!("/buckets/{bucket_id}/blobs"))
@@ -147,7 +167,7 @@ fn e2e_blob_lifecycle() {
         assert_eq!(blobs.len(), 1, "should have exactly one blob");
         assert_eq!(blobs[0]["object_id"].as_str().unwrap(), object_id);
 
-        // 7. Delete the blob (DB record removed; on-chain blob object deleted via delete_blob PTB).
+        // 8. Delete the blob (DB record removed; on-chain blob object deleted via delete_blob PTB).
         let resp = app
             .clone()
             .oneshot(
@@ -160,7 +180,7 @@ fn e2e_blob_lifecycle() {
             .unwrap();
         assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
 
-        // 8. Verify the blob is gone from Oyster's perspective.
+        // 9. Verify the blob is gone from Oyster's perspective.
         let (status, _) = raw_response(
             app,
             Request::get(format!("/blobs/{object_id}"))
@@ -184,6 +204,7 @@ fn e2e_content_dedup() {
         let app = &harness.router;
 
         let (_account_id, api_key) = create_test_account(app).await;
+        fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "dedup-bucket").await;
 
         let data = b"duplicate content for dedup test";
@@ -267,6 +288,7 @@ fn e2e_deterministic_wallet_address() {
         let app = &harness.router;
 
         let (_account_id, api_key) = create_test_account(app).await;
+        fund_test_wallet(&harness, app, &api_key).await;
 
         // Fetch wallets twice — should return the same address both times.
         let mut addresses = Vec::new();

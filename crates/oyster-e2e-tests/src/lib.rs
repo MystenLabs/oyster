@@ -53,8 +53,10 @@ pub struct OysterTestHarness {
     pub aggregator: AggregatorHandle,
     /// Oyster database pool (for direct DB operations in tests).
     pub db: db::DbPool,
-    /// Keep the walrus admin client alive (its temp_dir holds the admin wallet config).
-    _walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
+    /// Sui RPC URL for the test cluster.
+    rpc_url: String,
+    /// The walrus admin client (its temp_dir holds the admin wallet config for funding).
+    walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
 }
 
 impl OysterTestHarness {
@@ -118,7 +120,7 @@ impl OysterTestHarness {
             staking_object_str.parse().expect("valid staking_object");
 
         let blob_store = DirectWalrusBlobStore::new(
-            rpc_url,
+            rpc_url.clone(),
             aggregator_url,
             system_object,
             staking_object,
@@ -169,7 +171,8 @@ impl OysterTestHarness {
             walrus_cluster,
             aggregator,
             db: oyster_db,
-            _walrus_client: walrus_client,
+            rpc_url,
+            walrus_client,
         }
     }
 
@@ -181,6 +184,25 @@ impl OysterTestHarness {
             .fund_addresses_with_sui(vec![addr], None)
             .await
             .expect("failed to fund address");
+    }
+
+    /// Fund an address with both SUI (for gas) and WAL (for storage).
+    ///
+    /// This is needed for any wallet that will store blobs on-chain.
+    pub async fn fund_wallet(&self, address: &str) {
+        let addr: SuiAddress = address.parse().expect("valid SuiAddress");
+
+        // Fund with SUI for gas.
+        {
+            let cluster = self.sui_cluster.lock().await;
+            cluster
+                .fund_addresses_with_sui(vec![addr], None)
+                .await
+                .expect("failed to fund address with SUI");
+        }
+
+        // Fund with WAL for storage.
+        fund_with_wal(&self.walrus_client, &self.rpc_url, addr, WAL_FUND_AMOUNT).await;
     }
 }
 
