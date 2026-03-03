@@ -309,14 +309,9 @@ curl http://localhost:3000/blobs/<object_id>
 
 ### Full stack (with Walrus)
 
-Requires a running Walrus local testbed. See `scripts/local-testbed.sh`:
-
-```bash
-./scripts/local-testbed.sh --walrus-working-dir ~/src/walrus/working_dir
-```
-
-This starts Pearl and Oyster in tmux sessions, creates and funds a test account, and prints
-connection details.
+For manual full-stack development, use `scripts/local-testbed.sh` against an already-running
+Walrus local testbed. This starts Pearl and Oyster in tmux sessions, creates and funds a test
+account, and prints connection details.
 
 ### Running tests
 
@@ -328,7 +323,7 @@ chk
 cargo test -p pearl
 cargo test -p oyster
 
-# E2E tests (requires Walrus testbed)
+# E2E tests (boots Sui + Walrus in-process, ~30s startup)
 cargo test -p oyster-e2e-tests -- --ignored
 ```
 

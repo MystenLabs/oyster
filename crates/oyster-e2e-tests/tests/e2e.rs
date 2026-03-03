@@ -71,7 +71,7 @@ async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
 /// This test exercises the real Walrus pipeline: encoding → on-chain registration via Pearl
 /// signing → sliver upload to storage nodes → certification → aggregator read.
 #[test]
-#[ignore = "requires walrus test cluster (~30s startup)"]
+#[ignore = "boots in-process Sui + Walrus cluster (~30s startup)"]
 fn e2e_blob_lifecycle() {
     run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -176,7 +176,7 @@ fn e2e_blob_lifecycle() {
 /// Test storing multiple blobs and verifying content-addressed dedup works through the real
 /// Walrus pipeline.
 #[test]
-#[ignore = "requires walrus test cluster (~30s startup)"]
+#[ignore = "boots in-process Sui + Walrus cluster (~30s startup)"]
 fn e2e_content_dedup() {
     run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -225,7 +225,7 @@ fn e2e_content_dedup() {
 
 /// Test the wallet provisioning flow through the real stack.
 #[test]
-#[ignore = "requires walrus test cluster (~30s startup)"]
+#[ignore = "boots in-process Sui + Walrus cluster (~30s startup)"]
 fn e2e_wallet_provisioning() {
     run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
@@ -261,7 +261,7 @@ fn e2e_wallet_provisioning() {
 
 /// Verify deterministic wallet address derivation through the full Oyster→Pearl stack.
 #[test]
-#[ignore = "requires walrus test cluster (~30s startup)"]
+#[ignore = "boots in-process Sui + Walrus cluster (~30s startup)"]
 fn e2e_deterministic_wallet_address() {
     run_e2e(async {
         let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();

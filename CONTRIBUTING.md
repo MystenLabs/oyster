@@ -40,7 +40,7 @@ cargo test -p pearl
 # Oyster unit + integration tests
 cargo test -p oyster
 
-# E2E tests (requires Walrus local testbed, ~30s startup)
+# E2E tests (boots Sui + Walrus in-process, ~30s startup)
 cargo test -p oyster-e2e-tests -- --ignored
 ```
 
@@ -220,9 +220,9 @@ Use `json_response()` and `raw_response()` helpers to send requests and inspect 
 
 ### E2E tests
 
-E2E tests require a Walrus local testbed. They boot the full stack in-process:
-Sui test cluster, Walrus storage nodes, Pearl, and Oyster. Tests are `#[ignore]` by default
-and take ~30 seconds to start.
+E2E tests boot the full stack in-process (Sui test cluster, Walrus storage nodes, Pearl, and
+Oyster) — no external Walrus testbed is needed. Tests are `#[ignore]` by default and take
+~30 seconds to start.
 
 ```bash
 cargo test -p oyster-e2e-tests -- --ignored
@@ -254,7 +254,8 @@ Checked by a tonic interceptor in `crates/pearl/src/auth.rs`.
 
 ## Local development with Walrus
 
-The `scripts/local-testbed.sh` script automates the full-stack setup:
+For manual testing against a running Walrus local testbed (separate from the e2e tests, which
+boot their own in-process cluster), use `scripts/local-testbed.sh`:
 
 ```bash
 # Start (requires a running Walrus testbed)
