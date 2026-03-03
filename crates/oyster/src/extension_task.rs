@@ -6,7 +6,7 @@ use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
 use crate::{
     db::{self, DbPool},
     pearl_client::PearlConnection,
-    sui_transaction::{self, BalanceInfo},
+    sui_transaction,
 };
 
 /// Configuration for the background blob extension task.
@@ -18,8 +18,6 @@ pub struct ExtensionConfig {
     pub lookahead_days: u32,
     /// Number of Walrus epochs to extend blobs by.
     pub extend_epochs: u32,
-    /// Optional WAL coin type string for balance checks.
-    pub wal_coin_type: Option<String>,
 }
 
 /// Run the background loop that periodically extends expiring blobs on Walrus.
@@ -74,9 +72,7 @@ pub async fn run_extension_loop(
 
         let mut extended = 0u32;
         let mut errors = 0u32;
-        let mut skipped = 0u32;
         let mut address_cache: HashMap<String, SuiAddress> = HashMap::new();
-        let mut balance_cache: HashMap<String, BalanceInfo> = HashMap::new();
 
         for blob in &blobs {
             // Resolve sender address (cached per account per cycle).
@@ -102,42 +98,6 @@ pub async fn run_extension_loop(
                     }
                 }
             };
-
-            // Check balance (cached per account per cycle).
-            if !balance_cache.contains_key(&blob.pearl_account_id) {
-                match sui_transaction::check_balance(
-                    &rpc_url,
-                    sender_address,
-                    config.wal_coin_type.as_deref(),
-                )
-                .await
-                {
-                    Ok(info) => {
-                        balance_cache.insert(blob.pearl_account_id.clone(), info);
-                    }
-                    Err(e) => {
-                        tracing::warn!(
-                            pearl_account_id = %blob.pearl_account_id,
-                            error = %e,
-                            "failed to check balance, proceeding anyway"
-                        );
-                    }
-                }
-            }
-
-            if let Some(reason) = should_skip_for_balance(
-                balance_cache.get(&blob.pearl_account_id),
-                blob.min_sui_balance,
-                blob.min_wal_balance,
-            ) {
-                tracing::warn!(
-                    pearl_account_id = %blob.pearl_account_id,
-                    reason,
-                    "skipping blob due to insufficient balance"
-                );
-                skipped += 1;
-                continue;
-            }
 
             if let Err(e) = extend_single_blob(
                 &read_client,
@@ -182,7 +142,7 @@ pub async fn run_extension_loop(
             extended += 1;
         }
 
-        tracing::info!(extended, errors, skipped, "extension cycle complete");
+        tracing::info!(extended, errors, "extension cycle complete");
     }
 }
 
@@ -207,84 +167,4 @@ async fn extend_single_blob(
     sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data).await?;
 
     Ok(())
-}
-
-/// Returns `Some(reason)` if the blob should be skipped due to insufficient balance,
-/// or `None` if the blob should proceed to extension.
-fn should_skip_for_balance(
-    balance: Option<&BalanceInfo>,
-    min_sui_balance: i64,
-    min_wal_balance: i64,
-) -> Option<&'static str> {
-    let balance = balance?;
-    if balance.sui_balance < min_sui_balance as u128 {
-        return Some("SUI balance below threshold");
-    }
-    if let Some(wal) = balance.wal_balance
-        && wal < min_wal_balance as u128
-    {
-        return Some("WAL balance below threshold");
-    }
-    None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn skip_when_sui_below_threshold() {
-        let balance = BalanceInfo {
-            sui_balance: 100,
-            wal_balance: Some(1000),
-        };
-        let result = should_skip_for_balance(Some(&balance), 500, 0);
-        assert_eq!(result, Some("SUI balance below threshold"));
-    }
-
-    #[test]
-    fn skip_when_wal_below_threshold() {
-        let balance = BalanceInfo {
-            sui_balance: 1000,
-            wal_balance: Some(50),
-        };
-        let result = should_skip_for_balance(Some(&balance), 500, 100);
-        assert_eq!(result, Some("WAL balance below threshold"));
-    }
-
-    #[test]
-    fn no_skip_when_balances_sufficient() {
-        let balance = BalanceInfo {
-            sui_balance: 1000,
-            wal_balance: Some(500),
-        };
-        let result = should_skip_for_balance(Some(&balance), 500, 100);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn no_skip_when_balance_unavailable() {
-        let result = should_skip_for_balance(None, 500, 100);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn no_skip_when_thresholds_zero() {
-        let balance = BalanceInfo {
-            sui_balance: 0,
-            wal_balance: Some(0),
-        };
-        let result = should_skip_for_balance(Some(&balance), 0, 0);
-        assert_eq!(result, None);
-    }
-
-    #[test]
-    fn no_skip_when_wal_balance_absent() {
-        let balance = BalanceInfo {
-            sui_balance: 1000,
-            wal_balance: None,
-        };
-        let result = should_skip_for_balance(Some(&balance), 500, 100);
-        assert_eq!(result, None);
-    }
 }

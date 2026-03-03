@@ -8,14 +8,6 @@ pub struct Account {
     pub id: String,
     /// Associated Pearl wallet account ID, if provisioned.
     pub pearl_account_id: Option<String>,
-    /// Minimum SUI balance before skipping blob extensions (in MIST).
-    pub min_sui_balance: i64,
-    /// Minimum WAL balance before skipping blob extensions (in FROST).
-    pub min_wal_balance: i64,
-    /// Target SUI balance for top-ups (in MIST).
-    pub top_up_target_sui: i64,
-    /// Target WAL balance for top-ups (in FROST).
-    pub top_up_target_wal: i64,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-update timestamp.
@@ -100,10 +92,6 @@ pub struct ExpiringBlob {
     pub expires_at: String,
     /// Pearl wallet account ID of the blob owner.
     pub pearl_account_id: String,
-    /// Minimum SUI balance threshold (in MIST).
-    pub min_sui_balance: i64,
-    /// Minimum WAL balance threshold (in FROST).
-    pub min_wal_balance: i64,
 }
 
 // Request types

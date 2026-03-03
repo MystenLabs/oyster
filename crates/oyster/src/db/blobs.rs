@@ -229,8 +229,7 @@ pub async fn get_expiring_blobs_with_accounts(
     limit: i64,
 ) -> Result<Vec<ExpiringBlob>, sqlx::Error> {
     sqlx::query_as::<_, ExpiringBlob>(
-        "SELECT b.sui_object_id, b.size, b.expires_at, a.pearl_account_id, \
-                a.min_sui_balance, a.min_wal_balance \
+        "SELECT b.sui_object_id, b.size, b.expires_at, a.pearl_account_id \
          FROM blobs b \
          JOIN accounts a ON b.account_id = a.id \
          WHERE b.sui_object_id IS NOT NULL \
@@ -503,8 +502,6 @@ mod tests {
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].sui_object_id, "0xpa1");
         assert_eq!(blobs[0].pearl_account_id, "pearl-123");
-        assert_eq!(blobs[0].min_sui_balance, 0);
-        assert_eq!(blobs[0].min_wal_balance, 0);
     }
 
     #[tokio::test]
@@ -540,62 +537,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blobs.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn get_expiring_blobs_with_accounts_custom_thresholds() {
-        let pool = test_pool().await;
-        let account_id = uuid::Uuid::new_v4().to_string();
-        let bucket_id = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO accounts (id, pearl_account_id, min_sui_balance, min_wal_balance) VALUES (?, ?, ?, ?)",
-        )
-        .bind(&account_id)
-        .bind("pearl-thresh")
-        .bind(1_000_000i64)
-        .bind(500_000i64)
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query("INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?)")
-            .bind(&bucket_id)
-            .bind(&account_id)
-            .bind("test-bucket")
-            .execute(&pool)
-            .await
-            .unwrap();
-
-        let expires_at = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(3))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
-        insert_blob(
-            &pool,
-            "blob-hash-thresh",
-            &bucket_id,
-            &account_id,
-            "text/plain",
-            100,
-            &expires_at,
-            Some("0xthresh1"),
-        )
-        .await
-        .unwrap();
-
-        let cutoff = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(7))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let blobs = get_expiring_blobs_with_accounts(&pool, &cutoff, 100)
-            .await
-            .unwrap();
-        assert_eq!(blobs.len(), 1);
-        assert_eq!(blobs[0].pearl_account_id, "pearl-thresh");
-        assert_eq!(blobs[0].min_sui_balance, 1_000_000);
-        assert_eq!(blobs[0].min_wal_balance, 500_000);
     }
 
     #[tokio::test]
@@ -649,7 +590,5 @@ mod tests {
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].sui_object_id, "0xmixed1");
         assert_eq!(blobs[0].pearl_account_id, "pearl-mixed");
-        assert_eq!(blobs[0].min_sui_balance, 0);
-        assert_eq!(blobs[0].min_wal_balance, 0);
     }
 }

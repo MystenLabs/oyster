@@ -33,8 +33,6 @@ pub struct Config {
     pub blob_extend_lookahead_days: u32,
     /// Number of epochs to extend blobs by.
     pub blob_extend_epochs: u32,
-    /// Optional WAL coin type string for balance checks.
-    pub wal_coin_type: Option<String>,
 }
 
 impl Config {
@@ -74,7 +72,6 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
-            wal_coin_type: std::env::var("WAL_COIN_TYPE").ok(),
         }
     }
 }

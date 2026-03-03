@@ -13,41 +13,6 @@ use walrus_utils::backoff::ExponentialBackoffConfig;
 
 use crate::pearl_client::PearlConnection;
 
-/// SUI and WAL balance information for a wallet address.
-pub struct BalanceInfo {
-    /// Total SUI balance in MIST.
-    pub sui_balance: u128,
-    /// Total WAL balance in FROST, if a WAL coin type was queried.
-    pub wal_balance: Option<u128>,
-}
-
-/// Query the SUI and optionally WAL balance for the given address.
-pub async fn check_balance(
-    rpc_url: &str,
-    address: SuiAddress,
-    wal_coin_type: Option<&str>,
-) -> Result<BalanceInfo, Box<dyn std::error::Error + Send + Sync>> {
-    let sui_client = SuiClientBuilder::default().build(rpc_url).await?;
-    let sui_bal = sui_client
-        .coin_read_api()
-        .get_balance(address, None)
-        .await?;
-    let wal_balance = match wal_coin_type {
-        Some(coin_type) => {
-            let wal_bal = sui_client
-                .coin_read_api()
-                .get_balance(address, Some(coin_type.to_string()))
-                .await?;
-            Some(wal_bal.total_balance)
-        }
-        None => None,
-    };
-    Ok(BalanceInfo {
-        sui_balance: sui_bal.total_balance,
-        wal_balance,
-    })
-}
-
 /// Build a `SuiReadClient` connected to the given RPC and Walrus contracts.
 pub async fn build_sui_read_client(
     rpc_url: &str,
