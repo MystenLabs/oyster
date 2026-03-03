@@ -9,60 +9,6 @@
 For E2E tests, you'll additionally need a local [Walrus](https://github.com/MystenLabs/walrus)
 checkout at `~/src/walrus/`.
 
-## Repository layout
-
-```
-oyster/
-  Cargo.toml                    # Workspace root
-  crates/
-    oyster/                     # HTTP API server
-      migrations/               # SQLite migrations (run automatically on startup)
-      src/
-        main.rs                 # Entry point, blob store selection, background tasks
-        lib.rs                  # AppState, module declarations
-        routes/                 # Axum route handlers (account, blobs, buckets)
-        db/                     # SQLite queries (accounts, api_keys, buckets, blobs)
-        blob_store.rs           # BlobStore trait + LocalBlobStore
-        walrus_blob_store.rs    # HTTP-based Walrus publisher integration
-        direct_walrus_store.rs  # Full on-chain Walrus integration via PTBs
-        pearl_client.rs         # gRPC client wrapper for Pearl
-        sui_transaction.rs      # sign_and_submit, SuiReadClient builder
-        extension_task.rs       # Background blob expiry extension loop
-        auth.rs                 # API key generation, hashing, verification
-        pagination.rs           # Cursor-based pagination helpers
-        config.rs               # Environment variable configuration
-        error.rs                # AppError -> HTTP status mapping
-        models.rs               # Serde models for API request/response
-      tests/
-        integration.rs          # Full HTTP integration tests
-      build.rs                  # Proto compilation (client-side)
-    pearl/                      # gRPC wallet custody service
-      proto/pearl.proto         # Protobuf service definition
-      migrations/               # SQLite migrations
-      src/
-        main.rs                 # Entry point, reconciliation task spawn
-        lib.rs                  # Module declarations
-        grpc.rs                 # gRPC handlers + proto include
-        db/
-          accounts.rs           # Account CRUD, balance queries
-          pending_transactions.rs # Pending tx create/confirm/timeout
-        signing.rs              # Ed25519 transaction signing
-        reconciliation.rs       # Background on-chain balance sync
-        auth.rs                 # Shared-secret gRPC interceptor
-        config.rs               # Environment variable configuration
-        error.rs                # Error enum
-        models.rs               # Account, PendingTransaction, CachedBalance
-      tests/
-        integration.rs          # gRPC integration tests
-      build.rs                  # Proto compilation (server-side)
-    oyster-cli/                 # CLI client
-      src/main.rs               # clap-based CLI with subcommands
-    oyster-e2e-tests/           # E2E test crate
-      src/lib.rs                # OysterTestHarness, full-stack test setup
-  scripts/
-    local-testbed.sh            # Start Pearl + Oyster against Walrus testbed
-```
-
 ## Building
 
 ```bash
@@ -83,8 +29,7 @@ chk
 This runs `cargo fmt` (with project-specific formatting options) followed by
 `cargo clippy --fix` and other checks. Always run `chk` before committing.
 
-**Important:** Never run `cargo check -p <crate>` on individual sub-crates. Always use `chk`
-to verify the full workspace, since cross-crate changes are common.
+**Important:** Always use `chk` to verify the full workspace, since cross-crate changes are common.
 
 ## Running tests
 
