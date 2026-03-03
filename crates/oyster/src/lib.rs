@@ -24,8 +24,6 @@ pub mod pearl_client;
 pub mod routes;
 /// Sui transaction building, signing, and submission helpers.
 pub mod sui_transaction;
-/// Walrus blob store using the publisher/aggregator HTTP API.
-pub mod walrus_blob_store;
 
 use std::sync::Arc;
 

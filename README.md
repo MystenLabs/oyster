@@ -109,7 +109,6 @@ Oyster selects a blob store at startup based on environment variables:
 | Implementation | When selected | On-chain? | Signing? |
 |---|---|---|---|
 | `LocalBlobStore` | No Walrus config | No | No |
-| `WalrusBlobStore` | `WALRUS_PUBLISHER_URL` + `WALRUS_AGGREGATOR_URL` | Publisher handles it | No |
 | `DirectWalrusBlobStore` | Pearl + Sui RPC + Walrus system/staking objects | Yes (PTBs) | Via Pearl |
 
 `DirectWalrusBlobStore` is the production path. It:
@@ -151,7 +150,6 @@ All configuration is via environment variables.
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | `dev-secret` | Shared secret for Pearl auth |
 | `PEARL_ACCOUNT_ID` | -- | Default Pearl account for operator transactions |
-| `WALRUS_PUBLISHER_URL` | -- | Walrus publisher HTTP URL |
 | `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
 | `WALRUS_DEFAULT_EPOCHS` | `5` | Storage epochs for new blobs |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |

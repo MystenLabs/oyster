@@ -15,8 +15,6 @@ pub struct Config {
     pub pearl_grpc_url: Option<String>,
     /// Shared secret for authenticating with Pearl.
     pub pearl_service_secret: String,
-    /// Optional Walrus publisher HTTP URL.
-    pub walrus_publisher_url: Option<String>,
     /// Optional Walrus aggregator HTTP URL.
     pub walrus_aggregator_url: Option<String>,
     /// Default number of Walrus storage epochs.
@@ -51,7 +49,6 @@ impl Config {
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
             pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
                 .unwrap_or_else(|_| "dev-secret".into()),
-            walrus_publisher_url: std::env::var("WALRUS_PUBLISHER_URL").ok(),
             walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
             walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
                 .ok()

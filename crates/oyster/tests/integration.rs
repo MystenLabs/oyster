@@ -107,7 +107,7 @@ async fn test_app() -> (Router, TempDir) {
         enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
-        walrus_publisher_url: None,
+
         walrus_aggregator_url: None,
         walrus_default_epochs: 5,
         sui_rpc_url: None,
@@ -145,7 +145,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
-        walrus_publisher_url: None,
+
         walrus_aggregator_url: None,
         walrus_default_epochs: 5,
         sui_rpc_url: None,
@@ -894,7 +894,7 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
         enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
-        walrus_publisher_url: None,
+
         walrus_aggregator_url: None,
         walrus_default_epochs: 5,
         sui_rpc_url: None,

@@ -142,7 +142,7 @@ impl OysterTestHarness {
             enable_debug_endpoints: true,
             pearl_grpc_url: Some("in-process".into()),
             pearl_service_secret: PEARL_SECRET.into(),
-            walrus_publisher_url: None,
+
             walrus_aggregator_url: None,
             walrus_default_epochs: 1,
             sui_rpc_url: None,

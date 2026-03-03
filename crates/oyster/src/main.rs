@@ -11,7 +11,6 @@ use oyster::{
     direct_walrus_store::DirectWalrusBlobStore,
     pearl_client::PearlConnection,
     routes,
-    walrus_blob_store::WalrusBlobStore,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
@@ -99,29 +98,12 @@ async fn main() {
                     .expect("failed to initialize direct Walrus blob store"),
                 )
             } else {
-                match (&config.walrus_publisher_url, &config.walrus_aggregator_url) {
-                    (Some(pub_url), Some(agg_url)) => {
-                        tracing::info!(
-                            "using Walrus blob store (publisher={pub_url}, aggregator={agg_url})"
-                        );
-                        Arc::new(WalrusBlobStore::new(
-                            pub_url.clone(),
-                            agg_url.clone(),
-                            config.walrus_default_epochs,
-                        ))
-                    }
-                    (Some(_), None) => {
-                        panic!("WALRUS_PUBLISHER_URL is set but WALRUS_AGGREGATOR_URL is not");
-                    }
-                    _ => {
-                        tracing::info!("using local blob store at {:?}", config.blob_store_path);
-                        Arc::new(
-                            LocalBlobStore::new(config.blob_store_path.clone())
-                                .await
-                                .expect("failed to initialize blob store"),
-                        )
-                    }
-                }
+                tracing::info!("using local blob store at {:?}", config.blob_store_path);
+                Arc::new(
+                    LocalBlobStore::new(config.blob_store_path.clone())
+                        .await
+                        .expect("failed to initialize blob store"),
+                )
             };
 
             let state = AppState {

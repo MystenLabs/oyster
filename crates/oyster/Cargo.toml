@@ -42,7 +42,6 @@ pearl = { path = "../pearl" }
 tempfile = "3.25.0"
 tokio-stream = "0.1.18"
 tower = { version = "0.5.3", features = ["util"] }
-wiremock = "0.6.5"
 
 [lints]
 workspace = true
