@@ -6,9 +6,6 @@
 - **protoc** -- `brew install protobuf` on macOS, `apt install protobuf-compiler` on Debian
 - **SQLite3** -- typically pre-installed; the Rust `sqlx` crate bundles `libsqlite3-sys`
 
-For E2E tests, you'll additionally need a local [Walrus](https://github.com/MystenLabs/walrus)
-checkout at `~/src/walrus/`.
-
 ## Building
 
 ```bash
@@ -41,7 +38,7 @@ cargo test -p pearl
 cargo test -p oyster
 
 # E2E tests (boots Sui + Walrus in-process, ~30s startup)
-cargo test -p oyster-e2e-tests -- --ignored
+cargo test -p oyster-e2e-tests
 ```
 
 Integration tests for both crates spin up in-process gRPC/HTTP servers on random ports with
@@ -221,11 +218,10 @@ Use `json_response()` and `raw_response()` helpers to send requests and inspect 
 ### E2E tests
 
 E2E tests boot the full stack in-process (Sui test cluster, Walrus storage nodes, Pearl, and
-Oyster) — no external Walrus testbed is needed. Tests are `#[ignore]` by default and take
-~30 seconds to start.
+Oyster) — no external Walrus testbed is needed. They take ~30 seconds to start.
 
 ```bash
-cargo test -p oyster-e2e-tests -- --ignored
+cargo test -p oyster-e2e-tests
 ```
 
 ## Error handling
