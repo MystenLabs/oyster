@@ -1,13 +1,12 @@
 use super::DbPool;
 use crate::{error::Error, models::Account};
 
-/// Insert a new account with the given credentials.
-pub async fn create_account(pool: &DbPool, credentials: &str) -> Result<Account, Error> {
+/// Insert a new account.
+pub async fn create_account(pool: &DbPool) -> Result<Account, Error> {
     let id = uuid::Uuid::new_v4().to_string();
 
-    sqlx::query("INSERT INTO accounts (id, credentials) VALUES (?, ?)")
+    sqlx::query("INSERT INTO accounts (id) VALUES (?)")
         .bind(&id)
-        .bind(credentials)
         .execute(pool)
         .await?;
 
@@ -17,7 +16,7 @@ pub async fn create_account(pool: &DbPool, credentials: &str) -> Result<Account,
 /// Fetch an account by ID, returning `AccountNotFound` if it does not exist.
 pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     sqlx::query_as::<_, Account>(
-        "SELECT id, credentials, created_at, updated_at
+        "SELECT id, created_at, updated_at
          FROM accounts WHERE id = ?",
     )
     .bind(id)
@@ -53,10 +52,9 @@ mod tests {
     async fn create_account_returns_well_formed_account() {
         let pool = test_pool().await;
 
-        let account = create_account(&pool, "cred-abc").await.unwrap();
+        let account = create_account(&pool).await.unwrap();
 
         assert!(!account.id.is_empty());
-        assert_eq!(account.credentials, "cred-abc");
         assert!(!account.created_at.is_empty());
         assert!(!account.updated_at.is_empty());
     }
@@ -76,7 +74,7 @@ mod tests {
     async fn account_exists_returns_ok() {
         let pool = test_pool().await;
 
-        let account = create_account(&pool, "cred").await.unwrap();
+        let account = create_account(&pool).await.unwrap();
         account_exists(&pool, &account.id).await.unwrap();
     }
 

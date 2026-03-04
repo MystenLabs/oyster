@@ -9,10 +9,6 @@ pub enum Error {
     #[error("account not found")]
     AccountNotFound,
 
-    /// The provided credentials are invalid.
-    #[error("invalid credentials")]
-    InvalidCredentials,
-
     /// The derived private key is invalid.
     #[error("invalid private key: {0}")]
     InvalidPrivateKey(String),

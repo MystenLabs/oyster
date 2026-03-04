@@ -23,9 +23,7 @@ impl Pearl for PearlService {
         &self,
         _request: Request<proto::CreateAccountRequest>,
     ) -> Result<Response<proto::CreateAccountResponse>, Status> {
-        let credentials = uuid::Uuid::new_v4().to_string();
-
-        let account = db::accounts::create_account(&self.db, &credentials)
+        let account = db::accounts::create_account(&self.db)
             .await
             .map_err(to_status)?;
 
@@ -73,7 +71,6 @@ impl Pearl for PearlService {
 fn to_status(err: crate::error::Error) -> Status {
     match err {
         crate::error::Error::AccountNotFound => Status::not_found("account not found"),
-        crate::error::Error::InvalidCredentials => Status::unauthenticated("invalid credentials"),
         crate::error::Error::Db(e) => Status::internal(format!("database error: {e}")),
         crate::error::Error::InvalidPrivateKey(e) => {
             Status::internal(format!("invalid private key: {e}"))
