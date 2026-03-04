@@ -11,7 +11,6 @@ fn row_to_blob(row: sqlx::sqlite::SqliteRow) -> BlobMetadata {
         account_id: row.get("account_id"),
         content_type: row.get("content_type"),
         size: row.get("size"),
-        auto_extend_duration: row.get("auto_extend_duration"),
         sui_object_id: row.get("sui_object_id"),
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
@@ -31,11 +30,10 @@ pub async fn insert_blob(
     sui_object_id: Option<&str>,
 ) -> Result<BlobMetadata, sqlx::Error> {
     let object_id = Uuid::new_v4().to_string();
-    let auto_extend_duration = "30d";
     let row = sqlx::query(
-        "INSERT INTO blobs (object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, expires_at, sui_object_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
-         RETURNING object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at",
+        "INSERT INTO blobs (object_id, blob_id, bucket_id, account_id, content_type, size, expires_at, sui_object_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
+         RETURNING object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at",
     )
     .bind(&object_id)
     .bind(blob_id)
@@ -43,7 +41,6 @@ pub async fn insert_blob(
     .bind(account_id)
     .bind(content_type)
     .bind(size)
-    .bind(auto_extend_duration)
     .bind(expires_at)
     .bind(sui_object_id)
     .fetch_one(pool)
@@ -58,7 +55,7 @@ pub async fn get_blob_by_object_id(
     object_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs WHERE object_id = ?",
     )
     .bind(object_id)
@@ -75,7 +72,7 @@ pub async fn get_blob_by_blob_id(
     blob_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs WHERE blob_id = ? LIMIT 1",
     )
     .bind(blob_id)
@@ -97,7 +94,7 @@ pub async fn list_blobs_in_bucket(
     let rows = match (after_created_at, after_id) {
         (Some(created_at), Some(id)) => {
             sqlx::query(
-                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at \
+                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
                  FROM blobs WHERE bucket_id = ? AND account_id = ? AND (created_at, object_id) > (?, ?) \
                  ORDER BY created_at, object_id LIMIT ?",
             )
@@ -111,7 +108,7 @@ pub async fn list_blobs_in_bucket(
         }
         _ => {
             sqlx::query(
-                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at \
+                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
                  FROM blobs WHERE bucket_id = ? AND account_id = ? ORDER BY created_at, object_id LIMIT ?",
             )
             .bind(bucket_id)
@@ -124,43 +121,19 @@ pub async fn list_blobs_in_bucket(
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
 
-/// Update a blob's content type and/or auto-extend duration.
+/// Update a blob's content type.
 pub async fn update_blob_metadata(
     pool: &SqlitePool,
     object_id: &str,
     account_id: &str,
-    content_type: Option<&str>,
-    auto_extend_duration: Option<&str>,
+    content_type: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
-    if let Some(ct) = content_type {
-        if let Some(aed) = auto_extend_duration {
-            sqlx::query(
-                "UPDATE blobs SET content_type = ?, auto_extend_duration = ? WHERE object_id = ? AND account_id = ?",
-            )
-            .bind(ct)
-            .bind(aed)
-            .bind(object_id)
-            .bind(account_id)
-            .execute(pool)
-            .await?;
-        } else {
-            sqlx::query("UPDATE blobs SET content_type = ? WHERE object_id = ? AND account_id = ?")
-                .bind(ct)
-                .bind(object_id)
-                .bind(account_id)
-                .execute(pool)
-                .await?;
-        }
-    } else if let Some(aed) = auto_extend_duration {
-        sqlx::query(
-            "UPDATE blobs SET auto_extend_duration = ? WHERE object_id = ? AND account_id = ?",
-        )
-        .bind(aed)
+    sqlx::query("UPDATE blobs SET content_type = ? WHERE object_id = ? AND account_id = ?")
+        .bind(content_type)
         .bind(object_id)
         .bind(account_id)
         .execute(pool)
         .await?;
-    }
 
     get_blob_by_object_id(pool, object_id).await
 }
@@ -208,9 +181,9 @@ pub async fn get_expiring_blobs(
     limit: i64,
 ) -> Result<Vec<BlobMetadata>, sqlx::Error> {
     let rows = sqlx::query(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs \
-         WHERE sui_object_id IS NOT NULL AND auto_extend_duration IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ? \
+         WHERE sui_object_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ? \
          ORDER BY expires_at \
          LIMIT ?",
     )
@@ -233,7 +206,6 @@ pub async fn get_expiring_blobs_with_accounts(
          FROM blobs b \
          JOIN accounts a ON b.account_id = a.id \
          WHERE b.sui_object_id IS NOT NULL \
-           AND b.auto_extend_duration IS NOT NULL \
            AND b.expires_at IS NOT NULL \
            AND b.expires_at < ? \
            AND a.pearl_account_id IS NOT NULL \
@@ -364,44 +336,6 @@ mod tests {
             &expires_at,
             None,
         )
-        .await
-        .unwrap();
-
-        let cutoff = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(7))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let blobs = get_expiring_blobs(&pool, &cutoff, 100).await.unwrap();
-        assert_eq!(blobs.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn get_expiring_blobs_skips_no_auto_extend() {
-        let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
-
-        let expires_at = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(3))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
-        // Insert blob with sui_object_id but null auto_extend_duration
-        let oid = uuid::Uuid::new_v4().to_string();
-        sqlx::query(
-            "INSERT INTO blobs (object_id, blob_id, bucket_id, account_id, content_type, size, auto_extend_duration, expires_at, sui_object_id) \
-             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)",
-        )
-        .bind(&oid)
-        .bind("blob-hash-3")
-        .bind(&bucket_id)
-        .bind(&account_id)
-        .bind("text/plain")
-        .bind(100i64)
-        .bind(&expires_at)
-        .bind("0xdef456")
-        .execute(&pool)
         .await
         .unwrap();
 

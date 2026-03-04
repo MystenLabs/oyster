@@ -70,8 +70,6 @@ pub struct BlobMetadata {
     pub content_type: String,
     /// Size in bytes.
     pub size: i64,
-    /// Duration string for automatic lease extension (e.g. `"30d"`).
-    pub auto_extend_duration: Option<String>,
     /// On-chain Sui object ID for the blob, if stored on Walrus.
     pub sui_object_id: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -108,8 +106,6 @@ pub struct CreateBucketRequest {
 pub struct UpdateBlobMetadataRequest {
     /// New MIME content type.
     pub content_type: Option<String>,
-    /// New auto-extend duration string.
-    pub auto_extend_duration: Option<String>,
 }
 
 // Response types

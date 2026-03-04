@@ -18,7 +18,6 @@ pub struct BlobMetadata {
     pub account_id: String,
     pub content_type: String,
     pub size: i64,
-    pub auto_extend_duration: Option<String>,
     pub sui_object_id: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,

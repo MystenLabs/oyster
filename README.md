@@ -96,7 +96,7 @@ Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`
 | `GET` | `/buckets/{bucket_id}/blobs` | Yes | List blobs in bucket (paginated) |
 | `GET` | `/blobs/{object_id}` | No | Read blob by object ID |
 | `GET` | `/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
-| `PATCH` | `/blobs/{object_id}/metadata` | Yes | Update content type / auto-extend |
+| `PATCH` | `/blobs/{object_id}/metadata` | Yes | Update content type |
 | `DELETE` | `/blobs/{object_id}` | Yes | Delete blob |
 
 Pagination is cursor-based. Pass `?limit=N&cursor=TOKEN` to paginate; the response includes

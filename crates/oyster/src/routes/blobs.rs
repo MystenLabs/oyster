@@ -225,28 +225,22 @@ pub async fn read_blob_by_blob_id(
         (status = 404, description = "Blob not found", body = ErrorResponse),
     ),
 )]
-/// Update a blob's metadata (content type or auto-extend duration). At least one field must be provided.
+/// Update a blob's content type.
 pub async fn update_blob_metadata(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
     Path(object_id): Path<String>,
     Json(body): Json<UpdateBlobMetadataRequest>,
 ) -> Result<Json<BlobMetadata>, AppError> {
-    if body.content_type.is_none() && body.auto_extend_duration.is_none() {
-        return Err(AppError::BadRequest(
-            "at least one field must be provided".into(),
-        ));
-    }
+    let content_type = body
+        .content_type
+        .as_deref()
+        .ok_or_else(|| AppError::BadRequest("content_type must be provided".into()))?;
 
-    let metadata = db::blobs::update_blob_metadata(
-        &state.db,
-        &object_id,
-        &auth.account_id,
-        body.content_type.as_deref(),
-        body.auto_extend_duration.as_deref(),
-    )
-    .await?
-    .ok_or(AppError::NotFound)?;
+    let metadata =
+        db::blobs::update_blob_metadata(&state.db, &object_id, &auth.account_id, content_type)
+            .await?
+            .ok_or(AppError::NotFound)?;
 
     Ok(Json(metadata))
 }

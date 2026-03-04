@@ -108,14 +108,14 @@ Buckets are an organizational primitive. They exist for usage tracking, reportin
   - `Content-Type` - stored as blob metadata, returned on read by object ID. Not available when reading by blob ID (blob ID is content-addressed and has no per-registration metadata).
   - `X-Walrus-Deletable: true|false` (default: `true`) - immutable after creation.
   - `X-Walrus-Duration: <duration>` - initial storage duration (e.g., `30d`, `6m`, `1y`). Also sets the auto-renewal increment for this blob. The service converts durations to epoch counts internally (Walrus epochs are ~2 weeks, so the service rounds up - minor over-reservation is expected and should be documented). If not specified, defaults to TBD.
-- Returns: `{ "object_id": "...", "blob_id": "...", "expires": "<iso8601>", "auto_extend_duration": "<duration>" }`
+- Returns: `{ "object_id": "...", "blob_id": "...", "expires": "<iso8601>" }`
 - **Open question**: Maximum blob size? Walrus has a practical encoding limit based on committee size. The service should enforce and document this.
 - **Multipart upload**: Planned but not in v1.
 
 ### List Blobs
 
 - `GET /buckets/<bucket_id>/blobs`
-- Returns blobs in the bucket with metadata (object ID, blob ID, size, content type, expiration, deletable, auto-extend duration).
+- Returns blobs in the bucket with metadata (object ID, blob ID, size, content type, expiration, deletable).
 - Supports pagination (`cursor`, `limit`).
 
 ### Read Blob
@@ -131,8 +131,8 @@ Buckets are an organizational primitive. They exist for usage tracking, reportin
 ### Update Blob Metadata
 
 - `PATCH /blobs/<object_id>/metadata`
-- Body: `{ "content_type": "...", "auto_extend_duration": "<duration>" }`
-- `content_type` and `auto_extend_duration` are service-layer metadata and are mutable. On-chain properties (deletable, blob ID) are immutable.
+- Body: `{ "content_type": "..." }`
+- `content_type` is service-layer metadata and is mutable. On-chain properties (deletable, blob ID) are immutable.
 
 ### Delete Blob
 
