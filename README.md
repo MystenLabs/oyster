@@ -148,7 +148,7 @@ All configuration is via environment variables.
 | `BLOB_STORE_PATH` | `blob_store` | Path for LocalBlobStore |
 | `ENABLE_DEBUG` | `true` | Enable `/debug/*` endpoints |
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
-| `PEARL_SERVICE_SECRET` | `dev-secret` | Shared secret for Pearl auth |
+| `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
 | `PEARL_ACCOUNT_ID` | -- | Default Pearl account for operator transactions |
 | `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
 | `WALRUS_DEFAULT_EPOCHS` | `5` | Storage epochs for new blobs |
@@ -244,7 +244,7 @@ SQLite with WAL journal mode. Migrations in `crates/pearl/migrations/`:
 |----------|---------|-------------|
 | `PEARL_DATABASE_URL` | `sqlite:pearl.db?mode=rwc` | SQLite connection string |
 | `PEARL_BIND_ADDR` | `0.0.0.0:50051` | gRPC listen address |
-| `PEARL_SERVICE_SECRET` | `dev-secret` | Shared secret for service auth |
+| `PEARL_SERVICE_SECRET` | -- | Shared secret for service auth (**required**) |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint (enables reconciliation) |
 | `WAL_COIN_TYPE` | -- | Fully-qualified WAL coin type for balance queries |
 | `PEARL_RECONCILIATION_INTERVAL_SECS` | `300` | Reconciliation loop interval |

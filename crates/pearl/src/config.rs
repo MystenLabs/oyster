@@ -55,7 +55,7 @@ impl Config {
                 .unwrap_or_else(|_| "sqlite:pearl.db?mode=rwc".into()),
             bind_addr: std::env::var("PEARL_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".into()),
             service_secret: std::env::var("PEARL_SERVICE_SECRET")
-                .unwrap_or_else(|_| "dev-secret".into()),
+                .expect("PEARL_SERVICE_SECRET env var is required"),
             master_seed,
             tls_cert_path,
             tls_key_path,

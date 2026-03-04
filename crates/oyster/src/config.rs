@@ -48,7 +48,7 @@ impl Config {
                 .unwrap_or(true),
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
             pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
-                .unwrap_or_else(|_| "dev-secret".into()),
+                .expect("PEARL_SERVICE_SECRET env var is required"),
             walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
             walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
                 .ok()
