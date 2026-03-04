@@ -71,16 +71,12 @@ impl Pearl for PearlService {
 fn to_status(err: crate::error::Error) -> Status {
     match err {
         crate::error::Error::AccountNotFound => Status::not_found("account not found"),
-        crate::error::Error::Db(e) => Status::internal(format!("database error: {e}")),
-        crate::error::Error::InvalidPrivateKey(e) => {
-            Status::internal(format!("invalid private key: {e}"))
-        }
         crate::error::Error::InvalidTransactionData(e) => {
             Status::invalid_argument(format!("invalid transaction data: {e}"))
         }
-        crate::error::Error::SigningError(e) => Status::internal(format!("signing error: {e}")),
-        crate::error::Error::DerivationError(e) => {
-            Status::internal(format!("key derivation error: {e}"))
+        err => {
+            tracing::error!(%err, "internal error");
+            Status::internal("internal error")
         }
     }
 }

@@ -14,7 +14,10 @@ pub fn check_service_secret(
 
         match auth {
             Some(val) if val.as_bytes().ct_eq(expected.as_bytes()).into() => Ok(req),
-            _ => Err(Status::unauthenticated("invalid or missing service secret")),
+            _ => {
+                tracing::warn!("rejected unauthenticated request");
+                Err(Status::unauthenticated("invalid or missing service secret"))
+            }
         }
     }
 }
