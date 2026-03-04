@@ -14,6 +14,7 @@ serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10.9"
 shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.0.0" }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
+subtle = "2.6.1"
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.1.0" }
 thiserror.workspace = true
 tokio = { workspace = true }
