@@ -305,7 +305,7 @@ curl -X PUT http://localhost:3000/buckets/<bucket_id>/blobs \
 curl http://localhost:3000/blobs/<object_id>
 ```
 
-### Full stack (with Walrus)
+### Full stack (with an external Walrus network)
 
 For manual full-stack development, use `scripts/local-testbed.sh` against an already-running
 Walrus local testbed. This starts Pearl and Oyster in tmux sessions, creates and funds a test
@@ -321,8 +321,12 @@ chk
 cargo test -p pearl
 cargo test -p oyster
 
-# E2E tests (boots Sui + Walrus in-process, ~30s startup)
-cargo test -p oyster-e2e-tests -- --ignored
+# E2E tests (boots Sui + Walrus in-process, ~30s startup). These do not require an external testbed
+# as they stand up their own in-process Sui and Walrus clusters.
+cargo test -p oyster-e2e-tests
+
+# When changing anything, it's always safe/best-practice to just test everything.
+cargo test
 ```
 
 ---

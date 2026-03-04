@@ -2,19 +2,20 @@ use fastcrypto::{ed25519::Ed25519KeyPair, traits::ToFromBytes};
 use hkdf::Hkdf;
 use sha2::Sha256;
 use sui_types::{base_types::SuiAddress, crypto::SuiKeyPair};
+use zeroize::Zeroizing;
 
 const SALT: &[u8] = b"pearl-key-derivation-v1";
 
-fn derive_keypair(master_seed: &[u8], account_id: &str) -> (SuiAddress, Vec<u8>) {
+fn derive_keypair(master_seed: &[u8], account_id: &str) -> (SuiAddress, Zeroizing<Vec<u8>>) {
     let hk = Hkdf::<Sha256>::new(Some(SALT), master_seed);
-    let mut okm = [0u8; 32];
-    hk.expand(account_id.as_bytes(), &mut okm)
+    let mut okm = Zeroizing::new([0u8; 32]);
+    hk.expand(account_id.as_bytes(), &mut *okm)
         .expect("32 bytes is a valid length for HKDF-SHA256");
 
-    let kp = Ed25519KeyPair::from_bytes(&okm).expect("32 bytes is a valid Ed25519 seed");
+    let kp = Ed25519KeyPair::from_bytes(&*okm).expect("32 bytes is a valid Ed25519 seed");
     let sui_kp = SuiKeyPair::Ed25519(kp);
     let address = SuiAddress::from(&sui_kp.public());
-    let private_key_bytes = okm.to_vec();
+    let private_key_bytes = Zeroizing::new(okm.to_vec());
     (address, private_key_bytes)
 }
 
@@ -25,7 +26,7 @@ pub fn derive_address(master_seed: &[u8], account_id: &str) -> String {
 }
 
 /// Derive the Ed25519 private key bytes for an account.
-pub fn derive_private_key(master_seed: &[u8], account_id: &str) -> Vec<u8> {
+pub fn derive_private_key(master_seed: &[u8], account_id: &str) -> Zeroizing<Vec<u8>> {
     let (_, private_key) = derive_keypair(master_seed, account_id);
     private_key
 }

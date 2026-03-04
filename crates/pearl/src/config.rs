@@ -1,3 +1,5 @@
+use zeroize::Zeroizing;
+
 /// Pearl service configuration, read from environment variables.
 #[derive(Clone)]
 pub struct Config {
@@ -8,7 +10,7 @@ pub struct Config {
     /// Shared secret for authenticating incoming gRPC requests.
     pub service_secret: String,
     /// Master seed bytes for deterministic key derivation.
-    pub master_seed: Vec<u8>,
+    pub master_seed: Zeroizing<Vec<u8>>,
     /// Optional path to a TLS certificate file for gRPC.
     pub tls_cert_path: Option<String>,
     /// Optional path to a TLS private key file for gRPC.
@@ -31,10 +33,12 @@ impl std::fmt::Debug for Config {
 impl Config {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let master_seed_hex =
-            std::env::var("PEARL_MASTER_SEED").expect("PEARL_MASTER_SEED env var is required");
-        let master_seed =
-            hex::decode(&master_seed_hex).expect("PEARL_MASTER_SEED must be valid hex");
+        let master_seed_hex = Zeroizing::new(
+            std::env::var("PEARL_MASTER_SEED").expect("PEARL_MASTER_SEED env var is required"),
+        );
+        let master_seed = Zeroizing::new(
+            hex::decode(&*master_seed_hex).expect("PEARL_MASTER_SEED must be valid hex"),
+        );
         assert!(
             master_seed.len() >= 32,
             "PEARL_MASTER_SEED must be at least 32 bytes (64 hex chars), got {} bytes",

@@ -8118,6 +8118,7 @@ dependencies = [
  "walrus-sdk 1.42.1",
  "walrus-sui 1.42.1",
  "walrus-utils 1.42.1",
+ "zeroize",
 ]
 
 [[package]]
@@ -8158,6 +8159,7 @@ dependencies = [
  "walrus-service",
  "walrus-sui 1.44.0",
  "walrus-test-utils 1.44.0",
+ "zeroize",
 ]
 
 [[package]]
@@ -8392,6 +8394,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

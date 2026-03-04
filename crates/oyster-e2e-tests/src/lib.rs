@@ -314,7 +314,7 @@ async fn start_pearl_in_process() -> PearlConnection {
         database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
-        master_seed: hex::decode("ab".repeat(32)).expect("valid hex seed"),
+        master_seed: zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
         tls_cert_path: None,
         tls_key_path: None,
     };

@@ -37,3 +37,4 @@ walrus-service = { path = "../../../walrus/crates/walrus-service", features = ["
 walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-utils"] }
 walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }
 hex = "0.4.3"
+zeroize = "1.8.2"

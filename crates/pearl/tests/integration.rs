@@ -17,8 +17,8 @@ use tonic::{Request, transport::Channel};
 
 const TEST_SECRET: &str = "test-secret-42";
 
-fn test_seed() -> Vec<u8> {
-    hex::decode("ab".repeat(32)).unwrap()
+fn test_seed() -> zeroize::Zeroizing<Vec<u8>> {
+    zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).unwrap())
 }
 
 fn test_config() -> Config {
