@@ -14,6 +14,8 @@ set -euo pipefail
 PEARL_BIND_ADDR="127.0.0.1:50051"
 OYSTER_BIND_ADDR="127.0.0.1:3000"
 PEARL_SERVICE_SECRET="testbed-secret"
+# Deterministic 32-byte master seed for local testbed key derivation (NOT for production use).
+PEARL_MASTER_SEED="deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
 WALRUS_AGGREGATOR_URL="http://127.0.0.1:31415"
 PEARL_TMUX="oyster-testbed-pearl"
 OYSTER_TMUX="oyster-testbed-oyster"
@@ -230,6 +232,7 @@ main() {
      PEARL_DATABASE_URL='sqlite:pearl.db?mode=rwc' \
      PEARL_BIND_ADDR='$PEARL_BIND_ADDR' \
      PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
+     PEARL_MASTER_SEED='$PEARL_MASTER_SEED' \
      RUST_LOG=info \
      cargo run -p pearl; \
      echo 'Pearl exited. Press Enter to close.'; read"

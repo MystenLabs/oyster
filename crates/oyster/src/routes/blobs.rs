@@ -56,16 +56,27 @@ pub async fn store_blob(
     let _bucket = db::buckets::get_bucket(&state.db, &bucket_id, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
+    tracing::debug!("bucket {} found for account {}", bucket_id, auth.account_id);
 
     let account = db::accounts::get_account(&state.db, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
 
+    tracing::debug!(
+        ?account,
+        "account {} found with pearl_account_id {:?}",
+        auth.account_id,
+        account.pearl_account_id
+    );
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
         .unwrap_or("application/octet-stream");
-
+    tracing::debug!(
+        "storing blob for account {}, content-type: {}",
+        auth.account_id,
+        content_type
+    );
     let result = state
         .blob_store
         .store(&body, account.pearl_account_id.as_deref())
