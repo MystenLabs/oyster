@@ -56,24 +56,6 @@ impl PearlConnection {
         req
     }
 
-    /// Create a new Pearl account and return its ID and wallet address.
-    pub async fn create_account(&self) -> Result<proto::CreateAccountResponse, tonic::Status> {
-        let req = self.authenticated(proto::CreateAccountRequest {});
-        let start = std::time::Instant::now();
-        let result = self.client.clone().create_account(req).await;
-        let duration = start.elapsed().as_secs_f64();
-        let outcome = if result.is_ok() { "ok" } else { "error" };
-        metrics::counter!(crate::metrics::PEARL_GRPC_CALLS_TOTAL,
-            "method" => "create_account", "result" => outcome
-        )
-        .increment(1);
-        metrics::histogram!(crate::metrics::PEARL_GRPC_LATENCY,
-            "method" => "create_account"
-        )
-        .record(duration);
-        result.map(|r| r.into_inner())
-    }
-
     /// Get the Sui wallet address for a Pearl account.
     pub async fn get_address(&self, account_id: &str) -> Result<String, tonic::Status> {
         let req = self.authenticated(proto::GetAddressRequest {

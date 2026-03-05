@@ -4,8 +4,6 @@
 pub mod auth;
 /// Service configuration loaded from environment variables.
 pub mod config;
-/// Database access layer (SQLite via sqlx).
-pub mod db;
 /// Deterministic key derivation via HKDF-SHA256.
 pub mod derivation;
 /// Service error types.
@@ -14,7 +12,5 @@ pub mod error;
 pub mod grpc;
 /// Prometheus metric constants and recorder setup.
 pub mod metrics;
-/// Data models for database rows.
-pub mod models;
 /// Transaction signing using derived Ed25519 keys.
 pub mod signing;

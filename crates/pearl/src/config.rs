@@ -3,8 +3,6 @@ use zeroize::Zeroizing;
 /// Pearl service configuration, read from environment variables.
 #[derive(Clone)]
 pub struct Config {
-    /// Database URL (SQLite or PostgreSQL).
-    pub database_url: String,
     /// Socket address to bind the gRPC server to.
     pub bind_addr: String,
     /// Shared secret for authenticating incoming gRPC requests.
@@ -22,7 +20,6 @@ pub struct Config {
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Config")
-            .field("database_url", &self.database_url)
             .field("bind_addr", &self.bind_addr)
             .field("service_secret", &"[redacted]")
             .field("master_seed", &"[redacted]")
@@ -58,8 +55,6 @@ impl Config {
         }
 
         Self {
-            database_url: std::env::var("PEARL_DATABASE_URL")
-                .unwrap_or_else(|_| "sqlite:pearl.db?mode=rwc".into()),
             bind_addr: std::env::var("PEARL_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".into()),
             service_secret: std::env::var("PEARL_SERVICE_SECRET")
                 .expect("PEARL_SERVICE_SECRET env var is required"),

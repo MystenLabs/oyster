@@ -35,3 +35,4 @@ walrus-service = { workspace = true, features = ["test-utils"] }
 walrus-sui = { workspace = true, features = ["test-utils"] }
 walrus-test-utils = { workspace = true }
 zeroize = { workspace = true }
+uuid = { workspace = true, features = ["v4"] }

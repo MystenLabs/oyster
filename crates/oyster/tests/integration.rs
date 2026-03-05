@@ -796,12 +796,7 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
 
     const PEARL_SECRET: &str = "oyster-pearl-test-secret";
 
-    let db = pearl::db::create_pool("sqlite::memory:")
-        .await
-        .expect("in-memory pool");
-
     let config = Config {
-        database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
         master_seed: zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
@@ -810,7 +805,7 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
         metrics_bind_addr: "127.0.0.1:0".into(),
     };
 
-    let service = PearlService { db, config };
+    let service = PearlService { config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
@@ -847,17 +842,23 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
 }
 
 #[tokio::test]
-async fn pearl_client_create_and_get_address() {
+async fn pearl_client_get_address() {
     let pearl = start_pearl().await;
 
-    // Create an account through Oyster's PearlConnection wrapper.
-    let create_resp = pearl.create_account().await.unwrap();
-    assert!(!create_resp.account_id.is_empty());
-    assert!(create_resp.address.starts_with("0x"));
+    let account_id = "test-pearl-account";
 
-    // Fetch address through the wrapper.
-    let address = pearl.get_address(&create_resp.account_id).await.unwrap();
-    assert_eq!(address, create_resp.address);
+    // Fetch address through the wrapper — any account_id works now (stateless).
+    let address = pearl.get_address(account_id).await.unwrap();
+    assert!(address.starts_with("0x"));
+    assert_eq!(
+        address.len(),
+        66,
+        "Sui address should be 66 chars (0x + 64 hex)"
+    );
+
+    // Same account_id returns the same address (deterministic).
+    let address2 = pearl.get_address(account_id).await.unwrap();
+    assert_eq!(address, address2);
 }
 
 #[tokio::test]
@@ -870,9 +871,10 @@ async fn pearl_client_sign_transaction_success() {
 
     let pearl = start_pearl().await;
 
-    let create_resp = pearl.create_account().await.unwrap();
+    let account_id = "sign-test-account";
+    let address = pearl.get_address(account_id).await.unwrap();
 
-    let sender: SuiAddress = create_resp.address.parse().expect("valid SuiAddress");
+    let sender: SuiAddress = address.parse().expect("valid SuiAddress");
     let gas_ref = (
         ObjectID::random(),
         sui_types::base_types::SequenceNumber::new(),
@@ -883,7 +885,7 @@ async fn pearl_client_sign_transaction_success() {
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 
     let signed_bytes = pearl
-        .sign_transaction(&create_resp.account_id, tx_data_bytes)
+        .sign_transaction(account_id, tx_data_bytes)
         .await
         .unwrap();
 
@@ -898,10 +900,8 @@ async fn pearl_client_sign_transaction_success() {
 async fn pearl_client_sign_transaction_invalid_tx_data() {
     let pearl = start_pearl().await;
 
-    let create_resp = pearl.create_account().await.unwrap();
-
     let err = pearl
-        .sign_transaction(&create_resp.account_id, vec![1, 2, 3])
+        .sign_transaction("invalid-tx-test-account", vec![1, 2, 3])
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);

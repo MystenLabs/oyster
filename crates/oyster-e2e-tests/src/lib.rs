@@ -89,13 +89,12 @@ impl OysterTestHarness {
         // 2. Start Pearl in-process.
         let pearl = start_pearl_in_process().await;
 
-        // 3. Create an operator account in Pearl.
-        let create_resp = pearl
-            .create_account()
+        // 3. Generate an operator account ID and derive its address from Pearl.
+        let operator_account_id = uuid::Uuid::new_v4().to_string();
+        let operator_address = pearl
+            .get_address(&operator_account_id)
             .await
-            .expect("failed to create operator Pearl account");
-        let operator_account_id = create_resp.account_id;
-        let operator_address = create_resp.address;
+            .expect("failed to get operator Pearl address");
 
         // 4. Fund the operator wallet with SUI (needed for gas).
         let operator_sui_addr: SuiAddress = operator_address.parse().expect("valid SuiAddress");
@@ -307,12 +306,7 @@ async fn fund_with_wal(
 
 /// Start Pearl's gRPC server in-process on a random port and return a connected PearlConnection.
 async fn start_pearl_in_process() -> PearlConnection {
-    let db = pearl::db::create_pool("sqlite::memory:")
-        .await
-        .expect("in-memory pearl pool");
-
     let config = pearl::config::Config {
-        database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
         master_seed: zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
@@ -320,7 +314,7 @@ async fn start_pearl_in_process() -> PearlConnection {
         tls_key_path: None,
         metrics_bind_addr: "127.0.0.1:0".into(),
     };
-    let service = PearlService { db, config };
+    let service = PearlService { config };
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 

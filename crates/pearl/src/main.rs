@@ -16,20 +16,12 @@ async fn main() {
 
     let metrics_handle = pearl::metrics::setup();
 
-    let db = pearl::db::create_pool(&config.database_url)
-        .await
-        .expect("failed to create database pool");
-
-    tracing::info!("database ready");
-
     tokio::spawn(serve_metrics(
         metrics_handle,
-        db.clone(),
         config.metrics_bind_addr.clone(),
     ));
 
     let service = PearlService {
-        db,
         config: config.clone(),
     };
     let interceptor = check_service_secret(config.service_secret);
@@ -68,22 +60,12 @@ async fn main() {
         .expect("gRPC server error");
 }
 
-async fn serve_metrics(
-    handle: metrics_exporter_prometheus::PrometheusHandle,
-    db: pearl::db::DbPool,
-    bind_addr: String,
-) {
+async fn serve_metrics(handle: metrics_exporter_prometheus::PrometheusHandle, bind_addr: String) {
     let app = axum::Router::new().route(
         "/metrics",
         axum::routing::get(move || {
             let handle = handle.clone();
-            let db = db.clone();
-            async move {
-                if let Ok(count) = pearl::db::accounts::count_accounts(&db).await {
-                    ::metrics::gauge!(pearl::metrics::ACCOUNTS_TOTAL).set(count as f64);
-                }
-                handle.render()
-            }
+            async move { handle.render() }
         }),
     );
 

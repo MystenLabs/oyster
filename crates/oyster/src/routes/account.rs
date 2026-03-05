@@ -167,15 +167,10 @@ pub async fn get_wallets(
 pub async fn debug_create_account(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let pearl_account_id = if let Some(ref pearl) = state.pearl {
-        let resp = pearl
-            .create_account()
-            .await
-            .map_err(|e| AppError::Internal(format!("Pearl account creation failed: {e}")))?;
-        Some(resp.account_id)
-    } else {
-        None
-    };
+    let pearl_account_id = state
+        .pearl
+        .as_ref()
+        .map(|_| uuid::Uuid::new_v4().to_string());
 
     let account = db::accounts::create_account(&state.db, pearl_account_id.as_deref()).await?;
 

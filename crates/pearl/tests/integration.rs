@@ -23,7 +23,6 @@ fn test_seed() -> zeroize::Zeroizing<Vec<u8>> {
 
 fn test_config() -> Config {
     Config {
-        database_url: "sqlite::memory:".into(),
         bind_addr: "127.0.0.1:0".into(),
         service_secret: TEST_SECRET.into(),
         master_seed: test_seed(),
@@ -36,12 +35,7 @@ fn test_config() -> Config {
 /// Stand up Pearl's gRPC server in-process on a random port.
 /// Returns a connected `PearlClient` and the server URL.
 async fn start_server() -> (PearlClient<Channel>, String) {
-    let db = pearl::db::create_pool("sqlite::memory:")
-        .await
-        .expect("in-memory pool");
-
     let service = PearlService {
-        db,
         config: test_config(),
     };
     let interceptor = check_service_secret(TEST_SECRET.to_string());
@@ -99,59 +93,24 @@ fn authenticated<T>(msg: T) -> Request<T> {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn create_account() {
-    let (mut client, _url) = start_server().await;
-
-    let resp = client
-        .create_account(authenticated(proto::CreateAccountRequest {}))
-        .await
-        .unwrap()
-        .into_inner();
-
-    assert!(
-        !resp.account_id.is_empty(),
-        "account_id should be non-empty"
-    );
-    assert!(
-        resp.address.starts_with("0x"),
-        "address should start with 0x, got: {}",
-        resp.address
-    );
-}
-
-#[tokio::test]
 async fn get_address() {
     let (mut client, _url) = start_server().await;
 
-    let create_resp = client
-        .create_account(authenticated(proto::CreateAccountRequest {}))
-        .await
-        .unwrap()
-        .into_inner();
+    let account_id = "test-account-1";
 
     let address_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
-            account_id: create_resp.account_id.clone(),
+            account_id: account_id.to_string(),
         }))
         .await
         .unwrap()
         .into_inner();
 
-    assert_eq!(address_resp.address, create_resp.address);
-}
-
-#[tokio::test]
-async fn get_address_nonexistent_account() {
-    let (mut client, _url) = start_server().await;
-
-    let status = client
-        .get_address(authenticated(proto::GetAddressRequest {
-            account_id: "nonexistent-id".to_string(),
-        }))
-        .await
-        .unwrap_err();
-
-    assert_eq!(status.code(), tonic::Code::NotFound);
+    assert!(
+        address_resp.address.starts_with("0x"),
+        "address should start with 0x, got: {}",
+        address_resp.address
+    );
 }
 
 fn mock_transaction_data(sender: SuiAddress) -> TransactionData {
@@ -168,15 +127,9 @@ fn mock_transaction_data(sender: SuiAddress) -> TransactionData {
 async fn sign_transaction_invalid_tx_data() {
     let (mut client, _url) = start_server().await;
 
-    let create_resp = client
-        .create_account(authenticated(proto::CreateAccountRequest {}))
-        .await
-        .unwrap()
-        .into_inner();
-
     let status = client
         .sign_transaction(authenticated(proto::SignTransactionRequest {
-            account_id: create_resp.account_id,
+            account_id: "test-account-2".to_string(),
             tx_data: vec![1, 2, 3],
         }))
         .await
@@ -189,20 +142,24 @@ async fn sign_transaction_invalid_tx_data() {
 async fn sign_transaction_success() {
     let (mut client, _url) = start_server().await;
 
-    let create_resp = client
-        .create_account(authenticated(proto::CreateAccountRequest {}))
+    let account_id = "test-account-3";
+
+    // Get the account's address to build a valid TransactionData.
+    let address_resp = client
+        .get_address(authenticated(proto::GetAddressRequest {
+            account_id: account_id.to_string(),
+        }))
         .await
         .unwrap()
         .into_inner();
 
-    // Parse the account's address to build a valid TransactionData.
-    let sender: SuiAddress = create_resp.address.parse().expect("valid SuiAddress");
+    let sender: SuiAddress = address_resp.address.parse().expect("valid SuiAddress");
     let tx_data = mock_transaction_data(sender);
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 
     let resp = client
         .sign_transaction(authenticated(proto::SignTransactionRequest {
-            account_id: create_resp.account_id,
+            account_id: account_id.to_string(),
             tx_data: tx_data_bytes,
         }))
         .await
@@ -220,32 +177,14 @@ async fn sign_transaction_success() {
 }
 
 #[tokio::test]
-async fn sign_transaction_account_not_found() {
-    let (mut client, _url) = start_server().await;
-
-    let (sender, _kp): (SuiAddress, fastcrypto::ed25519::Ed25519KeyPair) =
-        sui_types::crypto::get_key_pair();
-    let tx_data = mock_transaction_data(sender);
-    let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
-
-    let status = client
-        .sign_transaction(authenticated(proto::SignTransactionRequest {
-            account_id: "nonexistent-account-id".to_string(),
-            tx_data: tx_data_bytes,
-        }))
-        .await
-        .unwrap_err();
-
-    assert_eq!(status.code(), tonic::Code::NotFound);
-}
-
-#[tokio::test]
 async fn auth_rejection_no_token() {
     let (mut client, _url) = start_server().await;
 
     // Request with no auth token.
     let status = client
-        .create_account(Request::new(proto::CreateAccountRequest {}))
+        .get_address(Request::new(proto::GetAddressRequest {
+            account_id: "test".to_string(),
+        }))
         .await
         .unwrap_err();
 
@@ -256,11 +195,13 @@ async fn auth_rejection_no_token() {
 async fn auth_rejection_wrong_token() {
     let (mut client, _url) = start_server().await;
 
-    let mut req = Request::new(proto::CreateAccountRequest {});
+    let mut req = Request::new(proto::GetAddressRequest {
+        account_id: "test".to_string(),
+    });
     req.metadata_mut()
         .insert("authorization", "Bearer wrong-secret".parse().unwrap());
 
-    let status = client.create_account(req).await.unwrap_err();
+    let status = client.get_address(req).await.unwrap_err();
     assert_eq!(status.code(), tonic::Code::Unauthenticated);
 }
 
@@ -268,24 +209,28 @@ async fn auth_rejection_wrong_token() {
 async fn get_address_deterministic() {
     let (mut client, _url) = start_server().await;
 
-    let create_resp = client
-        .create_account(authenticated(proto::CreateAccountRequest {}))
+    let account_id = "deterministic-test-account";
+
+    let first_resp = client
+        .get_address(authenticated(proto::GetAddressRequest {
+            account_id: account_id.to_string(),
+        }))
         .await
         .unwrap()
         .into_inner();
 
-    // Call get_address 3 times with the same account_id — all should return the identical address.
+    // Call get_address 3 more times with the same account_id — all should return the identical address.
     for i in 0..3 {
         let resp = client
             .get_address(authenticated(proto::GetAddressRequest {
-                account_id: create_resp.account_id.clone(),
+                account_id: account_id.to_string(),
             }))
             .await
             .unwrap()
             .into_inner();
 
         assert_eq!(
-            resp.address, create_resp.address,
+            resp.address, first_resp.address,
             "get_address call {i} returned a different address"
         );
     }
@@ -295,18 +240,21 @@ async fn get_address_deterministic() {
 async fn multiple_accounts_unique() {
     let (mut client, _url) = start_server().await;
 
-    let mut ids = std::collections::HashSet::new();
     let mut addrs = std::collections::HashSet::new();
 
-    for _ in 0..10 {
+    for i in 0..10 {
         let resp = client
-            .create_account(authenticated(proto::CreateAccountRequest {}))
+            .get_address(authenticated(proto::GetAddressRequest {
+                account_id: format!("unique-account-{i}"),
+            }))
             .await
             .unwrap()
             .into_inner();
 
-        assert!(ids.insert(resp.account_id), "duplicate account_id");
-        assert!(addrs.insert(resp.address), "duplicate address");
+        assert!(
+            addrs.insert(resp.address),
+            "duplicate address for account {i}"
+        );
     }
 }
 

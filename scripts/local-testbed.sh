@@ -223,13 +223,12 @@ main() {
   (cd "$REPO_ROOT" && cargo build -p pearl -p oyster)
 
   # --- Clean stale DBs ---
-  rm -f "$REPO_ROOT"/pearl.db* "$REPO_ROOT"/oyster.db*
+  rm -f "$REPO_ROOT"/oyster.db*
 
   # --- Start Pearl ---
   echo "Starting Pearl in tmux session '$PEARL_TMUX'..."
   tmux new-session -d -s "$PEARL_TMUX" \
     "cd '$REPO_ROOT' && \
-     PEARL_DATABASE_URL='sqlite:pearl.db?mode=rwc' \
      PEARL_BIND_ADDR='$PEARL_BIND_ADDR' \
      PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
      PEARL_MASTER_SEED='$PEARL_MASTER_SEED' \
@@ -241,15 +240,15 @@ main() {
 
   # --- Create operator Pearl account ---
   echo "Creating operator Pearl account..."
+  OPERATOR_ACCOUNT_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
   local operator_json
   operator_json="$(
     grpcurl -plaintext \
       -import-path "$REPO_ROOT/crates/pearl/proto" -proto pearl.proto \
       -H "Authorization: Bearer $PEARL_SERVICE_SECRET" \
-      -d '{}' \
-      "$PEARL_BIND_ADDR" pearl.Pearl/CreateAccount
+      -d "{\"account_id\": \"$OPERATOR_ACCOUNT_ID\"}" \
+      "$PEARL_BIND_ADDR" pearl.Pearl/GetAddress
   )"
-  OPERATOR_ACCOUNT_ID="$(echo "$operator_json" | jq -r '.accountId')"
   OPERATOR_ADDRESS="$(echo "$operator_json" | jq -r '.address')"
   echo "  account_id: $OPERATOR_ACCOUNT_ID"
   echo "  address:    $OPERATOR_ADDRESS"
