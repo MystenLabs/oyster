@@ -3,7 +3,7 @@ use zeroize::Zeroizing;
 /// Pearl service configuration, read from environment variables.
 #[derive(Clone)]
 pub struct Config {
-    /// SQLite database URL.
+    /// Database URL (SQLite or PostgreSQL).
     pub database_url: String,
     /// Socket address to bind the gRPC server to.
     pub bind_addr: String,

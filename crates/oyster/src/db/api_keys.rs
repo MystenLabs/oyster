@@ -1,11 +1,11 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::models::{ApiKey, ApiKeyWithSecret};
 
 /// Insert a new API key and return it with the plaintext secret.
 pub async fn create_api_key(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     account_id: &str,
     key_hash: &str,
     prefix: &str,
@@ -32,7 +32,7 @@ pub async fn create_api_key(
 
 /// Look up an active (non-revoked) API key by its hash.
 pub async fn find_by_hash(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     key_hash: &str,
 ) -> Result<Option<ApiKey>, sqlx::Error> {
     let row = sqlx::query(
@@ -53,13 +53,15 @@ pub async fn find_by_hash(
 
 /// Revoke an API key. Returns `true` if a key was actually revoked.
 pub async fn revoke_api_key(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     key_id: &str,
     account_id: &str,
 ) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(
-        "UPDATE api_keys SET revoked_at = datetime('now') WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
+        "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
     )
+    .bind(&now)
     .bind(key_id)
     .bind(account_id)
     .execute(pool)

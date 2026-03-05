@@ -1,9 +1,9 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::models::Bucket;
 
-fn row_to_bucket(row: sqlx::sqlite::SqliteRow) -> Bucket {
+fn row_to_bucket(row: sqlx::any::AnyRow) -> Bucket {
     Bucket {
         id: row.get("id"),
         account_id: row.get("account_id"),
@@ -14,7 +14,7 @@ fn row_to_bucket(row: sqlx::sqlite::SqliteRow) -> Bucket {
 
 /// Create a new bucket for the given account.
 pub async fn create_bucket(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     account_id: &str,
     name: &str,
 ) -> Result<Bucket, sqlx::Error> {
@@ -33,7 +33,7 @@ pub async fn create_bucket(
 
 /// List buckets for an account with cursor-based pagination.
 pub async fn list_buckets(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     account_id: &str,
     after_created_at: Option<&str>,
     after_id: Option<&str>,
@@ -69,7 +69,7 @@ pub async fn list_buckets(
 
 /// Fetch a single bucket by ID, scoped to the given account.
 pub async fn get_bucket(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     bucket_id: &str,
     account_id: &str,
 ) -> Result<Option<Bucket>, sqlx::Error> {
@@ -86,7 +86,7 @@ pub async fn get_bucket(
 
 /// Delete a bucket. Returns `true` if the bucket existed.
 pub async fn delete_bucket(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     bucket_id: &str,
     account_id: &str,
 ) -> Result<bool, sqlx::Error> {

@@ -1,11 +1,11 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::models::Account;
 
 /// Insert a new account, optionally linked to a Pearl wallet.
 pub async fn create_account(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     pearl_account_id: Option<&str>,
 ) -> Result<Account, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
@@ -26,7 +26,7 @@ pub async fn create_account(
 }
 
 /// Fetch an account by ID, returning `None` if it does not exist.
-pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>, sqlx::Error> {
+pub async fn get_account(pool: &super::DbPool, id: &str) -> Result<Option<Account>, sqlx::Error> {
     let row = sqlx::query(
         "SELECT id, pearl_account_id, created_at, updated_at FROM accounts WHERE id = ?",
     )
@@ -43,7 +43,7 @@ pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>,
 }
 
 /// Count the total number of accounts.
-pub async fn count_accounts(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn count_accounts(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
         .fetch_one(pool)
         .await
@@ -51,17 +51,18 @@ pub async fn count_accounts(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 
 /// Link an existing account to a Pearl wallet. Returns `true` if a row was updated.
 pub async fn set_pearl_account_id(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     account_id: &str,
     pearl_account_id: &str,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query(
-        "UPDATE accounts SET pearl_account_id = ?, updated_at = datetime('now') WHERE id = ?",
-    )
-    .bind(pearl_account_id)
-    .bind(account_id)
-    .execute(pool)
-    .await?;
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let result =
+        sqlx::query("UPDATE accounts SET pearl_account_id = ?, updated_at = ? WHERE id = ?")
+            .bind(pearl_account_id)
+            .bind(&now)
+            .bind(account_id)
+            .execute(pool)
+            .await?;
 
     Ok(result.rows_affected() > 0)
 }
@@ -71,7 +72,7 @@ mod tests {
     use super::*;
     use crate::db;
 
-    async fn test_pool() -> SqlitePool {
+    async fn test_pool() -> super::super::DbPool {
         db::create_pool("sqlite::memory:").await.unwrap()
     }
 

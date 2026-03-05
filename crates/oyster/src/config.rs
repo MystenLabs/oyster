@@ -5,7 +5,7 @@ use std::path::PathBuf;
 pub struct Config {
     /// Socket address to bind the HTTP server to (e.g. `"0.0.0.0:3000"`).
     pub bind_addr: String,
-    /// SQLite database URL.
+    /// Database URL (SQLite or PostgreSQL).
     pub database_url: String,
     /// Filesystem path for the local blob store.
     pub blob_store_path: PathBuf,

@@ -1,9 +1,9 @@
-use sqlx::{Row, SqlitePool};
+use sqlx::Row;
 use uuid::Uuid;
 
 use crate::models::{BlobMetadata, ExpiringBlob};
 
-fn row_to_blob(row: sqlx::sqlite::SqliteRow) -> BlobMetadata {
+fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
     BlobMetadata {
         object_id: row.get("object_id"),
         blob_id: row.get("blob_id"),
@@ -18,7 +18,7 @@ fn row_to_blob(row: sqlx::sqlite::SqliteRow) -> BlobMetadata {
 }
 
 /// Count the total number of blobs.
-pub async fn count_blobs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
         .fetch_one(pool)
         .await
@@ -27,7 +27,7 @@ pub async fn count_blobs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
 /// Insert a new blob metadata row and return it.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_blob(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     blob_id: &str,
     bucket_id: &str,
     account_id: &str,
@@ -58,7 +58,7 @@ pub async fn insert_blob(
 
 /// Fetch blob metadata by its internal object ID.
 pub async fn get_blob_by_object_id(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     object_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(
@@ -75,7 +75,7 @@ pub async fn get_blob_by_object_id(
 /// Fetch blob metadata by its content-addressed blob ID.
 #[allow(dead_code)]
 pub async fn get_blob_by_blob_id(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     blob_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(
@@ -91,7 +91,7 @@ pub async fn get_blob_by_blob_id(
 
 /// List blobs in a bucket with cursor-based pagination.
 pub async fn list_blobs_in_bucket(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     bucket_id: &str,
     account_id: &str,
     after_created_at: Option<&str>,
@@ -130,7 +130,7 @@ pub async fn list_blobs_in_bucket(
 
 /// Update a blob's content type.
 pub async fn update_blob_metadata(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     object_id: &str,
     account_id: &str,
     content_type: &str,
@@ -155,7 +155,7 @@ pub struct DeletedBlobInfo {
 
 /// Delete a blob by object ID and account, returning its IDs if it existed.
 pub async fn delete_blob(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     object_id: &str,
     account_id: &str,
 ) -> Result<Option<DeletedBlobInfo>, sqlx::Error> {
@@ -173,17 +173,16 @@ pub async fn delete_blob(
 }
 
 /// Count how many blob metadata rows reference the given blob ID.
-pub async fn count_references(pool: &SqlitePool, blob_id: &str) -> Result<i64, sqlx::Error> {
-    let row = sqlx::query("SELECT COUNT(*) as count FROM blobs WHERE blob_id = ?")
+pub async fn count_references(pool: &super::DbPool, blob_id: &str) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM blobs WHERE blob_id = ?")
         .bind(blob_id)
         .fetch_one(pool)
-        .await?;
-    Ok(row.get::<i32, _>("count") as i64)
+        .await
 }
 
 /// Fetch blobs with on-chain storage that expire before the given cutoff.
 pub async fn get_expiring_blobs(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     before: &str,
     limit: i64,
 ) -> Result<Vec<BlobMetadata>, sqlx::Error> {
@@ -204,7 +203,7 @@ pub async fn get_expiring_blobs(
 
 /// Fetch expiring blobs joined with their owning account's Pearl wallet info.
 pub async fn get_expiring_blobs_with_accounts(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     before: &str,
     limit: i64,
 ) -> Result<Vec<ExpiringBlob>, sqlx::Error> {
@@ -227,7 +226,7 @@ pub async fn get_expiring_blobs_with_accounts(
 
 /// Update the expiration timestamp for a blob identified by its Sui object ID.
 pub async fn update_blob_expires_at(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     sui_object_id: &str,
     new_expires_at: &str,
 ) -> Result<(), sqlx::Error> {
@@ -241,7 +240,7 @@ pub async fn update_blob_expires_at(
 
 /// Delete all blobs in a bucket, returning their IDs for backend cleanup.
 pub async fn delete_blobs_in_bucket(
-    pool: &SqlitePool,
+    pool: &super::DbPool,
     bucket_id: &str,
 ) -> Result<Vec<DeletedBlobInfo>, sqlx::Error> {
     let rows =
@@ -263,11 +262,11 @@ mod tests {
     use super::*;
     use crate::db;
 
-    async fn test_pool() -> SqlitePool {
+    async fn test_pool() -> super::super::DbPool {
         db::create_pool("sqlite::memory:").await.unwrap()
     }
 
-    async fn seed_account_and_bucket(pool: &SqlitePool) -> (String, String) {
+    async fn seed_account_and_bucket(pool: &super::super::DbPool) -> (String, String) {
         let account_id = uuid::Uuid::new_v4().to_string();
         let bucket_id = uuid::Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO accounts (id) VALUES (?)")
@@ -387,7 +386,7 @@ mod tests {
     }
 
     async fn seed_account_with_pearl(
-        pool: &SqlitePool,
+        pool: &super::super::DbPool,
         pearl_account_id: &str,
     ) -> (String, String) {
         let account_id = uuid::Uuid::new_v4().to_string();
