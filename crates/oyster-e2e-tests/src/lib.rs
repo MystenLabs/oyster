@@ -4,13 +4,8 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use axum::Router;
 use oyster::{
-    AppState,
-    blob_store::BlobStore,
-    config::Config,
-    db,
-    direct_walrus_store::DirectWalrusBlobStore,
-    pearl_client::PearlConnection,
-    routes,
+    AppState, blob_store::BlobStore, config::Config, db,
+    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
 };
 use pearl::{
     auth::check_service_secret,
@@ -18,14 +13,12 @@ use pearl::{
 };
 use sui_sdk::SuiClientBuilder;
 use sui_types::{
-    base_types::SuiAddress,
-    programmable_transaction_builder::ProgrammableTransactionBuilder,
+    base_types::SuiAddress, programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::TransactionData,
 };
 use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
-    StorageNodeHandle,
-    TestCluster,
+    StorageNodeHandle, TestCluster,
     test_cluster::{AggregatorHandle, E2eTestSetupBuilder},
 };
 use walrus_sui::{client::SuiContractClient, test_utils::TestClusterHandle};

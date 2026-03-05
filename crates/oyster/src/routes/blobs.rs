@@ -13,11 +13,7 @@ use crate::{
     db,
     error::AppError,
     models::{
-        BlobMetadata,
-        ErrorResponse,
-        PaginatedResponse,
-        PaginationParams,
-        StoreBlobResponse,
+        BlobMetadata, ErrorResponse, PaginatedResponse, PaginationParams, StoreBlobResponse,
         UpdateBlobMetadataRequest,
     },
     pagination,
