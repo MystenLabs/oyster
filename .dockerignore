@@ -1,0 +1,10 @@
+target/
+*.db
+*.db-shm
+*.db-wal
+blob_store/
+.git/
+PLAN.md
+IMPLEMENTATION_NOTES.md
+docker/
+crates/oyster-e2e-tests/

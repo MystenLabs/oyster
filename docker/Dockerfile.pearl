@@ -1,0 +1,19 @@
+FROM rust:1.87-bookworm AS builder
+
+RUN apt-get update && apt-get install -y protobuf-compiler cmake clang && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY . .
+RUN sed -i '/oyster-e2e-tests/d' Cargo.toml
+RUN cargo build --release -p pearl
+
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN useradd --create-home --uid 10002 pearl
+
+COPY --from=builder /build/target/release/pearl /usr/local/bin/pearl
+
+USER pearl
+EXPOSE 50051 50052
+ENTRYPOINT ["pearl"]
