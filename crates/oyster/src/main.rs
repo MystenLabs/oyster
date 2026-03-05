@@ -4,8 +4,13 @@ use std::sync::Arc;
 
 use clap::{Parser, Subcommand};
 use oyster::{
-    AppState, blob_store::LocalBlobStore, config::Config, db,
-    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
+    AppState,
+    blob_store::LocalBlobStore,
+    config::Config,
+    db,
+    direct_walrus_store::DirectWalrusBlobStore,
+    pearl_client::PearlConnection,
+    routes,
 };
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 

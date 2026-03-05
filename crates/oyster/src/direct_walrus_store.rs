@@ -5,7 +5,10 @@ use sui_types::base_types::ObjectID;
 use walrus_core::{encoding::EncodingFactory as _, messages::BlobPersistenceType};
 use walrus_sdk::{client::WalrusNodeClient, config::ClientConfig, uploader::TailHandling};
 use walrus_sui::client::{
-    BlobObjectMetadata, BlobPersistence, SuiReadClient, transaction_builder::WalrusPtbBuilder,
+    BlobObjectMetadata,
+    BlobPersistence,
+    SuiReadClient,
+    transaction_builder::WalrusPtbBuilder,
 };
 
 use crate::{

@@ -1,4 +1,5 @@
 use tonic::{Request, transport::Channel};
+use tonic_health::pb::{health_check_response::ServingStatus, health_client::HealthClient};
 
 #[allow(missing_docs)]
 pub mod proto {
@@ -11,6 +12,8 @@ use proto::pearl_client::PearlClient;
 #[derive(Clone)]
 pub struct PearlConnection {
     client: PearlClient<Channel>,
+    /// gRPC health check client (unauthenticated).
+    health_client: HealthClient<Channel>,
     service_secret: String,
 }
 
@@ -33,9 +36,11 @@ impl PearlConnection {
                 .connect()
                 .await?
         };
-        let client = PearlClient::new(channel);
+        let client = PearlClient::new(channel.clone());
+        let health_client = HealthClient::new(channel);
         Ok(Self {
             client,
+            health_client,
             service_secret,
         })
     }
@@ -73,15 +78,14 @@ impl PearlConnection {
             .map(|r| r.into_inner().address)
     }
 
-    /// Check if the Pearl gRPC service is reachable.
+    /// Check if the Pearl gRPC service is reachable and serving.
     pub async fn ping(&self) -> bool {
-        match self.get_address("__health_check__").await {
-            Ok(_) => true,
-            Err(status) => {
-                // Any gRPC-level error (NOT_FOUND, INVALID_ARGUMENT, etc.) means
-                // the service is reachable. Only transport failures are unreachable.
-                status.code() != tonic::Code::Unavailable && status.code() != tonic::Code::Unknown
-            }
+        let req = tonic_health::pb::HealthCheckRequest {
+            service: "pearl.Pearl".to_string(),
+        };
+        match self.health_client.clone().check(req).await {
+            Ok(resp) => resp.into_inner().status() == ServingStatus::Serving,
+            Err(_) => false,
         }
     }
 

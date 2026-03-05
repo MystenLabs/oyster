@@ -13,10 +13,12 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oyster::{
-    AppState, auth,
+    AppState,
+    auth,
     blob_store::{BlobId, BlobStore, BlobStoreError, LocalBlobStore, StoreResult},
     config::Config,
-    db, routes,
+    db,
+    routes,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -809,6 +811,11 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<PearlServer<PearlService>>()
+        .await;
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -817,6 +824,7 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
 
     tokio::spawn(async move {
         tonic::transport::Server::builder()
+            .add_service(health_service)
             .add_service(svc)
             .serve_with_incoming(incoming)
             .await

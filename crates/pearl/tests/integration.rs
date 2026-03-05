@@ -33,8 +33,8 @@ fn test_config() -> Config {
 }
 
 /// Stand up Pearl's gRPC server in-process on a random port.
-/// Returns a connected `PearlClient`.
-async fn start_server() -> PearlClient<Channel> {
+/// Returns a connected `PearlClient` and the server URL.
+async fn start_server() -> (PearlClient<Channel>, String) {
     let db = pearl::db::create_pool("sqlite::memory:")
         .await
         .expect("in-memory pool");
@@ -45,6 +45,11 @@ async fn start_server() -> PearlClient<Channel> {
     };
     let interceptor = check_service_secret(TEST_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
+
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<PearlServer<PearlService>>()
+        .await;
 
     // Bind to a random port.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -57,6 +62,7 @@ async fn start_server() -> PearlClient<Channel> {
 
     tokio::spawn(async move {
         tonic::transport::Server::builder()
+            .add_service(health_service)
             .add_service(svc)
             .serve_with_incoming(incoming)
             .await
@@ -68,7 +74,7 @@ async fn start_server() -> PearlClient<Channel> {
     // Small retry loop — server may not be listening yet.
     for _ in 0..20 {
         if let Ok(client) = PearlClient::connect(url.clone()).await {
-            return client;
+            return (client, url);
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -93,7 +99,7 @@ fn authenticated<T>(msg: T) -> Request<T> {
 
 #[tokio::test]
 async fn create_account() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let resp = client
         .create_account(authenticated(proto::CreateAccountRequest {}))
@@ -114,7 +120,7 @@ async fn create_account() {
 
 #[tokio::test]
 async fn get_address() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let create_resp = client
         .create_account(authenticated(proto::CreateAccountRequest {}))
@@ -135,7 +141,7 @@ async fn get_address() {
 
 #[tokio::test]
 async fn get_address_nonexistent_account() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let status = client
         .get_address(authenticated(proto::GetAddressRequest {
@@ -159,7 +165,7 @@ fn mock_transaction_data(sender: SuiAddress) -> TransactionData {
 
 #[tokio::test]
 async fn sign_transaction_invalid_tx_data() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let create_resp = client
         .create_account(authenticated(proto::CreateAccountRequest {}))
@@ -180,7 +186,7 @@ async fn sign_transaction_invalid_tx_data() {
 
 #[tokio::test]
 async fn sign_transaction_success() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let create_resp = client
         .create_account(authenticated(proto::CreateAccountRequest {}))
@@ -214,7 +220,7 @@ async fn sign_transaction_success() {
 
 #[tokio::test]
 async fn sign_transaction_account_not_found() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let (sender, _kp): (SuiAddress, fastcrypto::ed25519::Ed25519KeyPair) =
         sui_types::crypto::get_key_pair();
@@ -234,7 +240,7 @@ async fn sign_transaction_account_not_found() {
 
 #[tokio::test]
 async fn auth_rejection_no_token() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     // Request with no auth token.
     let status = client
@@ -247,7 +253,7 @@ async fn auth_rejection_no_token() {
 
 #[tokio::test]
 async fn auth_rejection_wrong_token() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let mut req = Request::new(proto::CreateAccountRequest {});
     req.metadata_mut()
@@ -259,7 +265,7 @@ async fn auth_rejection_wrong_token() {
 
 #[tokio::test]
 async fn get_address_deterministic() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let create_resp = client
         .create_account(authenticated(proto::CreateAccountRequest {}))
@@ -286,7 +292,7 @@ async fn get_address_deterministic() {
 
 #[tokio::test]
 async fn multiple_accounts_unique() {
-    let mut client = start_server().await;
+    let (mut client, _url) = start_server().await;
 
     let mut ids = std::collections::HashSet::new();
     let mut addrs = std::collections::HashSet::new();
@@ -301,4 +307,52 @@ async fn multiple_accounts_unique() {
         assert!(ids.insert(resp.account_id), "duplicate account_id");
         assert!(addrs.insert(resp.address), "duplicate address");
     }
+}
+
+#[tokio::test]
+async fn health_check_without_auth() {
+    let (_client, url) = start_server().await;
+    let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
+    let mut health_client = tonic_health::pb::health_client::HealthClient::new(channel);
+
+    // Empty service name = overall server health.
+    let resp = health_client
+        .check(tonic_health::pb::HealthCheckRequest {
+            service: String::new(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        resp.status(),
+        tonic_health::pb::health_check_response::ServingStatus::Serving
+    );
+
+    // Named service check.
+    let resp = health_client
+        .check(tonic_health::pb::HealthCheckRequest {
+            service: "pearl.Pearl".to_string(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(
+        resp.status(),
+        tonic_health::pb::health_check_response::ServingStatus::Serving
+    );
+}
+
+#[tokio::test]
+async fn health_check_unknown_service() {
+    let (_client, url) = start_server().await;
+    let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
+    let mut health_client = tonic_health::pb::health_client::HealthClient::new(channel);
+
+    let err = health_client
+        .check(tonic_health::pb::HealthCheckRequest {
+            service: "nonexistent.Service".to_string(),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), tonic::Code::NotFound);
 }

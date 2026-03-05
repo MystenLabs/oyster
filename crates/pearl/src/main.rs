@@ -27,6 +27,11 @@ async fn main() {
     let interceptor = check_service_secret(config.service_secret);
     let svc = PearlServer::with_interceptor(service, interceptor);
 
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<PearlServer<PearlService>>()
+        .await;
+
     let addr = config.bind_addr.parse().expect("invalid bind address");
     tracing::info!("gRPC server listening on {}", addr);
 
@@ -48,6 +53,7 @@ async fn main() {
     }
 
     builder
+        .add_service(health_service)
         .add_service(svc)
         .serve(addr)
         .await

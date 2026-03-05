@@ -9,7 +9,8 @@ pub mod health;
 
 use axum::Router;
 use utoipa::{
-    Modify, OpenApi,
+    Modify,
+    OpenApi,
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
 };
 use utoipa_axum::{router::OpenApiRouter, routes};

@@ -38,3 +38,4 @@ walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-uti
 walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }
 hex = "0.4.3"
 zeroize = "1.8.2"
+tonic-health = "0.14.5"

@@ -4,8 +4,13 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use axum::Router;
 use oyster::{
-    AppState, blob_store::BlobStore, config::Config, db,
-    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
+    AppState,
+    blob_store::BlobStore,
+    config::Config,
+    db,
+    direct_walrus_store::DirectWalrusBlobStore,
+    pearl_client::PearlConnection,
+    routes,
 };
 use pearl::{
     auth::check_service_secret,
@@ -13,12 +18,14 @@ use pearl::{
 };
 use sui_sdk::SuiClientBuilder;
 use sui_types::{
-    base_types::SuiAddress, programmable_transaction_builder::ProgrammableTransactionBuilder,
+    base_types::SuiAddress,
+    programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::TransactionData,
 };
 use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
-    StorageNodeHandle, TestCluster,
+    StorageNodeHandle,
+    TestCluster,
     test_cluster::{AggregatorHandle, E2eTestSetupBuilder},
 };
 use walrus_sui::{client::SuiContractClient, test_utils::TestClusterHandle};
@@ -315,6 +322,11 @@ async fn start_pearl_in_process() -> PearlConnection {
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        .set_serving::<PearlServer<PearlService>>()
+        .await;
+
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind");
@@ -323,6 +335,7 @@ async fn start_pearl_in_process() -> PearlConnection {
 
     tokio::spawn(async move {
         tonic::transport::Server::builder()
+            .add_service(health_service)
             .add_service(svc)
             .serve_with_incoming(incoming)
             .await
