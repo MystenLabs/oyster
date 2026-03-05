@@ -1,5 +1,6 @@
 CREATE TABLE accounts (
     id TEXT PRIMARY KEY NOT NULL,
+    pearl_account_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -31,10 +32,11 @@ CREATE TABLE blobs (
     account_id TEXT NOT NULL REFERENCES accounts(id),
     content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
     size INTEGER NOT NULL,
-    auto_extend_duration TEXT,
+    sui_object_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     expires_at TEXT
 );
 CREATE INDEX idx_blobs_bucket_id ON blobs(bucket_id);
 CREATE INDEX idx_blobs_blob_id ON blobs(blob_id);
 CREATE INDEX idx_blobs_account_id ON blobs(account_id);
+CREATE INDEX idx_blobs_expires_at ON blobs(expires_at);
