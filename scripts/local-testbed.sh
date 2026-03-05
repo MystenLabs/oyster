@@ -283,12 +283,12 @@ main() {
 
   # --- Get user wallet address ---
   echo "Fetching user wallet address..."
-  local wallets_json
-  wallets_json="$(
+  local wallet_json
+  wallet_json="$(
     curl -sf -H "Authorization: Bearer $USER_API_SECRET" \
-      "http://$OYSTER_BIND_ADDR/account/wallets"
+      "http://$OYSTER_BIND_ADDR/account/wallet"
   )"
-  USER_WALLET="$(echo "$wallets_json" | jq -r '.wallets[0].address')"
+  USER_WALLET="$(echo "$wallet_json" | jq -r '.wallet.address')"
   echo "  wallet: $USER_WALLET"
 
   # --- Fund wallets ---

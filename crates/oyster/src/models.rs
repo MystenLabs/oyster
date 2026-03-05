@@ -152,13 +152,13 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-/// Response listing wallet information for an account.
+/// Response with wallet information for an account.
 #[derive(Debug, Serialize, ToSchema)]
-pub struct WalletsResponse {
+pub struct WalletResponse {
     /// Whether a Pearl wallet has been provisioned.
     pub provisioned: bool,
-    /// List of wallet addresses.
-    pub wallets: Vec<WalletInfo>,
+    /// Wallet address, if available.
+    pub wallet: Option<WalletInfo>,
 }
 
 /// A single wallet's public information.

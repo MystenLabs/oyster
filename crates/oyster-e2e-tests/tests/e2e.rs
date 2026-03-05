@@ -57,16 +57,14 @@ async fn create_test_account(app: &Router) -> (String, String) {
 async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
     let (status, body) = json_response(
         app,
-        Request::get("/account/wallets")
+        Request::get("/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    let address = body["wallets"][0]["address"]
-        .as_str()
-        .expect("wallet address");
+    let address = body["wallet"]["address"].as_str().expect("wallet address");
     harness.fund_wallet(address).await;
 }
 
@@ -255,10 +253,10 @@ fn e2e_wallet_provisioning() {
         // Create account — Pearl is connected so it should provision a wallet.
         let (_account_id, api_key) = create_test_account(app).await;
 
-        // Check wallets endpoint.
+        // Check wallet endpoint.
         let (status, body) = json_response(
             app,
-            Request::get("/account/wallets")
+            Request::get("/account/wallet")
                 .header("authorization", format!("Bearer {api_key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -266,10 +264,8 @@ fn e2e_wallet_provisioning() {
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(body["provisioned"].as_bool(), Some(true));
-        let wallets = body["wallets"].as_array().unwrap();
-        assert_eq!(wallets.len(), 1, "should have exactly one wallet");
 
-        let address = wallets[0]["address"].as_str().unwrap();
+        let address = body["wallet"]["address"].as_str().unwrap();
         assert!(
             address.starts_with("0x"),
             "wallet address should start with 0x, got: {address}"
@@ -290,19 +286,19 @@ fn e2e_deterministic_wallet_address() {
         let (_account_id, api_key) = create_test_account(app).await;
         fund_test_wallet(&harness, app, &api_key).await;
 
-        // Fetch wallets twice — should return the same address both times.
+        // Fetch wallet twice — should return the same address both times.
         let mut addresses = Vec::new();
         for _ in 0..2 {
             let (status, body) = json_response(
                 app,
-                Request::get("/account/wallets")
+                Request::get("/account/wallet")
                     .header("authorization", format!("Bearer {api_key}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await;
             assert_eq!(status, axum::http::StatusCode::OK);
-            let addr = body["wallets"][0]["address"].as_str().unwrap().to_string();
+            let addr = body["wallet"]["address"].as_str().unwrap().to_string();
             addresses.push(addr);
         }
         assert_eq!(
@@ -322,14 +318,14 @@ fn e2e_deterministic_wallet_address() {
 
         let (status, body) = json_response(
             app,
-            Request::get("/account/wallets")
+            Request::get("/account/wallet")
                 .header("authorization", format!("Bearer {api_key}"))
                 .body(Body::empty())
                 .unwrap(),
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        let addr_after_store = body["wallets"][0]["address"].as_str().unwrap();
+        let addr_after_store = body["wallet"]["address"].as_str().unwrap();
         assert_eq!(
             addresses[0], addr_after_store,
             "wallet address should remain stable after storing a blob"

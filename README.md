@@ -88,7 +88,7 @@ Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`
 | `POST` | `/debug/create-account` | No | Create account + first API key (dev only) |
 | `POST` | `/account/api-keys` | Yes | Generate new API key |
 | `DELETE` | `/account/api-keys/{key_id}` | Yes | Revoke API key |
-| `GET` | `/account/wallets` | Yes | List Pearl wallet addresses |
+| `GET` | `/account/wallet` | Yes | Get Pearl wallet address |
 | `POST` | `/buckets` | Yes | Create bucket |
 | `GET` | `/buckets` | Yes | List buckets (paginated) |
 | `DELETE` | `/buckets/{bucket_id}` | Yes | Delete bucket (cascades blobs) |
@@ -262,7 +262,7 @@ oyster read <object_id> -o photo.jpg
 oyster list-blobs --bucket media
 oyster create-bucket backups
 oyster list-buckets
-oyster wallets
+oyster wallet
 ```
 
 Configuration is read from `./client.yaml`, `$XDG_CONFIG_HOME/oyster/client.yaml`, or

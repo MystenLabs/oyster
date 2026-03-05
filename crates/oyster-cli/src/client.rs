@@ -48,9 +48,9 @@ pub struct ApiKeyWithSecret {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WalletsResponse {
+pub struct WalletResponse {
     pub provisioned: bool,
-    pub wallets: Vec<WalletInfo>,
+    pub wallet: Option<WalletInfo>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -270,10 +270,10 @@ impl OysterClient {
 
     // Wallet operations
 
-    pub async fn get_wallets(&self) -> Result<WalletsResponse, ApiError> {
+    pub async fn get_wallet(&self) -> Result<WalletResponse, ApiError> {
         let resp = self
             .http
-            .get(format!("{}/account/wallets", self.base_url))
+            .get(format!("{}/account/wallet", self.base_url))
             .header("Authorization", self.auth_header().unwrap_or_default())
             .send()
             .await?;

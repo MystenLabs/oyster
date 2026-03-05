@@ -765,13 +765,13 @@ async fn blob_content_type_preserved() {
 }
 
 #[tokio::test]
-async fn wallets_returns_not_provisioned_in_local_mode() {
+async fn wallet_returns_not_provisioned_in_local_mode() {
     let (app, _tmp) = test_app().await;
     let (_, key) = create_test_account(&app).await;
 
     let (status, body) = json_response(
         &app,
-        Request::get("/account/wallets")
+        Request::get("/account/wallet")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -779,7 +779,7 @@ async fn wallets_returns_not_provisioned_in_local_mode() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["provisioned"].as_bool(), Some(false));
-    assert_eq!(body["wallets"].as_array().unwrap().len(), 0);
+    assert!(body["wallet"].is_null());
 }
 
 // ---------------------------------------------------------------------------
@@ -947,7 +947,7 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
 }
 
 #[tokio::test]
-async fn wallets_with_pearl_returns_address() {
+async fn wallet_with_pearl_returns_address() {
     let (app, _tmp) = test_app_with_pearl().await;
 
     // Create account via debug endpoint — Pearl is connected so it provisions a wallet.
@@ -955,7 +955,7 @@ async fn wallets_with_pearl_returns_address() {
 
     let (status, body) = json_response(
         &app,
-        Request::get("/account/wallets")
+        Request::get("/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),
@@ -964,10 +964,7 @@ async fn wallets_with_pearl_returns_address() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["provisioned"].as_bool(), Some(true));
 
-    let wallets = body["wallets"].as_array().unwrap();
-    assert_eq!(wallets.len(), 1, "should have exactly one wallet");
-
-    let address = wallets[0]["address"].as_str().unwrap();
+    let address = body["wallet"]["address"].as_str().unwrap();
     assert!(
         address.starts_with("0x"),
         "address should start with 0x, got: {address}"

@@ -85,7 +85,7 @@ enum Command {
         key_id: String,
     },
     /// Show wallet information
-    Wallets,
+    Wallet,
     /// Show resolved configuration
     Info,
 }
@@ -286,17 +286,13 @@ async fn cmd_revoke_api_key(
     Ok(())
 }
 
-async fn cmd_wallets(client: &OysterClient, out: &Output) -> Result<(), CliError> {
-    let resp = client.get_wallets().await?;
+async fn cmd_wallet(client: &OysterClient, out: &Output) -> Result<(), CliError> {
+    let resp = client.get_wallet().await?;
     out.print(&resp, |r| {
         println!("provisioned: {}", r.provisioned);
-        if r.wallets.is_empty() {
-            println!("wallets: (none)");
-        } else {
-            println!("wallets:");
-            for w in &r.wallets {
-                println!("  - {}", w.address);
-            }
+        match &r.wallet {
+            Some(w) => println!("wallet: {}", w.address),
+            None => println!("wallet: (none)"),
         }
     });
     Ok(())
@@ -391,7 +387,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                 Command::RevokeApiKey { ref key_id } => {
                     cmd_revoke_api_key(&client, out, key_id).await
                 }
-                Command::Wallets => cmd_wallets(&client, out).await,
+                Command::Wallet => cmd_wallet(&client, out).await,
                 Command::Read { .. } | Command::Info => unreachable!(),
             }
         }

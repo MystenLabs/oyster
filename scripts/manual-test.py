@@ -77,19 +77,19 @@ def json_body(raw):
 def scenario_1(base, auth):
     """Account & Wallet Info."""
     heading(1, "Account & Wallet Info")
-    status, _, body = request("GET", f"{base}/account/wallets", headers=auth)
+    status, _, body = request("GET", f"{base}/account/wallet", headers=auth)
     if status != 200:
-        fail(f"GET /account/wallets returned {status}")
+        fail(f"GET /account/wallet returned {status}")
         return False
     data = json_body(body)
     if not data.get("provisioned"):
         fail("wallet not provisioned")
         return False
-    wallets = data.get("wallets", [])
-    if not wallets or not wallets[0].get("address"):
+    wallet = data.get("wallet")
+    if not wallet or not wallet.get("address"):
         fail("no wallet address returned")
         return False
-    ok(f"wallet provisioned, address={wallets[0]['address']}")
+    ok(f"wallet provisioned, address={wallet['address']}")
     return True
 
 

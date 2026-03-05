@@ -9,7 +9,7 @@ use crate::{
     auth::{self, AuthenticatedAccount},
     db,
     error::AppError,
-    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse, WalletInfo, WalletsResponse},
+    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse, WalletInfo, WalletResponse},
 };
 
 #[utoipa::path(
@@ -110,34 +110,34 @@ pub async fn transfer() -> Result<StatusCode, AppError> {
 
 #[utoipa::path(
     get,
-    path = "/account/wallets",
+    path = "/account/wallet",
     tag = "Account",
     security(("bearer" = [])),
     responses(
-        (status = 200, description = "Wallet information", body = WalletsResponse),
+        (status = 200, description = "Wallet information", body = WalletResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
     ),
 )]
 /// Get wallet information for the authenticated account.
-pub async fn get_wallets(
+pub async fn get_wallet(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-) -> Result<Json<WalletsResponse>, AppError> {
+) -> Result<Json<WalletResponse>, AppError> {
     let account = db::accounts::get_account(&state.db, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
 
     let Some(pearl_account_id) = account.pearl_account_id else {
-        return Ok(Json(WalletsResponse {
+        return Ok(Json(WalletResponse {
             provisioned: false,
-            wallets: vec![],
+            wallet: None,
         }));
     };
 
     let Some(ref pearl) = state.pearl else {
-        return Ok(Json(WalletsResponse {
+        return Ok(Json(WalletResponse {
             provisioned: true,
-            wallets: vec![],
+            wallet: None,
         }));
     };
 
@@ -146,9 +146,9 @@ pub async fn get_wallets(
         .await
         .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 
-    Ok(Json(WalletsResponse {
+    Ok(Json(WalletResponse {
         provisioned: true,
-        wallets: vec![WalletInfo { address }],
+        wallet: Some(WalletInfo { address }),
     }))
 }
 
