@@ -42,6 +42,13 @@ pub async fn get_account(pool: &SqlitePool, id: &str) -> Result<Option<Account>,
     }))
 }
 
+/// Count the total number of accounts.
+pub async fn count_accounts(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+        .fetch_one(pool)
+        .await
+}
+
 /// Link an existing account to a Pearl wallet. Returns `true` if a row was updated.
 pub async fn set_pearl_account_id(
     pool: &SqlitePool,

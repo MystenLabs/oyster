@@ -6,6 +6,8 @@ pub mod blobs;
 pub mod buckets;
 /// Health and readiness probe endpoints.
 pub mod health;
+/// Prometheus metrics endpoint.
+pub mod metrics;
 
 use axum::Router;
 use utoipa::{
@@ -88,5 +90,6 @@ pub fn build_router(state: AppState) -> Router {
 
     router
         .merge(Scalar::with_url("/docs", api))
+        .route("/metrics", axum::routing::get(metrics::metrics))
         .with_state(state)
 }

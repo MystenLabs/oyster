@@ -14,6 +14,10 @@ pub mod direct_walrus_store;
 pub mod error;
 /// Background task that auto-extends expiring blobs.
 pub mod extension_task;
+/// Prometheus metric constants and recorder setup.
+pub mod metrics;
+/// Axum middleware for recording HTTP request metrics.
+pub mod middleware;
 /// API data models for requests, responses, and database rows.
 pub mod models;
 /// Cursor-based pagination helpers.
@@ -43,4 +47,6 @@ pub struct AppState {
     pub pearl: Option<PearlConnection>,
     /// Server configuration.
     pub config: Config,
+    /// Prometheus metrics handle for rendering scrape output.
+    pub metrics_handle: Option<metrics_exporter_prometheus::PrometheusHandle>,
 }

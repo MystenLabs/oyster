@@ -77,10 +77,26 @@ pub async fn store_blob(
         auth.account_id,
         content_type
     );
-    let result = state
+    let result = match state
         .blob_store
         .store(&body, account.pearl_account_id.as_deref())
-        .await?;
+        .await
+    {
+        Ok(r) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "store", "result" => "ok"
+            )
+            .increment(1);
+            r
+        }
+        Err(e) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "store", "result" => "error"
+            )
+            .increment(1);
+            return Err(e.into());
+        }
+    };
 
     let expires_at = chrono::Utc::now()
         .checked_add_days(chrono::Days::new(DEFAULT_DURATION_DAYS as u64))
@@ -182,7 +198,22 @@ pub async fn read_blob(
         .await?
         .ok_or(AppError::NotFound)?;
 
-    let data = state.blob_store.read(&BlobId(metadata.blob_id)).await?;
+    let data = match state.blob_store.read(&BlobId(metadata.blob_id)).await {
+        Ok(d) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "read", "result" => "ok"
+            )
+            .increment(1);
+            d
+        }
+        Err(e) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "read", "result" => "error"
+            )
+            .increment(1);
+            return Err(e.into());
+        }
+    };
 
     Ok((
         StatusCode::OK,
@@ -212,7 +243,22 @@ pub async fn read_blob_by_blob_id(
         return Err(AppError::NotFound);
     }
 
-    let data = state.blob_store.read(&BlobId(blob_id)).await?;
+    let data = match state.blob_store.read(&BlobId(blob_id)).await {
+        Ok(d) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "read", "result" => "ok"
+            )
+            .increment(1);
+            d
+        }
+        Err(e) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "read", "result" => "error"
+            )
+            .increment(1);
+            return Err(e.into());
+        }
+    };
 
     Ok((
         StatusCode::OK,
@@ -283,14 +329,28 @@ pub async fn delete_blob(
     if count == 0 {
         let account = db::accounts::get_account(&state.db, &auth.account_id).await?;
         let pearl_account_id = account.and_then(|a| a.pearl_account_id);
-        let _ = state
+        match state
             .blob_store
             .delete(
                 &BlobId(info.blob_id),
                 info.sui_object_id.as_deref(),
                 pearl_account_id.as_deref(),
             )
-            .await;
+            .await
+        {
+            Ok(()) => {
+                metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                    "operation" => "delete", "result" => "ok"
+                )
+                .increment(1);
+            }
+            Err(_) => {
+                metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                    "operation" => "delete", "result" => "error"
+                )
+                .increment(1);
+            }
+        }
     }
 
     Ok(StatusCode::NO_CONTENT)

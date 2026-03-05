@@ -17,6 +17,13 @@ fn row_to_blob(row: sqlx::sqlite::SqliteRow) -> BlobMetadata {
     }
 }
 
+/// Count the total number of blobs.
+pub async fn count_blobs(pool: &SqlitePool) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM blobs")
+        .fetch_one(pool)
+        .await
+}
+
 /// Insert a new blob metadata row and return it.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_blob(

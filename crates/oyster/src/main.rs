@@ -106,14 +106,20 @@ async fn main() {
                 )
             };
 
+            let metrics_handle = oyster::metrics::setup();
+
             let state = AppState {
                 db,
                 blob_store,
                 pearl,
                 config: config.clone(),
+                metrics_handle: Some(metrics_handle),
             };
 
             let app = routes::build_router(state)
+                .layer(axum::middleware::from_fn(
+                    oyster::middleware::track_http_metrics,
+                ))
                 .layer(CorsLayer::permissive())
                 .layer(TraceLayer::new_for_http());
 

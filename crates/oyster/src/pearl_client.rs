@@ -59,11 +59,19 @@ impl PearlConnection {
     /// Create a new Pearl account and return its ID and wallet address.
     pub async fn create_account(&self) -> Result<proto::CreateAccountResponse, tonic::Status> {
         let req = self.authenticated(proto::CreateAccountRequest {});
-        self.client
-            .clone()
-            .create_account(req)
-            .await
-            .map(|r| r.into_inner())
+        let start = std::time::Instant::now();
+        let result = self.client.clone().create_account(req).await;
+        let duration = start.elapsed().as_secs_f64();
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!(crate::metrics::PEARL_GRPC_CALLS_TOTAL,
+            "method" => "create_account", "result" => outcome
+        )
+        .increment(1);
+        metrics::histogram!(crate::metrics::PEARL_GRPC_LATENCY,
+            "method" => "create_account"
+        )
+        .record(duration);
+        result.map(|r| r.into_inner())
     }
 
     /// Get the Sui wallet address for a Pearl account.
@@ -71,11 +79,19 @@ impl PearlConnection {
         let req = self.authenticated(proto::GetAddressRequest {
             account_id: account_id.to_string(),
         });
-        self.client
-            .clone()
-            .get_address(req)
-            .await
-            .map(|r| r.into_inner().address)
+        let start = std::time::Instant::now();
+        let result = self.client.clone().get_address(req).await;
+        let duration = start.elapsed().as_secs_f64();
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!(crate::metrics::PEARL_GRPC_CALLS_TOTAL,
+            "method" => "get_address", "result" => outcome
+        )
+        .increment(1);
+        metrics::histogram!(crate::metrics::PEARL_GRPC_LATENCY,
+            "method" => "get_address"
+        )
+        .record(duration);
+        result.map(|r| r.into_inner().address)
     }
 
     /// Check if the Pearl gRPC service is reachable and serving.
@@ -99,10 +115,18 @@ impl PearlConnection {
             account_id: account_id.to_string(),
             tx_data,
         });
-        self.client
-            .clone()
-            .sign_transaction(req)
-            .await
-            .map(|r| r.into_inner().signed_transaction)
+        let start = std::time::Instant::now();
+        let result = self.client.clone().sign_transaction(req).await;
+        let duration = start.elapsed().as_secs_f64();
+        let outcome = if result.is_ok() { "ok" } else { "error" };
+        metrics::counter!(crate::metrics::PEARL_GRPC_CALLS_TOTAL,
+            "method" => "sign_transaction", "result" => outcome
+        )
+        .increment(1);
+        metrics::histogram!(crate::metrics::PEARL_GRPC_LATENCY,
+            "method" => "sign_transaction"
+        )
+        .record(duration);
+        result.map(|r| r.into_inner().signed_transaction)
     }
 }

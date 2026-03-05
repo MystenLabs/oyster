@@ -11,6 +11,8 @@ blake2 = "0.10.6"
 chrono = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 hex = "0.4.3"
+metrics = "0.24.3"
+metrics-exporter-prometheus = "0.18.1"
 prost = "0.14.3"
 rand = "0.10.0"
 reqwest = { version = "0.13.2", features = ["json"] }

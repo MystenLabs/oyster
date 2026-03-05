@@ -158,6 +158,7 @@ impl OysterTestHarness {
             blob_store: Arc::new(blob_store) as Arc<dyn BlobStore>,
             pearl: Some(pearl.clone()),
             config,
+            metrics_handle: None,
         };
 
         let router = routes::build_router(state);

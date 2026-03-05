@@ -127,6 +127,7 @@ async fn test_app() -> (Router, TempDir) {
         blob_store: Arc::new(blob_store),
         pearl: None,
         config,
+        metrics_handle: None,
     };
 
     (routes::build_router(state), tmp)
@@ -164,6 +165,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         blob_store: blob_store as Arc<dyn BlobStore>,
         pearl: None,
         config,
+        metrics_handle: None,
     };
 
     (routes::build_router(state), tmp, pool)
@@ -937,6 +939,7 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
         blob_store: Arc::new(blob_store),
         pearl: Some(pearl),
         config,
+        metrics_handle: None,
     };
 
     (routes::build_router(state), tmp)
@@ -1073,5 +1076,77 @@ async fn delete_blob_threads_pearl_account_id() {
         *pearl_account_id,
         Some("pearl-acct-delete".to_string()),
         "pearl_account_id should be threaded through to delete()"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Metrics endpoint tests
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn metrics_endpoint_without_setup_returns_not_found() {
+    let (app, _tmp) = test_app().await;
+    let req = Request::get("/metrics").body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn metrics_endpoint_returns_prometheus_format() {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let metrics_handle = oyster::metrics::setup();
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = oyster::blob_store::LocalBlobStore::new(blob_path)
+        .await
+        .unwrap();
+
+    let state = AppState {
+        db: pool,
+        blob_store: Arc::new(blob_store),
+        pearl: None,
+        config,
+        metrics_handle: Some(metrics_handle),
+    };
+
+    let app = routes::build_router(state);
+
+    // Make a request so that metrics are populated.
+    let req = Request::get("/health").body(Body::empty()).unwrap();
+    let _ = app.clone().oneshot(req).await.unwrap();
+
+    let req = Request::get("/metrics").body(Body::empty()).unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
+
+    assert!(
+        body.contains("oyster_active_accounts"),
+        "should contain active accounts gauge"
+    );
+    assert!(
+        body.contains("oyster_active_blobs"),
+        "should contain active blobs gauge"
     );
 }
