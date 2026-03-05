@@ -73,6 +73,18 @@ impl PearlConnection {
             .map(|r| r.into_inner().address)
     }
 
+    /// Check if the Pearl gRPC service is reachable.
+    pub async fn ping(&self) -> bool {
+        match self.get_address("__health_check__").await {
+            Ok(_) => true,
+            Err(status) => {
+                // Any gRPC-level error (NOT_FOUND, INVALID_ARGUMENT, etc.) means
+                // the service is reachable. Only transport failures are unreachable.
+                status.code() != tonic::Code::Unavailable && status.code() != tonic::Code::Unknown
+            }
+        }
+    }
+
     /// Sign a transaction using the Pearl account's derived key.
     pub async fn sign_transaction(
         &self,

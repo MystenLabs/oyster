@@ -4,11 +4,12 @@ pub mod account;
 pub mod blobs;
 /// Bucket CRUD endpoints.
 pub mod buckets;
+/// Health and readiness probe endpoints.
+pub mod health;
 
 use axum::Router;
 use utoipa::{
-    Modify,
-    OpenApi,
+    Modify, OpenApi,
     openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
@@ -27,6 +28,7 @@ use crate::AppState;
         (name = "Account", description = "Account and API key management"),
         (name = "Buckets", description = "Bucket CRUD operations"),
         (name = "Blobs", description = "Blob storage and retrieval"),
+        (name = "Health", description = "Health and readiness probes"),
         (name = "Debug", description = "Debug endpoints (development only)"),
     ),
     modifiers(&SecurityAddon),
@@ -69,6 +71,9 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(blobs::read_blob, blobs::delete_blob))
         .routes(routes!(blobs::read_blob_by_blob_id))
         .routes(routes!(blobs::update_blob_metadata))
+        // Health / readiness
+        .routes(routes!(health::health))
+        .routes(routes!(health::ready))
         .split_for_parts();
 
     let mut router = router;

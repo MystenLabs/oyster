@@ -13,12 +13,10 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oyster::{
-    AppState,
-    auth,
+    AppState, auth,
     blob_store::{BlobId, BlobStore, BlobStoreError, LocalBlobStore, StoreResult},
     config::Config,
-    db,
-    routes,
+    db, routes,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -252,6 +250,24 @@ async fn store_test_blob(
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn health_returns_ok() {
+    let (app, _tmp) = test_app().await;
+    let req = Request::get("/health").body(Body::empty()).unwrap();
+    let (status, body) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["status"], "ok");
+}
+
+#[tokio::test]
+async fn ready_returns_ok_without_pearl() {
+    let (app, _tmp) = test_app().await;
+    let req = Request::get("/ready").body(Body::empty()).unwrap();
+    let (status, body) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ready"], true);
+}
 
 #[tokio::test]
 async fn full_lifecycle() {
