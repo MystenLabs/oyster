@@ -1,0 +1,10 @@
+# See https://nexte.st/docs/configuration/ for configuration parameters.
+
+[profile.default]
+fail-fast = false                                     # do not stop at first failure
+slow-timeout = { period = "1m", terminate-after = 5 }
+
+[[profile.default.overrides]]
+filter = 'package(oyster-e2e-tests)'
+threads-required = 4
+slow-timeout = { period = "5m", terminate-after = 10 } # Timeout tests after 10 minutes

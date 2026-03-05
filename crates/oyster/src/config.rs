@@ -45,7 +45,7 @@ impl Config {
                 .unwrap_or_else(|_| PathBuf::from("blob_store")),
             enable_debug_endpoints: std::env::var("ENABLE_DEBUG")
                 .map(|v| v == "1" || v == "true")
-                .unwrap_or(true),
+                .unwrap_or(false),
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
             pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
                 .expect("PEARL_SERVICE_SECRET env var is required"),
