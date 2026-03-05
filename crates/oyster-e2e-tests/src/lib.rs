@@ -150,6 +150,7 @@ impl OysterTestHarness {
             blob_extend_interval_secs: 3600,
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,
+            extension_metrics_bind_addr: "unused".into(),
         };
 
         let state = AppState {

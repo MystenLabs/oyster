@@ -31,6 +31,8 @@ pub struct Config {
     pub blob_extend_lookahead_days: u32,
     /// Number of epochs to extend blobs by.
     pub blob_extend_epochs: u32,
+    /// Socket address to bind the extension worker metrics HTTP server to.
+    pub extension_metrics_bind_addr: String,
 }
 
 impl Config {
@@ -69,6 +71,8 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
+            extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
+                .unwrap_or_else(|_| "0.0.0.0:50053".into()),
         }
     }
 }

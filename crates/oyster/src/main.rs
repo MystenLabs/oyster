@@ -133,6 +133,12 @@ async fn main() {
         Command::Extend => {
             tracing::info!("starting oyster extension worker");
 
+            let metrics_handle = oyster::metrics::setup();
+            tokio::spawn(oyster::metrics::serve_metrics(
+                metrics_handle,
+                config.extension_metrics_bind_addr.clone(),
+            ));
+
             let pearl_conn = pearl.expect("PEARL_GRPC_URL is required for the extend worker");
             let rpc_url = config
                 .sui_rpc_url

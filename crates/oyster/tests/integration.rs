@@ -117,6 +117,7 @@ async fn test_app() -> (Router, TempDir) {
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -156,6 +157,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -930,6 +932,7 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1111,6 +1114,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         blob_extend_interval_secs: 3600,
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();

@@ -1,10 +1,19 @@
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Instant};
 
+use metrics::{counter, gauge, histogram};
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
 
 use crate::{
     db::{self, DbPool},
+    metrics::{
+        EXTENSION_BLOBS_EXPIRING,
+        EXTENSION_BLOBS_EXTENDED_TOTAL,
+        EXTENSION_CYCLE_BLOBS_PROCESSED,
+        EXTENSION_CYCLE_DURATION_SECONDS,
+        EXTENSION_CYCLES_TOTAL,
+        EXTENSION_ERRORS_TOTAL,
+    },
     pearl_client::PearlConnection,
     sui_transaction,
 };
@@ -49,6 +58,9 @@ pub async fn run_extension_loop(
     loop {
         tokio::time::sleep(config.check_interval).await;
 
+        counter!(EXTENSION_CYCLES_TOTAL).increment(1);
+        let cycle_start = Instant::now();
+
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(config.lookahead_days as u64))
             .expect("valid date")
@@ -63,8 +75,13 @@ pub async fn run_extension_loop(
             }
         };
 
+        gauge!(EXTENSION_BLOBS_EXPIRING).set(blobs.len() as f64);
+
         if blobs.is_empty() {
             tracing::debug!("no blobs need extension");
+            gauge!(EXTENSION_CYCLE_BLOBS_PROCESSED).set(0.0);
+            histogram!(EXTENSION_CYCLE_DURATION_SECONDS)
+                .record(cycle_start.elapsed().as_secs_f64());
             continue;
         }
 
@@ -92,6 +109,8 @@ pub async fn run_extension_loop(
                                 error = %e,
                                 "failed to resolve sender address, skipping blob"
                             );
+                            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "resolve_address")
+                                .increment(1);
                             errors += 1;
                             continue;
                         }
@@ -116,6 +135,7 @@ pub async fn run_extension_loop(
                     error = %e,
                     "failed to extend blob"
                 );
+                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_blob").increment(1);
                 errors += 1;
                 continue;
             }
@@ -136,12 +156,16 @@ pub async fn run_extension_loop(
                         error = %e,
                         "failed to update expires_at in DB"
                     );
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
                 }
             }
 
+            counter!(EXTENSION_BLOBS_EXTENDED_TOTAL).increment(1);
             extended += 1;
         }
 
+        gauge!(EXTENSION_CYCLE_BLOBS_PROCESSED).set((extended + errors) as f64);
+        histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
         tracing::info!(extended, errors, "extension cycle complete");
     }
 }
