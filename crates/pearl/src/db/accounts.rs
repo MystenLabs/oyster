@@ -25,6 +25,14 @@ pub async fn get_account(pool: &DbPool, id: &str) -> Result<Account, Error> {
     .ok_or(Error::AccountNotFound)
 }
 
+/// Return the total number of accounts.
+pub async fn count_accounts(pool: &DbPool) -> Result<i64, Error> {
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+        .fetch_one(pool)
+        .await?;
+    Ok(count)
+}
+
 /// Check that an account exists, returning `AccountNotFound` if not.
 pub async fn account_exists(pool: &DbPool, id: &str) -> Result<(), Error> {
     let exists: Option<(i32,)> = sqlx::query_as("SELECT 1 FROM accounts WHERE id = ?")
@@ -76,6 +84,17 @@ mod tests {
 
         let account = create_account(&pool).await.unwrap();
         account_exists(&pool, &account.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn count_accounts_returns_correct_count() {
+        let pool = test_pool().await;
+
+        assert_eq!(count_accounts(&pool).await.unwrap(), 0);
+        create_account(&pool).await.unwrap();
+        assert_eq!(count_accounts(&pool).await.unwrap(), 1);
+        create_account(&pool).await.unwrap();
+        assert_eq!(count_accounts(&pool).await.unwrap(), 2);
     }
 
     #[tokio::test]

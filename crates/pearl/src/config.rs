@@ -15,6 +15,8 @@ pub struct Config {
     pub tls_cert_path: Option<String>,
     /// Optional path to a TLS private key file for gRPC.
     pub tls_key_path: Option<String>,
+    /// Socket address to bind the Prometheus metrics HTTP server to.
+    pub metrics_bind_addr: String,
 }
 
 impl std::fmt::Debug for Config {
@@ -26,6 +28,7 @@ impl std::fmt::Debug for Config {
             .field("master_seed", &"[redacted]")
             .field("tls_cert_path", &self.tls_cert_path)
             .field("tls_key_path", &self.tls_key_path)
+            .field("metrics_bind_addr", &self.metrics_bind_addr)
             .finish()
     }
 }
@@ -63,6 +66,8 @@ impl Config {
             master_seed,
             tls_cert_path,
             tls_key_path,
+            metrics_bind_addr: std::env::var("PEARL_METRICS_BIND_ADDR")
+                .unwrap_or_else(|_| "0.0.0.0:50052".into()),
         }
     }
 }

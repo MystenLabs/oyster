@@ -4,11 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+axum = "0.8.8"
 bcs = "0.1.6"
 chrono = { workspace = true, features = ["serde"] }
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "db643fd05a1b1c4cd52de3939766b53e12ce137e", version = "0.1.9" }
 hex = "0.4.3"
 hkdf = "0.12.4"
+metrics = "0.24.3"
+metrics-exporter-prometheus = "0.18.1"
 prost = "0.14.3"
 serde = { workspace = true, features = ["derive"] }
 sha2 = "0.10.9"

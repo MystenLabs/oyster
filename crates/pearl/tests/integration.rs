@@ -29,6 +29,7 @@ fn test_config() -> Config {
         master_seed: test_seed(),
         tls_cert_path: None,
         tls_key_path: None,
+        metrics_bind_addr: "127.0.0.1:0".into(),
     }
 }
 

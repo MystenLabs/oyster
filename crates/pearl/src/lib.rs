@@ -12,6 +12,8 @@ pub mod derivation;
 pub mod error;
 /// gRPC service implementation.
 pub mod grpc;
+/// Prometheus metric constants and recorder setup.
+pub mod metrics;
 /// Data models for database rows.
 pub mod models;
 /// Transaction signing using derived Ed25519 keys.
