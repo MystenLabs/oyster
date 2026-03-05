@@ -12,9 +12,9 @@ FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 oyster
 
-COPY --from=builder /build/target/release/oyster /usr/local/bin/oyster
+COPY --from=builder /build/target/release/oysterd /usr/local/bin/oysterd
 
 USER oyster
 EXPOSE 3000
-ENTRYPOINT ["oyster"]
+ENTRYPOINT ["oysterd"]
 CMD ["serve"]

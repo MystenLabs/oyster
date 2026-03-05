@@ -15,7 +15,7 @@ use oyster::{
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 
 #[derive(Parser)]
-#[command(name = "oyster", about = "Oyster object storage service")]
+#[command(name = "oysterd", about = "Oyster object storage service")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
