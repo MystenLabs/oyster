@@ -4,37 +4,37 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-axum = "0.8.8"
-bcs = "0.1.6"
-chrono = { workspace = true, features = ["serde"] }
-fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "db643fd05a1b1c4cd52de3939766b53e12ce137e", version = "0.1.9" }
-hex = "0.4.3"
-hkdf = "0.12.4"
-metrics = "0.24.3"
-metrics-exporter-prometheus = "0.18.1"
-prost = "0.14.3"
-serde = { workspace = true, features = ["derive"] }
-sha2 = "0.10.9"
-shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.0.0" }
-sqlx = { workspace = true, features = ["runtime-tokio", "sqlite", "migrate"] }
-subtle = "2.6.1"
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1", version = "0.1.0" }
-thiserror.workspace = true
+axum = { workspace = true }
+bcs = { workspace = true }
+chrono = { workspace = true }
+fastcrypto = { workspace = true }
+hex = { workspace = true }
+hkdf = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+prost = { workspace = true }
+serde = { workspace = true }
+sha2 = { workspace = true }
+shared-crypto = { workspace = true }
+sqlx = { workspace = true }
+subtle = { workspace = true }
+sui-types = { workspace = true }
+thiserror = { workspace = true }
 tokio = { workspace = true }
-tonic = { version = "0.14.5", features = ["default", "tls-aws-lc"] }
-tonic-health = "0.14.5"
-tonic-prost = "0.14.5"
+tonic = { workspace = true, features = ["tls-aws-lc"] }
+tonic-health = { workspace = true }
+tonic-prost = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-uuid = { workspace = true, features = ["v4", "serde"] }
-zeroize = "1.8.2"
+uuid = { workspace = true }
+zeroize = { workspace = true }
 
 [lints]
 workspace = true
 
 [build-dependencies]
-tonic-build = "0.14.5"
-tonic-prost-build = "0.14.5"
+tonic-build = { workspace = true }
+tonic-prost-build = { workspace = true }
 
 [dev-dependencies]
-tokio-stream = "0.1.18"
+tokio-stream = { workspace = true }

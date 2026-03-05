@@ -12,30 +12,26 @@ workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-oyster = { path = "../oyster" }
-pearl = { path = "../pearl" }
+oyster = { workspace = true }
+pearl = { workspace = true }
 
-axum = "0.8.8"
-http-body-util = "0.1.3"
-reqwest = { version = "0.13.2", features = ["json"] }
+axum = { workspace = true }
+hex = { workspace = true }
+http-body-util = { workspace = true }
+reqwest = { workspace = true }
+rustls = { workspace = true }
 serde_json = { workspace = true }
+sui-sdk = { workspace = true }
+sui-types = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = "0.1.18"
-tonic = "0.14.5"
-tower = { version = "0.5.3", features = ["util"] }
+tokio-stream = { workspace = true }
+tonic = { workspace = true }
+tonic-health = { workspace = true }
+tower = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
-rustls = { version = "0.23", features = ["aws-lc-rs"] }
-
-# Sui (same version as walrus uses).
-sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
-
-# Walrus test infrastructure (path deps to local walrus checkout).
-walrus-sdk = { path = "../../../walrus/crates/walrus-sdk" }
-walrus-service = { path = "../../../walrus/crates/walrus-service", features = ["test-utils"] }
-walrus-sui = { path = "../../../walrus/crates/walrus-sui", features = ["test-utils"] }
-walrus-test-utils = { path = "../../../walrus/crates/walrus-test-utils" }
-hex = "0.4.3"
-zeroize = "1.8.2"
-tonic-health = "0.14.5"
+walrus-sdk = { workspace = true }
+walrus-service = { workspace = true, features = ["test-utils"] }
+walrus-sui = { workspace = true, features = ["test-utils"] }
+walrus-test-utils = { workspace = true }
+zeroize = { workspace = true }

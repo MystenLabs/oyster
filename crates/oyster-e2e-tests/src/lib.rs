@@ -56,7 +56,7 @@ pub struct OysterTestHarness {
     /// Sui RPC URL for the test cluster.
     rpc_url: String,
     /// The walrus admin client (its temp_dir holds the admin wallet config for funding).
-    walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
+    walrus_client: WithTempDir<walrus_sdk::client::WalrusNodeClient<SuiContractClient>>,
 }
 
 impl OysterTestHarness {
@@ -113,7 +113,7 @@ impl OysterTestHarness {
         fund_with_wal(&walrus_client, &rpc_url, operator_sui_addr, WAL_FUND_AMOUNT).await;
 
         // 6. Build DirectWalrusBlobStore pointing at the test cluster.
-        // Use oyster's re-exported sui_types::ObjectID (v1.65.1) to match DirectWalrusBlobStore.
+        // Use oyster's re-exported sui_types::ObjectID to match DirectWalrusBlobStore.
         let system_object: oyster::sui_types::base_types::ObjectID =
             system_object_str.parse().expect("valid system_object");
         let staking_object: oyster::sui_types::base_types::ObjectID =
@@ -212,7 +212,7 @@ impl OysterTestHarness {
 /// The admin wallet has WAL from deploying the Walrus contracts during test setup.
 /// We load it from the temp_dir's wallet config, find WAL coins, and send them.
 async fn fund_with_wal(
-    walrus_client: &WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
+    walrus_client: &WithTempDir<walrus_sdk::client::WalrusNodeClient<SuiContractClient>>,
     rpc_url: &str,
     recipient: SuiAddress,
     amount: u64,
@@ -324,7 +324,7 @@ async fn start_pearl_in_process() -> PearlConnection {
     let interceptor = check_service_secret(PEARL_SECRET.to_string());
     let svc = PearlServer::with_interceptor(service, interceptor);
 
-    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    let (health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
         .set_serving::<PearlServer<PearlService>>()
         .await;
