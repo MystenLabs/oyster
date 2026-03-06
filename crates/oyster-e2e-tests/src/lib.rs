@@ -65,6 +65,7 @@ impl OysterTestHarness {
     /// This is expensive (~10-30s) so tests should share a single harness where possible.
     pub async fn start() -> Self {
         // 1. Boot the Walrus test cluster with an aggregator.
+        eprintln!("[harness] building walrus e2e test cluster...");
         let (sui_cluster, walrus_cluster, walrus_client, system_ctx, aggregator) =
             E2eTestSetupBuilder::new()
                 .with_aggregator()
@@ -75,19 +76,23 @@ impl OysterTestHarness {
         let aggregator =
             aggregator.expect("aggregator should be present (with_aggregator was set)");
         let aggregator_url = aggregator.base_url();
+        eprintln!("[harness] walrus cluster ready, aggregator at {aggregator_url}");
 
         // Extract Sui RPC URL.
         let rpc_url = {
             let cluster = sui_cluster.lock().await;
             cluster.rpc_url()
         };
+        eprintln!("[harness] sui rpc at {rpc_url}");
 
         // Extract system/staking object IDs as hex strings.
         let system_object_str = system_ctx.system_object.to_string();
         let staking_object_str = system_ctx.staking_object.to_string();
 
         // 2. Start Pearl in-process.
+        eprintln!("[harness] starting pearl...");
         let pearl = start_pearl_in_process().await;
+        eprintln!("[harness] pearl ready");
 
         // 3. Generate an operator account ID and derive its address from Pearl.
         let operator_account_id = uuid::Uuid::new_v4().to_string();
@@ -95,8 +100,10 @@ impl OysterTestHarness {
             .get_address(&operator_account_id)
             .await
             .expect("failed to get operator Pearl address");
+        eprintln!("[harness] operator address: {operator_address}");
 
         // 4. Fund the operator wallet with SUI (needed for gas).
+        eprintln!("[harness] funding operator with SUI...");
         let operator_sui_addr: SuiAddress = operator_address.parse().expect("valid SuiAddress");
         {
             let cluster = sui_cluster.lock().await;
@@ -109,7 +116,9 @@ impl OysterTestHarness {
         // 5. Fund the operator wallet with WAL (needed for reserve_space).
         // The admin wallet (inside walrus_client) has WAL from contract deployment.
         // Load it from the temp_dir, find WAL coins, and transfer to the operator.
+        eprintln!("[harness] funding operator with WAL...");
         fund_with_wal(&walrus_client, &rpc_url, operator_sui_addr, WAL_FUND_AMOUNT).await;
+        eprintln!("[harness] operator funded");
 
         // 6. Build DirectWalrusBlobStore pointing at the test cluster.
         // Use oyster's re-exported sui_types::ObjectID to match DirectWalrusBlobStore.
@@ -162,6 +171,7 @@ impl OysterTestHarness {
         };
 
         let router = routes::build_router(state);
+        eprintln!("[harness] oyster router built, harness ready");
 
         Self {
             router,
@@ -175,6 +185,44 @@ impl OysterTestHarness {
             rpc_url,
             walrus_client,
         }
+    }
+
+    /// Bind the Oyster HTTP router to a random TCP port and serve it.
+    /// Returns the base URL (e.g., "http://127.0.0.1:12345").
+    /// Waits until the server is accepting connections before returning.
+    pub async fn serve_on_random_port(&self) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind oyster http");
+        let addr = listener.local_addr().unwrap();
+        let router = self.router.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, router)
+                .await
+                .expect("oyster http server error");
+        });
+        let url = format!("http://{addr}");
+        eprintln!("[harness] waiting for HTTP server at {url} to be ready...");
+        // Wait for the server to be ready.
+        for i in 0..50 {
+            match reqwest::Client::new()
+                .get(format!("{url}/health"))
+                .send()
+                .await
+            {
+                Ok(_) => {
+                    eprintln!("[harness] HTTP server ready after {i} polls");
+                    return url;
+                }
+                Err(e) => {
+                    if i % 10 == 9 {
+                        eprintln!("[harness] still waiting for server (attempt {i}): {e}");
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+        panic!("oyster http server at {url} did not become ready");
     }
 
     /// Fund an address with SUI from the test cluster's admin wallet.

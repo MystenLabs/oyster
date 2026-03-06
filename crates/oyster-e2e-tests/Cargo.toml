@@ -36,3 +36,6 @@ walrus-sui = { workspace = true, features = ["test-utils"] }
 walrus-test-utils = { workspace = true }
 zeroize = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
+assert_cmd = "2.1.2"
+predicates = "3.1.4"
+tempfile = { workspace = true }
