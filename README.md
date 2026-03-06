@@ -11,7 +11,7 @@ Decentralized object storage built on [Walrus](https://walrus.xyz/) and [Sui](ht
 
 Oyster provides a Web2-friendly HTTP API (buckets, blobs, API keys) backed by Walrus for
 decentralized blob storage and Sui for on-chain state. A companion service, **Pearl**, handles
-wallet custody and transaction signing in isolation.
+deterministic key derivation and transaction signing in isolation.
 
 ## Architecture
 
@@ -22,30 +22,25 @@ wallet custody and transaction signing in isolation.
                          |                      |
                          |  Buckets / Blobs     |
                          |  API Keys / Auth     |
-                         |  Extension Task      |
+                         |  Extension Worker    |
                          +----------+-----------+
                                     |
                   +---------+-------+--------+-----------+
                   |         |                |           |
                   v         v                v           v
             +---------+ +--------+    +------------+ +--------+
-            | SQLite  | | Walrus |    |   Pearl    | |  Sui   |
-            | oyster  | | Nodes  |    |  (gRPC)    | |  RPC   |
-            | .db     | |        |    |   :50051   | |        |
-            +---------+ +--------+    +-----+------+ +--------+
-                                            |
-                                      +-----+------+
-                                      |   SQLite   |
-                                      |  pearl.db  |
-                                      +------------+
+            |Database | | Walrus |    |   Pearl    | |  Sui   |
+            |(SQLite  | | Nodes  |    |  (gRPC)    | |  RPC   |
+            | or PG)  | |        |    |   :50051   | |        |
+            +---------+ +--------+    +------------+ +--------+
 ```
 
 ### Crates
 
 | Crate | Type | Purpose |
 |-------|------|---------|
-| `crates/oyster` | HTTP server (lib + bin) | Object storage API, blob store abstraction, extension task |
-| `crates/pearl` | gRPC server (lib + bin) | Wallet custody, transaction signing, balance tracking |
+| `crates/oyster` | HTTP server (lib + bin) | Object storage API, blob store abstraction, extension worker |
+| `crates/pearl` | gRPC server (lib + bin) | Wallet custody, transaction signing, deterministic key derivation |
 | `crates/oyster-cli` | CLI binary | Command-line client for the Oyster HTTP API |
 | `crates/oyster-e2e-tests` | Test crate | Full-stack E2E tests (Sui + Walrus + Pearl + Oyster) |
 
@@ -53,22 +48,22 @@ wallet custody and transaction signing in isolation.
 
 1. **Users** interact with Oyster's HTTP API to store and retrieve blobs.
 2. **Oyster** manages buckets, blob metadata, API keys, and content-addressed deduplication in
-   its own SQLite database.
+   its database.
 3. When configured for Walrus, Oyster encodes blob data with the Walrus SDK, builds Sui
    Programmable Transaction Blocks (PTBs) for `reserve_space`, `register_blob`, and
    `certify_blob`, then delegates signing to Pearl.
-4. **Pearl** holds Ed25519 private keys in its own SQLite database, signs transactions on
-   request, tracks cached on-chain balances, and manages a pending-transaction lifecycle for
-   cost accounting.
-5. A background **extension task** in Oyster monitors blob expiry and extends storage on-chain.
-6. A background **reconciliation task** in Pearl periodically queries Sui RPC for actual
-   on-chain balances and times out stale pending transactions.
+4. **Pearl** derives Ed25519 keys deterministically from a master seed via HKDF-SHA256 and signs
+   transactions on request. It is fully stateless -- no database, no balance tracking.
+5. A background **extension worker** (`oysterd extend`) monitors blob expiry and extends storage
+   on-chain.
 
 ---
 
 ## Oyster (HTTP API)
 
-Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`.
+Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`. The server
+binary is `oysterd`, which supports two subcommands: `oysterd serve` (default) starts the HTTP
+API, and `oysterd extend` runs the blob extension background worker.
 
 ### Data model
 
@@ -98,6 +93,9 @@ Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`
 | `GET` | `/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
 | `PATCH` | `/blobs/{object_id}/metadata` | Yes | Update content type |
 | `DELETE` | `/blobs/{object_id}` | Yes | Delete blob |
+| `GET` | `/health` | No | Liveness probe |
+| `GET` | `/ready` | No | Readiness probe (checks DB and Pearl connectivity) |
+| `GET` | `/metrics` | No | Prometheus metrics |
 
 Pagination is cursor-based. Pass `?limit=N&cursor=TOKEN` to paginate; the response includes
 `next_cursor` when more pages exist.
@@ -119,23 +117,28 @@ Oyster selects a blob store at startup based on environment variables:
 4. Builds a `certify_blob` PTB and submits via Pearl.
 5. Returns both the content-addressed `blob_id` and the Sui `sui_object_id`.
 
-### Extension task
+### Extension worker
 
-When Walrus integration is active, a background task runs on a configurable interval:
+Run as a separate process with `oysterd extend`. When Walrus integration is active, it runs on
+a configurable interval:
 
 1. Queries the Oyster database for blobs expiring within a lookahead window.
-2. Checks the Pearl wallet balance -- skips the cycle if SUI or WAL is below the configured
-   minimum.
-3. For each expiring blob, builds an `extend_blob` PTB, signs via Pearl, and submits to Sui.
-4. Updates the `expires_at` timestamp in the Oyster database.
+2. For each expiring blob, builds an `extend_blob` PTB, signs via Pearl, and submits to Sui.
+3. Updates the `expires_at` timestamp in the Oyster database.
+
+When extension failures indicate insufficient funds, an optional fund manager webhook
+(`FUND_MANAGER_WEBHOOK_URL`) is notified with the account ID, wallet address, and error details.
+The webhook client uses a circuit breaker to avoid repeated calls to a failing endpoint.
 
 ### Database
 
-SQLite with WAL journal mode. Migrations in `crates/oyster/migrations/`:
+Supports SQLite and PostgreSQL via the SQLx Any driver; the backend is determined at runtime by
+the `DATABASE_URL` connection string. Migrations are per backend under `crates/oyster/migrations/`:
 
-- `001_initial.sql` -- accounts, api_keys, buckets, blobs
-- `002_add_sui_object_id.sql` -- adds `sui_object_id` and expiry tracking to blobs
-- `003_add_pearl_account_id.sql` -- links Oyster accounts to Pearl accounts
+- `migrations/sqlite/001_initial.sql`
+- `migrations/postgres/001_initial.sql`
+
+Tables: `accounts`, `api_keys`, `buckets`, `blobs`.
 
 ### Configuration
 
@@ -144,28 +147,30 @@ All configuration is via environment variables.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BIND_ADDR` | `0.0.0.0:3000` | HTTP listen address |
-| `DATABASE_URL` | `sqlite:oyster.db?mode=rwc` | SQLite connection string |
+| `DATABASE_URL` | `sqlite:oyster.db?mode=rwc` | Database connection string (SQLite or PostgreSQL) |
 | `BLOB_STORE_PATH` | `blob_store` | Path for LocalBlobStore |
-| `ENABLE_DEBUG` | `true` | Enable `/debug/*` endpoints |
+| `ENABLE_DEBUG` | `false` | Enable `/debug/*` endpoints |
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
-| `PEARL_ACCOUNT_ID` | -- | Default Pearl account for operator transactions |
 | `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
 | `WALRUS_DEFAULT_EPOCHS` | `5` | Storage epochs for new blobs |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |
 | `WALRUS_SYSTEM_OBJECT` | -- | Walrus system object ID on Sui |
 | `WALRUS_STAKING_OBJECT` | -- | Walrus staking object ID on Sui |
-| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension task check interval |
+| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension worker check interval |
 | `BLOB_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead to look for expiring blobs |
 | `BLOB_EXTEND_EPOCHS` | `5` | Epochs to extend by |
+| `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
+| `FUND_MANAGER_WEBHOOK_URL` | -- | Optional webhook URL for insufficient-funds notifications |
 
 ---
 
 ## Pearl (gRPC wallet service)
 
-Pearl is a tonic-based gRPC service that manages Sui Ed25519 keypairs and signs transactions.
-It is intentionally isolated from business logic -- it only knows about wallets, keys, and
-balances.
+Pearl is a tonic-based gRPC service that derives Ed25519 keypairs deterministically from a
+master seed and signs Sui transactions. It is fully stateless -- no database, no balance
+tracking. It is intentionally isolated from business logic; it only knows about key derivation
+and signing.
 
 ### gRPC API
 
@@ -173,11 +178,8 @@ Defined in `crates/pearl/proto/pearl.proto`:
 
 | RPC | Description |
 |-----|-------------|
-| `CreateAccount` | Generate keypair, store in DB, return account ID + Sui address |
-| `GetAccountWallets` | Return wallet info (address, balance thresholds) for an account |
-| `SignTransaction` | Sign BCS-encoded `TransactionData`, create pending transaction record |
-| `GetBalance` | Return cached SUI/WAL balances and minimum thresholds |
-| `ConfirmTransaction` | Report transaction outcome, adjust cached balance |
+| `GetAddress` | Derive the Sui address for an account ID |
+| `SignTransaction` | Sign BCS-encoded `TransactionData`, return signed bytes |
 
 Authentication: all RPCs require a `Bearer {secret}` in the `authorization` gRPC metadata
 header.
@@ -187,68 +189,27 @@ header.
 ```
   Oyster                         Pearl                         Sui RPC
     |                              |                              |
-    |-- SignTransaction(tx_data) ->|                              |
-    |   (estimated_sui_cost,       |                              |
-    |    estimated_wal_cost)       |-- sign with Ed25519 key      |
-    |                              |-- INSERT pending_tx           |
-    |                              |-- UPDATE cached balance -= est|
-    |<- signed_tx, pending_tx_id --|                              |
+    |-- SignTransaction(tx_data,   |                              |
+    |      account_id) ---------->|                              |
+    |                              |-- derive Ed25519 key         |
+    |                              |   (HKDF-SHA256 from seed)   |
+    |                              |-- sign tx_data               |
+    |<-- signed_transaction ------|                              |
     |                              |                              |
     |-- execute_transaction_block -------------------------------->|
-    |<- SuiTransactionBlockResponse -------------------------------|
-    |                              |                              |
-    |-- ConfirmTransaction ------->|                              |
-    |   (pending_tx_id, digest,    |-- UPDATE pending_tx status   |
-    |    success, actual costs)    |-- correct cached balance     |
-    |<- updated cached balances ---|                              |
+    |<-- SuiTransactionBlockResponse -------------------------------|
 ```
-
-If confirmation fails (Pearl unreachable), the reconciliation task will eventually correct the
-balance by querying on-chain state and timing out stale pending transactions.
-
-### Balance tracking
-
-Pearl caches SUI and WAL balances per account with an optimistic deduction model:
-
-- **On sign:** Estimated cost is deducted from the cached balance. A `pending_transaction`
-  record is created.
-- **On confirm (success):** The difference between estimated and actual cost is corrected.
-- **On confirm (failure):** The full estimated cost is refunded.
-- **On timeout:** Stale pending transactions (default 30 min) are refunded by the
-  reconciliation task.
-- **Reconciliation:** A background task periodically picks a random account, queries on-chain
-  balances via Sui RPC, and overwrites the cache.
-
-The cached balance can go negative (best-effort tracking). Oyster uses `GetBalance` to check
-minimums before extension cycles but proceeds on failure.
-
-### Reconciliation task
-
-Enabled when `SUI_RPC_URL` is set. Runs on a configurable interval:
-
-1. Pick a random account.
-2. Query on-chain SUI balance (and WAL balance if `WAL_COIN_TYPE` is configured).
-3. Update cached balance in the database.
-4. Find and refund pending transactions older than the timeout threshold.
-
-### Database
-
-SQLite with WAL journal mode. Migrations in `crates/pearl/migrations/`:
-
-- `001_initial.sql` -- accounts table with keypair storage
-- `002_balance_tracking.sql` -- cached balances on accounts, pending_transactions table
 
 ### Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PEARL_DATABASE_URL` | `sqlite:pearl.db?mode=rwc` | SQLite connection string |
 | `PEARL_BIND_ADDR` | `0.0.0.0:50051` | gRPC listen address |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for service auth (**required**) |
-| `SUI_RPC_URL` | -- | Sui RPC endpoint (enables reconciliation) |
-| `WAL_COIN_TYPE` | -- | Fully-qualified WAL coin type for balance queries |
-| `PEARL_RECONCILIATION_INTERVAL_SECS` | `300` | Reconciliation loop interval |
-| `PEARL_PENDING_TX_TIMEOUT_MINUTES` | `30` | Timeout for unconfirmed pending transactions |
+| `PEARL_MASTER_SEED` | -- | Hex-encoded master seed for key derivation (**required**, >= 32 bytes) |
+| `PEARL_METRICS_BIND_ADDR` | `0.0.0.0:50052` | Prometheus metrics endpoint |
+| `PEARL_TLS_CERT_PATH` | -- | TLS certificate path (optional; must pair with key) |
+| `PEARL_TLS_KEY_PATH` | -- | TLS private key path (optional; must pair with cert) |
 
 ---
 
@@ -271,22 +232,34 @@ machine-readable output.
 
 ---
 
+## Docker
+
+Dockerfiles are provided for both services:
+
+- `docker/Dockerfile.oyster` -- Builds the `oysterd` binary. Exposes port 3000.
+- `docker/Dockerfile.pearl` -- Builds the `pearl` binary. Exposes ports 50051 (gRPC) and 50052 (metrics).
+
+---
+
 ## Quick start
 
 ### Prerequisites
 
 - Rust (edition 2024)
 - `protoc` (`brew install protobuf` on macOS)
-- SQLite3
 
 ### Development (local blob store, no Walrus)
 
 ```bash
 # Terminal 1: start Pearl
+PEARL_MASTER_SEED=<hex-encoded-seed> \
+PEARL_SERVICE_SECRET=<shared-secret> \
 cargo run -p pearl
 
 # Terminal 2: start Oyster
-PEARL_GRPC_URL=http://127.0.0.1:50051 cargo run -p oyster
+PEARL_GRPC_URL=http://127.0.0.1:50051 \
+PEARL_SERVICE_SECRET=<shared-secret> \
+cargo run -p oyster  # runs `oysterd serve` by default
 
 # Terminal 3: use the API
 curl -X POST http://localhost:3000/debug/create-account
@@ -303,6 +276,13 @@ curl -X PUT http://localhost:3000/buckets/<bucket_id>/blobs \
   -d 'hello world'
 
 curl http://localhost:3000/blobs/<object_id>
+```
+
+To run the extension worker separately:
+
+```bash
+cargo run -p oyster -- extend
+# or: oysterd extend
 ```
 
 ### Full stack (with an external Walrus network)
@@ -338,9 +318,10 @@ cargo test
 | Oyster API | Bearer API key (Blake2s-256 hashed) | Per-account |
 | Pearl gRPC | Shared service secret | Service-to-service |
 | Blob reads | Unauthenticated | Public |
-| Private keys | Stored as BLOB in Pearl's SQLite | At rest (plaintext in dev) |
+| Private keys | Derived from master seed (HKDF-SHA256), in-memory only | Never stored at rest |
 
-Production hardening (not yet implemented):
-- Private key encryption at rest (KMS or column-level encryption)
-- mTLS or service mesh auth for Pearl gRPC
+Production hardening:
+- Secure `PEARL_MASTER_SEED` via a secret manager (e.g. AWS Secrets Manager, HashiCorp Vault)
+- TLS for Pearl gRPC (supported via `PEARL_TLS_CERT_PATH` / `PEARL_TLS_KEY_PATH`)
+- mTLS or service mesh auth for additional Pearl isolation
 - Rate limiting and abuse prevention
