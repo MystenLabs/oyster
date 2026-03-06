@@ -142,7 +142,9 @@ Tables: `accounts`, `api_keys`, `buckets`, `blobs`.
 
 ### Configuration
 
-All configuration is via environment variables.
+All configuration is via environment variables. Secrets can alternatively be loaded from files
+using CLI flags (useful for Kubernetes secrets, Docker Swarm, or secret managers that mount
+files to `/run/secrets/`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
@@ -162,6 +164,10 @@ All configuration is via environment variables.
 | `BLOB_EXTEND_EPOCHS` | `5` | Epochs to extend by |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
 | `FUND_MANAGER_WEBHOOK_URL` | -- | Optional webhook URL for insufficient-funds notifications |
+
+| CLI flag | Description |
+|----------|-------------|
+| `--pearl-service-secret-file PATH` | Read `PEARL_SERVICE_SECRET` from a file |
 
 ---
 
@@ -211,6 +217,11 @@ header.
 | `PEARL_TLS_CERT_PATH` | -- | TLS certificate path (optional; must pair with key) |
 | `PEARL_TLS_KEY_PATH` | -- | TLS private key path (optional; must pair with cert) |
 
+| CLI flag | Description |
+|----------|-------------|
+| `--pearl-service-secret-file PATH` | Read `PEARL_SERVICE_SECRET` from a file |
+| `--pearl-master-seed-file PATH` | Read `PEARL_MASTER_SEED` from a file |
+
 ---
 
 ## Oyster CLI
@@ -255,6 +266,11 @@ Dockerfiles are provided for both services:
 PEARL_MASTER_SEED=<hex-encoded-seed> \
 PEARL_SERVICE_SECRET=<shared-secret> \
 cargo run -p pearl
+
+# Or load secrets from files (useful for Kubernetes / Docker Swarm):
+# cargo run -p pearl -- \
+#   --pearl-master-seed-file /run/secrets/pearl_master_seed \
+#   --pearl-service-secret-file /run/secrets/pearl_service_secret
 
 # Terminal 2: start Oyster
 PEARL_GRPC_URL=http://127.0.0.1:50051 \

@@ -1,6 +1,6 @@
 #![allow(missing_docs)]
 
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use oyster::{
@@ -17,6 +17,10 @@ use tower_http::{cors::CorsLayer, trace::TraceLayer};
 #[derive(Parser)]
 #[command(name = "oysterd", about = "Oyster object storage service")]
 struct Cli {
+    /// Read PEARL_SERVICE_SECRET from this file instead of the environment.
+    #[arg(long, value_name = "PATH")]
+    pearl_service_secret_file: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -39,7 +43,10 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
-    let config = Config::from_env();
+    let overrides = oyster::config::SecretOverrides {
+        pearl_service_secret: cli.pearl_service_secret_file.map(read_secret_file),
+    };
+    let config = Config::new(overrides);
 
     let db = db::create_pool(&config.database_url)
         .await
@@ -179,4 +186,11 @@ async fn main() {
             .await;
         }
     }
+}
+
+fn read_secret_file(path: PathBuf) -> String {
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read secret file {}: {e}", path.display()))
+        .trim_end()
+        .to_string()
 }

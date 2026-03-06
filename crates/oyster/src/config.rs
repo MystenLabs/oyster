@@ -1,5 +1,11 @@
 use std::path::PathBuf;
 
+/// Secrets that can be provided via file instead of environment variable.
+pub struct SecretOverrides {
+    /// Pearl service secret, if loaded from a file.
+    pub pearl_service_secret: Option<String>,
+}
+
 /// Oyster server configuration, loaded from environment variables.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -38,8 +44,8 @@ pub struct Config {
 }
 
 impl Config {
-    /// Load configuration from environment variables, using sensible defaults.
-    pub fn from_env() -> Self {
+    /// Load configuration from environment variables, with optional secret overrides.
+    pub fn new(overrides: SecretOverrides) -> Self {
         Self {
             bind_addr: std::env::var("BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:3000".into()),
             database_url: std::env::var("DATABASE_URL")
@@ -51,8 +57,12 @@ impl Config {
                 .map(|v| v == "1" || v == "true")
                 .unwrap_or(false),
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
-            pearl_service_secret: std::env::var("PEARL_SERVICE_SECRET")
-                .expect("PEARL_SERVICE_SECRET env var is required"),
+            pearl_service_secret: overrides
+                .pearl_service_secret
+                .or_else(|| std::env::var("PEARL_SERVICE_SECRET").ok())
+                .expect(
+                    "PEARL_SERVICE_SECRET is required (set env var or use --pearl-service-secret-file)",
+                ),
             walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
             walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
                 .ok()
@@ -77,5 +87,12 @@ impl Config {
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
             fund_manager_webhook_url: std::env::var("FUND_MANAGER_WEBHOOK_URL").ok(),
         }
+    }
+
+    /// Load configuration from environment variables, using sensible defaults.
+    pub fn from_env() -> Self {
+        Self::new(SecretOverrides {
+            pearl_service_secret: None,
+        })
     }
 }

@@ -7134,6 +7134,7 @@ version = "0.1.0"
 dependencies = [
  "axum 0.8.8",
  "bcs",
+ "clap",
  "fastcrypto 0.1.9 (git+https://github.com/MystenLabs/fastcrypto?rev=db643fd05a1b1c4cd52de3939766b53e12ce137e)",
  "hex",
  "hkdf",

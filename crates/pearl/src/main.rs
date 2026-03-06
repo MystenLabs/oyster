@@ -1,17 +1,40 @@
 #![allow(missing_docs)]
 
+use std::path::PathBuf;
+
+use clap::Parser;
 use pearl::{
     auth::check_service_secret,
     config::Config,
     grpc::{PearlService, proto::pearl_server::PearlServer},
 };
 use tonic::transport::Server;
+use zeroize::Zeroizing;
+
+#[derive(Parser)]
+#[command(name = "pearl", about = "Pearl wallet custody service")]
+struct Cli {
+    /// Read PEARL_SERVICE_SECRET from this file instead of the environment.
+    #[arg(long, value_name = "PATH")]
+    pearl_service_secret_file: Option<PathBuf>,
+
+    /// Read PEARL_MASTER_SEED from this file instead of the environment.
+    #[arg(long, value_name = "PATH")]
+    pearl_master_seed_file: Option<PathBuf>,
+}
 
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
 
-    let config = Config::from_env();
+    let cli = Cli::parse();
+    let overrides = pearl::config::SecretOverrides {
+        service_secret: cli.pearl_service_secret_file.map(read_secret_file),
+        master_seed_hex: cli
+            .pearl_master_seed_file
+            .map(|p| Zeroizing::new(read_secret_file(p))),
+    };
+    let config = Config::new(overrides);
     tracing::info!("pearl starting on {}", config.bind_addr);
 
     let metrics_handle = pearl::metrics::setup();
@@ -58,6 +81,13 @@ async fn main() {
         .serve(addr)
         .await
         .expect("gRPC server error");
+}
+
+fn read_secret_file(path: PathBuf) -> String {
+    std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("failed to read secret file {}: {e}", path.display()))
+        .trim_end()
+        .to_string()
 }
 
 async fn serve_metrics(handle: metrics_exporter_prometheus::PrometheusHandle, bind_addr: String) {

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 axum = { workspace = true }
 bcs = { workspace = true }
+clap = { workspace = true }
 fastcrypto = { workspace = true }
 hex = { workspace = true }
 hkdf = { workspace = true }

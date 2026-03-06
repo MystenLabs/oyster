@@ -1,5 +1,13 @@
 use zeroize::Zeroizing;
 
+/// Secrets that can be provided via file instead of environment variable.
+pub struct SecretOverrides {
+    /// Service secret, if loaded from a file.
+    pub service_secret: Option<String>,
+    /// Master seed hex, if loaded from a file.
+    pub master_seed_hex: Option<Zeroizing<String>>,
+}
+
 /// Pearl service configuration, read from environment variables.
 #[derive(Clone)]
 pub struct Config {
@@ -31,11 +39,19 @@ impl std::fmt::Debug for Config {
 }
 
 impl Config {
-    /// Load configuration from environment variables.
-    pub fn from_env() -> Self {
-        let master_seed_hex = Zeroizing::new(
-            std::env::var("PEARL_MASTER_SEED").expect("PEARL_MASTER_SEED env var is required"),
-        );
+    /// Load configuration from environment variables, with optional secret overrides.
+    pub fn new(overrides: SecretOverrides) -> Self {
+        let service_secret = overrides
+            .service_secret
+            .or_else(|| std::env::var("PEARL_SERVICE_SECRET").ok())
+            .expect(
+                "PEARL_SERVICE_SECRET is required (set env var or use --pearl-service-secret-file)",
+            );
+
+        let master_seed_hex = overrides
+            .master_seed_hex
+            .or_else(|| std::env::var("PEARL_MASTER_SEED").ok().map(Zeroizing::new))
+            .expect("PEARL_MASTER_SEED is required (set env var or use --pearl-master-seed-file)");
         let master_seed = Zeroizing::new(
             hex::decode(&*master_seed_hex).expect("PEARL_MASTER_SEED must be valid hex"),
         );
@@ -56,13 +72,20 @@ impl Config {
 
         Self {
             bind_addr: std::env::var("PEARL_BIND_ADDR").unwrap_or_else(|_| "0.0.0.0:50051".into()),
-            service_secret: std::env::var("PEARL_SERVICE_SECRET")
-                .expect("PEARL_SERVICE_SECRET env var is required"),
+            service_secret,
             master_seed,
             tls_cert_path,
             tls_key_path,
             metrics_bind_addr: std::env::var("PEARL_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50052".into()),
         }
+    }
+
+    /// Load configuration from environment variables.
+    pub fn from_env() -> Self {
+        Self::new(SecretOverrides {
+            service_secret: None,
+            master_seed_hex: None,
+        })
     }
 }
