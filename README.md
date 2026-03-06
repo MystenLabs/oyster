@@ -236,7 +236,7 @@ machine-readable output.
 
 Dockerfiles are provided for both services:
 
-- `docker/Dockerfile.oyster` -- Builds the `oysterd` binary. Exposes port 3000.
+- `docker/Dockerfile.oysterd` -- Builds the `oysterd` binary. Exposes port 3000.
 - `docker/Dockerfile.pearl` -- Builds the `pearl` binary. Exposes ports 50051 (gRPC) and 50052 (metrics).
 
 ---
