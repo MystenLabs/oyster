@@ -28,6 +28,8 @@ pub mod pearl_client;
 pub mod routes;
 /// Sui transaction building, signing, and submission helpers.
 pub mod sui_transaction;
+/// Outbound webhook for fund manager notifications.
+pub mod webhook;
 
 use std::sync::Arc;
 

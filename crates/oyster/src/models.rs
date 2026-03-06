@@ -82,6 +82,8 @@ pub struct BlobMetadata {
 /// needed to extend a blob, including the owning account's Pearl wallet ID.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ExpiringBlob {
+    /// Oyster account ID of the blob owner.
+    pub account_id: String,
     /// On-chain Sui object ID.
     pub sui_object_id: String,
     /// Blob size in bytes.

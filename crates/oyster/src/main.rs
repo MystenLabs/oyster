@@ -163,6 +163,10 @@ async fn main() {
                 extend_epochs: config.blob_extend_epochs,
             };
 
+            let webhook_client = config
+                .fund_manager_webhook_url
+                .map(oyster::webhook::WebhookClient::new);
+
             oyster::extension_task::run_extension_loop(
                 db,
                 pearl_conn,
@@ -170,6 +174,7 @@ async fn main() {
                 system_object,
                 staking_object,
                 ext_config,
+                webhook_client,
             )
             .await;
         }

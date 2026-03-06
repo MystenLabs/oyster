@@ -33,6 +33,8 @@ pub struct Config {
     pub blob_extend_epochs: u32,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
+    /// Optional URL to POST a webhook when extension failures indicate insufficient funds.
+    pub fund_manager_webhook_url: Option<String>,
 }
 
 impl Config {
@@ -73,6 +75,7 @@ impl Config {
                 .unwrap_or(5),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
+            fund_manager_webhook_url: std::env::var("FUND_MANAGER_WEBHOOK_URL").ok(),
         }
     }
 }

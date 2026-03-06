@@ -35,6 +35,17 @@ pub const EXTENSION_BLOBS_EXPIRING: &str = "oyster_extension_blobs_expiring";
 /// Gauge: number of blobs processed (extended + errored) in the current cycle.
 pub const EXTENSION_CYCLE_BLOBS_PROCESSED: &str = "oyster_extension_cycle_blobs_processed";
 
+// Webhook metrics
+
+/// Counter: total webhook delivery attempts.
+pub const WEBHOOK_ATTEMPTS_TOTAL: &str = "oyster_webhook_attempts_total";
+/// Counter: total successful webhook deliveries.
+pub const WEBHOOK_SUCCESSES_TOTAL: &str = "oyster_webhook_successes_total";
+/// Counter: total failed webhook deliveries (after retries exhausted or 4xx).
+pub const WEBHOOK_FAILURES_TOTAL: &str = "oyster_webhook_failures_total";
+/// Counter: number of times the webhook circuit breaker opened.
+pub const WEBHOOK_CIRCUIT_OPEN_TOTAL: &str = "oyster_webhook_circuit_open_total";
+
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {
     metrics_exporter_prometheus::PrometheusBuilder::new()

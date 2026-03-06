@@ -160,6 +160,7 @@ impl OysterTestHarness {
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,
             extension_metrics_bind_addr: "unused".into(),
+            fund_manager_webhook_url: None,
         };
 
         let state = AppState {

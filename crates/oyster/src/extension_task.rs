@@ -16,6 +16,7 @@ use crate::{
     },
     pearl_client::PearlConnection,
     sui_transaction,
+    webhook::{self, InsufficientFundsPayload, WebhookClient},
 };
 
 /// Configuration for the background blob extension task.
@@ -37,6 +38,7 @@ pub async fn run_extension_loop(
     system_object: ObjectID,
     staking_object: ObjectID,
     config: ExtensionConfig,
+    webhook_client: Option<WebhookClient>,
 ) {
     tracing::info!(
         "blob extension task started (interval={}s, lookahead={}d, epochs={})",
@@ -137,6 +139,18 @@ pub async fn run_extension_loop(
                 );
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_blob").increment(1);
                 errors += 1;
+
+                if let Some(ref wh) = webhook_client
+                    && webhook::is_insufficient_funds_error(e.as_ref())
+                {
+                    wh.notify_insufficient_funds(&InsufficientFundsPayload {
+                        account_id: blob.account_id.clone(),
+                        address: sender_address.to_string(),
+                        error: e.to_string(),
+                    })
+                    .await;
+                }
+
                 continue;
             }
 
