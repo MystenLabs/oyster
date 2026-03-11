@@ -128,7 +128,7 @@ pub async fn delete_bucket(
                 .delete(
                     &crate::blob_store::BlobId(info.blob_id.clone()),
                     info.sui_object_id.as_deref(),
-                    Some(&auth.account_id),
+                    &auth.account_id,
                 )
                 .await;
         }

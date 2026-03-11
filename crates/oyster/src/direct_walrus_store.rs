@@ -64,11 +64,8 @@ impl DirectWalrusBlobStore {
     async fn store_impl(
         &self,
         data: &[u8],
-        account_id: Option<&str>,
+        account_id: &str,
     ) -> Result<StoreResult, BlobStoreError> {
-        let account_id = account_id.ok_or_else(|| {
-            BlobStoreError::Http("account_id required for on-chain storage".to_string())
-        })?;
         let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
             .await
             .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
@@ -176,11 +173,11 @@ impl BlobStore for DirectWalrusBlobStore {
     fn store(
         &self,
         data: &[u8],
-        account_id: Option<&str>,
+        account_id: &str,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
-        let account_id = account_id.map(String::from);
-        Box::pin(async move { self.store_impl(&data, account_id.as_deref()).await })
+        let account_id = account_id.to_string();
+        Box::pin(async move { self.store_impl(&data, &account_id).await })
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
@@ -215,19 +212,16 @@ impl BlobStore for DirectWalrusBlobStore {
         &self,
         _blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        account_id: Option<&str>,
+        account_id: &str,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let sui_object_id = sui_object_id.map(String::from);
-        let account_id = account_id.map(String::from);
+        let account_id = account_id.to_string();
         Box::pin(async move {
             let Some(sui_oid) = sui_object_id else {
                 return Ok(());
             };
-            let Some(ref acct_id) = account_id else {
-                return Ok(());
-            };
 
-            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, acct_id)
+            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, &account_id)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
             let object_id: ObjectID = sui_oid
@@ -242,7 +236,7 @@ impl BlobStore for DirectWalrusBlobStore {
                 .build_transaction_data(None)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
-            sui_transaction::sign_and_submit(&self.pearl, acct_id, &self.rpc_url, tx_data)
+            sui_transaction::sign_and_submit(&self.pearl, &account_id, &self.rpc_url, tx_data)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("delete tx: {e}")))?;
 

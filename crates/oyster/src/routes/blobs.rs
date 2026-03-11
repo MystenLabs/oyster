@@ -67,7 +67,7 @@ pub async fn store_blob(
         auth.account_id,
         content_type
     );
-    let result = match state.blob_store.store(&body, Some(&auth.account_id)).await {
+    let result = match state.blob_store.store(&body, &auth.account_id).await {
         Ok(r) => {
             metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
                 "operation" => "store", "result" => "ok"
@@ -318,7 +318,7 @@ pub async fn delete_blob(
             .delete(
                 &BlobId(info.blob_id),
                 info.sui_object_id.as_deref(),
-                Some(&auth.account_id),
+                &auth.account_id,
             )
             .await
         {

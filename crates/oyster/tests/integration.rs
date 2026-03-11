@@ -28,12 +28,12 @@ use tower::ServiceExt;
 // SpyBlobStore – wraps LocalBlobStore and records account_id from store()
 // ---------------------------------------------------------------------------
 
-type DeleteCall = (String, Option<String>, Option<String>);
+type DeleteCall = (String, Option<String>, String);
 
 struct SpyBlobStore {
     inner: LocalBlobStore,
     /// Each `store()` call appends the `account_id` argument here.
-    calls: Mutex<Vec<Option<String>>>,
+    calls: Mutex<Vec<String>>,
     /// Each `delete()` call appends (blob_id, sui_object_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
 }
@@ -47,7 +47,7 @@ impl SpyBlobStore {
         }
     }
 
-    fn recorded_calls(&self) -> Vec<Option<String>> {
+    fn recorded_calls(&self) -> Vec<String> {
         self.calls.lock().unwrap().clone()
     }
 
@@ -62,12 +62,9 @@ impl BlobStore for SpyBlobStore {
     fn store(
         &self,
         data: &[u8],
-        account_id: Option<&str>,
+        account_id: &str,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(account_id.map(|s| s.to_string()));
+        self.calls.lock().unwrap().push(account_id.to_string());
         self.inner.store(data, account_id)
     }
 
@@ -79,12 +76,12 @@ impl BlobStore for SpyBlobStore {
         &self,
         blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        account_id: Option<&str>,
+        account_id: &str,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         self.delete_calls.lock().unwrap().push((
             blob_id.0.clone(),
             sui_object_id.map(|s| s.to_string()),
-            account_id.map(|s| s.to_string()),
+            account_id.to_string(),
         ));
         self.inner.delete(blob_id, sui_object_id, account_id)
     }
@@ -998,7 +995,7 @@ async fn store_blob_passes_account_id() {
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 1);
     assert!(
-        calls[0].is_some(),
+        !calls[0].is_empty(),
         "account_id should always be passed to store()"
     );
 }
@@ -1022,8 +1019,8 @@ async fn store_blob_distinguishes_accounts() {
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 2);
-    assert!(calls[0].is_some());
-    assert!(calls[1].is_some());
+    assert!(!calls[0].is_empty());
+    assert!(!calls[1].is_empty());
     assert_ne!(
         calls[0], calls[1],
         "different accounts should have different IDs"
@@ -1062,7 +1059,7 @@ async fn delete_blob_threads_account_id() {
     // sui_object_id is None because LocalBlobStore::store() returns StoreResult { sui_object_id: None }.
     assert_eq!(*sui_object_id, None);
     assert!(
-        account_id.is_some(),
+        !account_id.is_empty(),
         "account_id should be threaded through to delete()"
     );
 }
