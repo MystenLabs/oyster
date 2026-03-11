@@ -33,9 +33,9 @@ pub async fn build_sui_read_client(
 /// Resolve a Pearl account ID to its Sui wallet address.
 pub async fn resolve_sender_address(
     pearl: &PearlConnection,
-    pearl_account_id: &str,
+    account_id: &str,
 ) -> Result<SuiAddress, Box<dyn std::error::Error + Send + Sync>> {
-    let address = pearl.get_address(pearl_account_id).await?;
+    let address = pearl.get_address(account_id).await?;
     let addr = address.parse()?;
     Ok(addr)
 }
@@ -43,13 +43,13 @@ pub async fn resolve_sender_address(
 /// Sign transaction data via Pearl and submit it to the Sui network.
 pub async fn sign_and_submit(
     pearl: &PearlConnection,
-    pearl_account_id: &str,
+    account_id: &str,
     rpc_url: &str,
     tx_data: TransactionData,
 ) -> Result<SuiTransactionBlockResponse, Box<dyn std::error::Error + Send + Sync>> {
     let tx_bytes = bcs::to_bytes(&tx_data)?;
     let signed_bytes = pearl
-        .sign_transaction(pearl_account_id, tx_bytes)
+        .sign_transaction(account_id, tx_bytes)
         .await
         .map_err(|e| format!("pearl sign error: {e}"))?;
 

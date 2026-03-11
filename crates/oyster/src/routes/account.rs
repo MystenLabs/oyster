@@ -123,26 +123,15 @@ pub async fn get_wallet(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
 ) -> Result<Json<WalletResponse>, AppError> {
-    let account = db::accounts::get_account(&state.db, &auth.account_id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-    let Some(pearl_account_id) = account.pearl_account_id else {
+    let Some(ref pearl) = state.pearl else {
         return Ok(Json(WalletResponse {
             provisioned: false,
             wallet: None,
         }));
     };
 
-    let Some(ref pearl) = state.pearl else {
-        return Ok(Json(WalletResponse {
-            provisioned: true,
-            wallet: None,
-        }));
-    };
-
     let address = pearl
-        .get_address(&pearl_account_id)
+        .get_address(&auth.account_id)
         .await
         .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 
@@ -163,16 +152,10 @@ pub async fn get_wallet(
     ),
 )]
 /// Create a new account with an initial API key. Only available when debug endpoints are enabled.
-/// If Pearl is connected, automatically provisions a wallet for the new account.
 pub async fn debug_create_account(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let pearl_account_id = state
-        .pearl
-        .as_ref()
-        .map(|_| uuid::Uuid::new_v4().to_string());
-
-    let account = db::accounts::create_account(&state.db, pearl_account_id.as_deref()).await?;
+    let account = db::accounts::create_account(&state.db).await?;
 
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);

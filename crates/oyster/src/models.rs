@@ -6,8 +6,6 @@ use utoipa::{IntoParams, ToSchema};
 pub struct Account {
     /// Unique identifier.
     pub id: String,
-    /// Associated Pearl wallet account ID, if provisioned.
-    pub pearl_account_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-update timestamp.
@@ -79,7 +77,7 @@ pub struct BlobMetadata {
 }
 
 /// Internal-only struct for the extension task — contains the minimal fields
-/// needed to extend a blob, including the owning account's Pearl wallet ID.
+/// needed to extend a blob.
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ExpiringBlob {
     /// Oyster account ID of the blob owner.
@@ -90,8 +88,6 @@ pub struct ExpiringBlob {
     pub size: i64,
     /// ISO 8601 expiration timestamp.
     pub expires_at: String,
-    /// Pearl wallet account ID of the blob owner.
-    pub pearl_account_id: String,
 }
 
 // Request types

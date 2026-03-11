@@ -67,8 +67,8 @@ API, and `oysterd extend` runs the blob extension background worker.
 
 ### Data model
 
-- **Account** -- Top-level identity. Has API keys and optionally a Pearl wallet
-  (`pearl_account_id`).
+- **Account** -- Top-level identity. Has API keys and a Pearl-derived wallet (keyed by
+  account ID).
 - **API Key** -- Bearer token for authentication. Stored as a Blake2s-256 hash. Multiple keys
   per account.
 - **Bucket** -- Named container scoped to an account. Bucket names are unique per account.

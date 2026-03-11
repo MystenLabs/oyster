@@ -95,19 +95,17 @@ pub async fn run_extension_loop(
 
         for blob in &blobs {
             // Resolve sender address (cached per account per cycle).
-            let sender_address = match address_cache.get(&blob.pearl_account_id) {
+            let sender_address = match address_cache.get(&blob.account_id) {
                 Some(&addr) => addr,
                 None => {
-                    match sui_transaction::resolve_sender_address(&pearl, &blob.pearl_account_id)
-                        .await
-                    {
+                    match sui_transaction::resolve_sender_address(&pearl, &blob.account_id).await {
                         Ok(addr) => {
-                            address_cache.insert(blob.pearl_account_id.clone(), addr);
+                            address_cache.insert(blob.account_id.clone(), addr);
                             addr
                         }
                         Err(e) => {
                             tracing::warn!(
-                                pearl_account_id = %blob.pearl_account_id,
+                                account_id = %blob.account_id,
                                 error = %e,
                                 "failed to resolve sender address, skipping blob"
                             );
@@ -123,7 +121,7 @@ pub async fn run_extension_loop(
             if let Err(e) = extend_single_blob(
                 &read_client,
                 &pearl,
-                &blob.pearl_account_id,
+                &blob.account_id,
                 &rpc_url,
                 sender_address,
                 &blob.sui_object_id,
@@ -188,7 +186,7 @@ pub async fn run_extension_loop(
 async fn extend_single_blob(
     read_client: &Arc<SuiReadClient>,
     pearl: &PearlConnection,
-    pearl_account_id: &str,
+    account_id: &str,
     rpc_url: &str,
     sender_address: SuiAddress,
     sui_object_id: &str,
@@ -202,7 +200,7 @@ async fn extend_single_blob(
         .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, pearl_account_id, rpc_url, tx_data).await?;
+    sui_transaction::sign_and_submit(pearl, account_id, rpc_url, tx_data).await?;
 
     Ok(())
 }

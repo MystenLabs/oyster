@@ -64,12 +64,12 @@ impl DirectWalrusBlobStore {
     async fn store_impl(
         &self,
         data: &[u8],
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> Result<StoreResult, BlobStoreError> {
-        let pearl_account_id = pearl_account_id.ok_or_else(|| {
-            BlobStoreError::Http("pearl_account_id required for on-chain storage".to_string())
+        let account_id = account_id.ok_or_else(|| {
+            BlobStoreError::Http("account_id required for on-chain storage".to_string())
         })?;
-        let sender_address = sui_transaction::resolve_sender_address(&self.pearl, pearl_account_id)
+        let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
             .await
             .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
 
@@ -107,7 +107,7 @@ impl DirectWalrusBlobStore {
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
         let register_resp =
-            sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
+            sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
 
@@ -161,7 +161,7 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
 
-        sui_transaction::sign_and_submit(&self.pearl, pearl_account_id, &self.rpc_url, tx_data)
+        sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
             .await
             .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
 
@@ -176,11 +176,11 @@ impl BlobStore for DirectWalrusBlobStore {
     fn store(
         &self,
         data: &[u8],
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
-        let pearl_account_id = pearl_account_id.map(String::from);
-        Box::pin(async move { self.store_impl(&data, pearl_account_id.as_deref()).await })
+        let account_id = account_id.map(String::from);
+        Box::pin(async move { self.store_impl(&data, account_id.as_deref()).await })
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
@@ -215,19 +215,19 @@ impl BlobStore for DirectWalrusBlobStore {
         &self,
         _blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let sui_object_id = sui_object_id.map(String::from);
-        let pearl_account_id = pearl_account_id.map(String::from);
+        let account_id = account_id.map(String::from);
         Box::pin(async move {
             let Some(sui_oid) = sui_object_id else {
                 return Ok(());
             };
-            let Some(ref pearl_acct) = pearl_account_id else {
+            let Some(ref acct_id) = account_id else {
                 return Ok(());
             };
 
-            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, pearl_acct)
+            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, acct_id)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
             let object_id: ObjectID = sui_oid
@@ -242,7 +242,7 @@ impl BlobStore for DirectWalrusBlobStore {
                 .build_transaction_data(None)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
-            sui_transaction::sign_and_submit(&self.pearl, pearl_acct, &self.rpc_url, tx_data)
+            sui_transaction::sign_and_submit(&self.pearl, acct_id, &self.rpc_url, tx_data)
                 .await
                 .map_err(|e| BlobStoreError::Http(format!("delete tx: {e}")))?;
 

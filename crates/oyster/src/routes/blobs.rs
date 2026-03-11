@@ -58,16 +58,6 @@ pub async fn store_blob(
         .ok_or(AppError::NotFound)?;
     tracing::debug!("bucket {} found for account {}", bucket_id, auth.account_id);
 
-    let account = db::accounts::get_account(&state.db, &auth.account_id)
-        .await?
-        .ok_or(AppError::NotFound)?;
-
-    tracing::debug!(
-        ?account,
-        "account {} found with pearl_account_id {:?}",
-        auth.account_id,
-        account.pearl_account_id
-    );
     let content_type = headers
         .get("content-type")
         .and_then(|v| v.to_str().ok())
@@ -77,11 +67,7 @@ pub async fn store_blob(
         auth.account_id,
         content_type
     );
-    let result = match state
-        .blob_store
-        .store(&body, account.pearl_account_id.as_deref())
-        .await
-    {
+    let result = match state.blob_store.store(&body, Some(&auth.account_id)).await {
         Ok(r) => {
             metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
                 "operation" => "store", "result" => "ok"
@@ -327,14 +313,12 @@ pub async fn delete_blob(
     // Reference-counted deletion: only delete from store if no more references
     let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
     if count == 0 {
-        let account = db::accounts::get_account(&state.db, &auth.account_id).await?;
-        let pearl_account_id = account.and_then(|a| a.pearl_account_id);
         match state
             .blob_store
             .delete(
                 &BlobId(info.blob_id),
                 info.sui_object_id.as_deref(),
-                pearl_account_id.as_deref(),
+                Some(&auth.account_id),
             )
             .await
         {

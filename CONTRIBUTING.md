@@ -137,11 +137,12 @@ No attributions in commit messages.
 
    ```rust
    pub trait BlobStore: Send + Sync + 'static {
-       fn store(&self, data: &[u8], pearl_account_id: Option<&str>)
+       fn store(&self, data: &[u8], account_id: Option<&str>)
            -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
        fn read(&self, blob_id: &BlobId)
            -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
-       fn delete(&self, blob_id: &BlobId)
+       fn delete(&self, blob_id: &BlobId, sui_object_id: Option<&str>,
+                 account_id: Option<&str>)
            -> BoxFuture<'_, Result<(), BlobStoreError>>;
        fn exists(&self, blob_id: &BlobId)
            -> BoxFuture<'_, Result<bool, BlobStoreError>>;
@@ -149,7 +150,7 @@ No attributions in commit messages.
    ```
 
 2. `StoreResult` returns `blob_id` (content hash) and optionally `sui_object_id`.
-   The `pearl_account_id` parameter enables per-account signing for on-chain stores.
+   The `account_id` parameter enables per-account signing for on-chain stores.
 
 3. Add selection logic in `crates/oyster/src/main.rs` based on configuration.
 

@@ -201,21 +201,19 @@ pub async fn get_expiring_blobs(
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
 
-/// Fetch expiring blobs joined with their owning account's Pearl wallet info.
+/// Fetch expiring blobs that have on-chain storage approaching expiry.
 pub async fn get_expiring_blobs_with_accounts(
     pool: &super::DbPool,
     before: &str,
     limit: i64,
 ) -> Result<Vec<ExpiringBlob>, sqlx::Error> {
     sqlx::query_as::<_, ExpiringBlob>(
-        "SELECT b.account_id, b.sui_object_id, b.size, b.expires_at, a.pearl_account_id \
-         FROM blobs b \
-         JOIN accounts a ON b.account_id = a.id \
-         WHERE b.sui_object_id IS NOT NULL \
-           AND b.expires_at IS NOT NULL \
-           AND b.expires_at < ? \
-           AND a.pearl_account_id IS NOT NULL \
-         ORDER BY b.expires_at \
+        "SELECT account_id, sui_object_id, size, expires_at \
+         FROM blobs \
+         WHERE sui_object_id IS NOT NULL \
+           AND expires_at IS NOT NULL \
+           AND expires_at < ? \
+         ORDER BY expires_at \
          LIMIT ?",
     )
     .bind(before)
@@ -387,32 +385,10 @@ mod tests {
         assert_eq!(updated.expires_at.as_deref(), Some(new_expires_at));
     }
 
-    async fn seed_account_with_pearl(
-        pool: &super::super::DbPool,
-        pearl_account_id: &str,
-    ) -> (String, String) {
-        let account_id = uuid::Uuid::new_v4().to_string();
-        let bucket_id = uuid::Uuid::new_v4().to_string();
-        sqlx::query("INSERT INTO accounts (id, pearl_account_id) VALUES (?, ?)")
-            .bind(&account_id)
-            .bind(pearl_account_id)
-            .execute(pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?)")
-            .bind(&bucket_id)
-            .bind(&account_id)
-            .bind("test-bucket")
-            .execute(pool)
-            .await
-            .unwrap();
-        (account_id, bucket_id)
-    }
-
     #[tokio::test]
-    async fn get_expiring_blobs_with_accounts_returns_pearl_account() {
+    async fn get_expiring_blobs_with_accounts_returns_account() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_with_pearl(&pool, "pearl-123").await;
+        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
 
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(3))
@@ -443,51 +419,14 @@ mod tests {
             .unwrap();
         assert_eq!(blobs.len(), 1);
         assert_eq!(blobs[0].sui_object_id, "0xpa1");
-        assert_eq!(blobs[0].pearl_account_id, "pearl-123");
+        assert_eq!(blobs[0].account_id, account_id);
     }
 
     #[tokio::test]
-    async fn get_expiring_blobs_with_accounts_skips_no_pearl_account() {
+    async fn get_expiring_blobs_with_accounts_returns_both() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
-
-        let expires_at = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(3))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
-        insert_blob(
-            &pool,
-            "blob-hash-pa2",
-            &bucket_id,
-            &account_id,
-            "text/plain",
-            100,
-            &expires_at,
-            Some("0xpa2"),
-        )
-        .await
-        .unwrap();
-
-        let cutoff = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(7))
-            .unwrap()
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-        let blobs = get_expiring_blobs_with_accounts(&pool, &cutoff, 100)
-            .await
-            .unwrap();
-        assert_eq!(blobs.len(), 0);
-    }
-
-    #[tokio::test]
-    async fn get_expiring_blobs_with_accounts_mixed() {
-        let pool = test_pool().await;
-        // Account with pearl
-        let (acct_with, bucket_with) = seed_account_with_pearl(&pool, "pearl-mixed").await;
-        // Account without pearl
-        let (acct_without, bucket_without) = seed_account_and_bucket(&pool).await;
+        let (acct1, bucket1) = seed_account_and_bucket(&pool).await;
+        let (acct2, bucket2) = seed_account_and_bucket(&pool).await;
 
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(3))
@@ -498,8 +437,8 @@ mod tests {
         insert_blob(
             &pool,
             "blob-hash-mixed1",
-            &bucket_with,
-            &acct_with,
+            &bucket1,
+            &acct1,
             "text/plain",
             100,
             &expires_at,
@@ -511,8 +450,8 @@ mod tests {
         insert_blob(
             &pool,
             "blob-hash-mixed2",
-            &bucket_without,
-            &acct_without,
+            &bucket2,
+            &acct2,
             "text/plain",
             200,
             &expires_at,
@@ -529,8 +468,6 @@ mod tests {
         let blobs = get_expiring_blobs_with_accounts(&pool, &cutoff, 100)
             .await
             .unwrap();
-        assert_eq!(blobs.len(), 1);
-        assert_eq!(blobs[0].sui_object_id, "0xmixed1");
-        assert_eq!(blobs[0].pearl_account_id, "pearl-mixed");
+        assert_eq!(blobs.len(), 2);
     }
 }

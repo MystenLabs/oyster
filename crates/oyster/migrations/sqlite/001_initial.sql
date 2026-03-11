@@ -1,6 +1,5 @@
 CREATE TABLE accounts (
     id TEXT PRIMARY KEY NOT NULL,
-    pearl_account_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );

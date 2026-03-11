@@ -50,7 +50,7 @@ pub trait BlobStore: Send + Sync + 'static {
     fn store(
         &self,
         data: &[u8],
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     /// Read blob data by its ID.
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
@@ -59,7 +59,7 @@ pub trait BlobStore: Send + Sync + 'static {
         &self,
         blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     /// Check whether a blob exists.
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
@@ -98,7 +98,7 @@ impl BlobStore for LocalBlobStore {
     fn store(
         &self,
         data: &[u8],
-        _pearl_account_id: Option<&str>,
+        _account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let blob_id = compute_blob_id(data);
         let path = self.blob_path(&blob_id);
@@ -135,7 +135,7 @@ impl BlobStore for LocalBlobStore {
         &self,
         blob_id: &BlobId,
         _sui_object_id: Option<&str>,
-        _pearl_account_id: Option<&str>,
+        _account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);
         Box::pin(async move {

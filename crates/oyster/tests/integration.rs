@@ -25,16 +25,16 @@ use tempfile::TempDir;
 use tower::ServiceExt;
 
 // ---------------------------------------------------------------------------
-// SpyBlobStore – wraps LocalBlobStore and records pearl_account_id from store()
+// SpyBlobStore – wraps LocalBlobStore and records account_id from store()
 // ---------------------------------------------------------------------------
 
 type DeleteCall = (String, Option<String>, Option<String>);
 
 struct SpyBlobStore {
     inner: LocalBlobStore,
-    /// Each `store()` call appends the `pearl_account_id` argument here.
+    /// Each `store()` call appends the `account_id` argument here.
     calls: Mutex<Vec<Option<String>>>,
-    /// Each `delete()` call appends (blob_id, sui_object_id, pearl_account_id) here.
+    /// Each `delete()` call appends (blob_id, sui_object_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
 }
 
@@ -62,13 +62,13 @@ impl BlobStore for SpyBlobStore {
     fn store(
         &self,
         data: &[u8],
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         self.calls
             .lock()
             .unwrap()
-            .push(pearl_account_id.map(|s| s.to_string()));
-        self.inner.store(data, pearl_account_id)
+            .push(account_id.map(|s| s.to_string()));
+        self.inner.store(data, account_id)
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
@@ -79,14 +79,14 @@ impl BlobStore for SpyBlobStore {
         &self,
         blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        pearl_account_id: Option<&str>,
+        account_id: Option<&str>,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         self.delete_calls.lock().unwrap().push((
             blob_id.0.clone(),
             sui_object_id.map(|s| s.to_string()),
-            pearl_account_id.map(|s| s.to_string()),
+            account_id.map(|s| s.to_string()),
         ));
-        self.inner.delete(blob_id, sui_object_id, pearl_account_id)
+        self.inner.delete(blob_id, sui_object_id, account_id)
     }
 
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
@@ -136,7 +136,7 @@ async fn test_app() -> (Router, TempDir) {
 }
 
 /// Like `test_app()` but accepts an externally-created blob store and also returns the `DbPool`
-/// (needed to create accounts with specific `pearl_account_id` values directly via the DB).
+/// (needed to create accounts with specific `account_id` values directly via the DB).
 async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, db::DbPool) {
     let tmp = TempDir::new().unwrap();
     let blob_path = tmp.path().join("blobs");
@@ -175,12 +175,9 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
     (routes::build_router(state), tmp, pool)
 }
 
-/// Helper: create an account directly via DB with an optional pearl_account_id,
-/// returns the raw API key secret.
-async fn create_account_with_pearl(pool: &db::DbPool, pearl_account_id: Option<&str>) -> String {
-    let account = db::accounts::create_account(pool, pearl_account_id)
-        .await
-        .unwrap();
+/// Helper: create an account directly via DB, returns the raw API key secret.
+async fn create_test_account_via_db(pool: &db::DbPool) -> String {
+    let account = db::accounts::create_account(pool).await.unwrap();
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
@@ -983,76 +980,64 @@ async fn wallet_with_pearl_returns_address() {
 }
 
 // ---------------------------------------------------------------------------
-// Per-account pearl_account_id threading through BlobStore::store()
+// Per-account account_id threading through BlobStore::store()
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn store_blob_passes_none_pearl_account_id() {
+async fn store_blob_passes_account_id() {
     let tmp = TempDir::new().unwrap();
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
     let spy = Arc::new(SpyBlobStore::new(local));
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
-    let key = create_account_with_pearl(&pool, None).await;
-    let bucket_id = create_test_bucket(&app, &key, "no-pearl").await;
+    let key = create_test_account_via_db(&pool).await;
+    let bucket_id = create_test_bucket(&app, &key, "test-bucket").await;
 
     store_test_blob(&app, &key, &bucket_id, "text/plain", b"data").await;
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], None);
+    assert!(
+        calls[0].is_some(),
+        "account_id should always be passed to store()"
+    );
 }
 
 #[tokio::test]
-async fn store_blob_passes_pearl_account_id() {
-    let tmp = TempDir::new().unwrap();
-    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
-    let spy = Arc::new(SpyBlobStore::new(local));
-
-    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
-    let key = create_account_with_pearl(&pool, Some("pearl-acct-42")).await;
-    let bucket_id = create_test_bucket(&app, &key, "with-pearl").await;
-
-    store_test_blob(&app, &key, &bucket_id, "text/plain", b"data").await;
-
-    let calls = spy.recorded_calls();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0], Some("pearl-acct-42".to_string()));
-}
-
-#[tokio::test]
-async fn store_blob_distinguishes_pearl_accounts() {
+async fn store_blob_distinguishes_accounts() {
     let tmp = TempDir::new().unwrap();
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
     let spy = Arc::new(SpyBlobStore::new(local));
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
 
-    let key_none = create_account_with_pearl(&pool, None).await;
-    let key_pearl = create_account_with_pearl(&pool, Some("pearl-acct-99")).await;
+    let key_a = create_test_account_via_db(&pool).await;
+    let key_b = create_test_account_via_db(&pool).await;
 
-    let bucket_none = create_test_bucket(&app, &key_none, "bucket-none").await;
-    let bucket_pearl = create_test_bucket(&app, &key_pearl, "bucket-pearl").await;
+    let bucket_a = create_test_bucket(&app, &key_a, "bucket-a").await;
+    let bucket_b = create_test_bucket(&app, &key_b, "bucket-b").await;
 
-    // Store from account without pearl
-    store_test_blob(&app, &key_none, &bucket_none, "text/plain", b"aaa").await;
-    // Store from account with pearl
-    store_test_blob(&app, &key_pearl, &bucket_pearl, "text/plain", b"bbb").await;
+    store_test_blob(&app, &key_a, &bucket_a, "text/plain", b"aaa").await;
+    store_test_blob(&app, &key_b, &bucket_b, "text/plain", b"bbb").await;
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 2);
-    assert_eq!(calls[0], None);
-    assert_eq!(calls[1], Some("pearl-acct-99".to_string()));
+    assert!(calls[0].is_some());
+    assert!(calls[1].is_some());
+    assert_ne!(
+        calls[0], calls[1],
+        "different accounts should have different IDs"
+    );
 }
 
 #[tokio::test]
-async fn delete_blob_threads_pearl_account_id() {
+async fn delete_blob_threads_account_id() {
     let tmp = TempDir::new().unwrap();
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
     let spy = Arc::new(SpyBlobStore::new(local));
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
-    let key = create_account_with_pearl(&pool, Some("pearl-acct-delete")).await;
+    let key = create_test_account_via_db(&pool).await;
     let bucket_id = create_test_bucket(&app, &key, "delete-test").await;
 
     let (object_id, _blob_id) =
@@ -1073,13 +1058,12 @@ async fn delete_blob_threads_pearl_account_id() {
 
     let delete_calls = spy.recorded_delete_calls();
     assert_eq!(delete_calls.len(), 1, "expected exactly one delete call");
-    let (ref _blob_id, ref sui_object_id, ref pearl_account_id) = delete_calls[0];
+    let (ref _blob_id, ref sui_object_id, ref account_id) = delete_calls[0];
     // sui_object_id is None because LocalBlobStore::store() returns StoreResult { sui_object_id: None }.
     assert_eq!(*sui_object_id, None);
-    assert_eq!(
-        *pearl_account_id,
-        Some("pearl-acct-delete".to_string()),
-        "pearl_account_id should be threaded through to delete()"
+    assert!(
+        account_id.is_some(),
+        "account_id should be threaded through to delete()"
     );
 }
 

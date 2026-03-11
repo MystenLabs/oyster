@@ -127,10 +127,7 @@ Top-level identity that owns API keys, buckets, and blobs.
 Fields:
 
 - `id` (string, UUID v4)
-  - Primary key.
-- `pearl_account_id` (string or null)
-  - Links to a Pearl-derived wallet. Set when the account is created with Walrus integration
-    enabled.
+  - Primary key. Also used as the account identifier for Pearl key derivation.
 - `created_at` (string, UTC datetime)
 - `updated_at` (string, UTC datetime)
 
@@ -656,11 +653,11 @@ The `BlobStore` trait defines the interface for blob persistence:
 
 ```rust
 trait BlobStore: Send + Sync + 'static {
-    fn store(&self, data: &[u8], pearl_account_id: Option<&str>)
+    fn store(&self, data: &[u8], account_id: Option<&str>)
         -> Result<StoreResult, BlobStoreError>;
     fn read(&self, blob_id: &BlobId) -> Result<Vec<u8>, BlobStoreError>;
     fn delete(&self, blob_id: &BlobId, sui_object_id: Option<&str>,
-              pearl_account_id: Option<&str>) -> Result<(), BlobStoreError>;
+              account_id: Option<&str>) -> Result<(), BlobStoreError>;
     fn exists(&self, blob_id: &BlobId) -> Result<bool, BlobStoreError>;
 }
 
@@ -757,7 +754,7 @@ Each cycle:
 1. Query the database for all blobs where `expires_at` is within the lookahead window and
    `sui_object_id IS NOT NULL`.
 2. For each qualifying blob:
-   a. Resolve the Pearl account ID to a Sui address via `GetAddress` (cached per cycle).
+   a. Resolve the account ID to a Sui address via Pearl `GetAddress` (cached per cycle).
    b. Build an `extend_blob` PTB on the Walrus system object.
    c. Sign the PTB via Pearl gRPC.
    d. Submit the signed transaction to Sui RPC.
@@ -775,7 +772,7 @@ Payload (`POST` to `FUND_MANAGER_WEBHOOK_URL`):
 
 ```json
 {
-  "account_id": "pearl_account_id",
+  "account_id": "account_id",
   "address": "0x...",
   "error": "original error message"
 }
@@ -1087,7 +1084,6 @@ extension (e.g., `.jpg` -> `image/jpeg`, `.txt` -> `text/plain`). Falls back to
 ```sql
 CREATE TABLE accounts (
     id TEXT PRIMARY KEY NOT NULL,
-    pearl_account_id TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
