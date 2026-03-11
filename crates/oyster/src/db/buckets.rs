@@ -1,7 +1,7 @@
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::models::Bucket;
+use crate::{AccountId, models::Bucket};
 
 fn row_to_bucket(row: sqlx::any::AnyRow) -> Bucket {
     Bucket {
@@ -15,7 +15,7 @@ fn row_to_bucket(row: sqlx::any::AnyRow) -> Bucket {
 /// Create a new bucket for the given account.
 pub async fn create_bucket(
     pool: &super::DbPool,
-    account_id: &str,
+    account_id: &AccountId,
     name: &str,
 ) -> Result<Bucket, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
@@ -34,7 +34,7 @@ pub async fn create_bucket(
 /// List buckets for an account with cursor-based pagination.
 pub async fn list_buckets(
     pool: &super::DbPool,
-    account_id: &str,
+    account_id: &AccountId,
     after_created_at: Option<&str>,
     after_id: Option<&str>,
     limit: i64,
@@ -71,7 +71,7 @@ pub async fn list_buckets(
 pub async fn get_bucket(
     pool: &super::DbPool,
     bucket_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
 ) -> Result<Option<Bucket>, sqlx::Error> {
     let row = sqlx::query(
         "SELECT id, account_id, name, created_at FROM buckets WHERE id = ? AND account_id = ?",
@@ -88,7 +88,7 @@ pub async fn get_bucket(
 pub async fn delete_bucket(
     pool: &super::DbPool,
     bucket_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query("DELETE FROM buckets WHERE id = ? AND account_id = ?")
         .bind(bucket_id)

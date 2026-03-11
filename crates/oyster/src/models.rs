@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
+use crate::AccountId;
+
 /// An Oyster account.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Account {
     /// Unique identifier.
-    pub id: String,
+    pub id: AccountId,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-update timestamp.
@@ -18,7 +20,7 @@ pub struct ApiKey {
     /// Unique identifier.
     pub id: String,
     /// Owning account ID.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// First 8 characters of the raw key, for identification.
     pub prefix: String,
     /// ISO 8601 creation timestamp.
@@ -46,7 +48,7 @@ pub struct Bucket {
     /// Unique identifier.
     pub id: String,
     /// Owning account ID.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// Human-readable bucket name.
     pub name: String,
     /// ISO 8601 creation timestamp.
@@ -63,7 +65,7 @@ pub struct BlobMetadata {
     /// Containing bucket ID.
     pub bucket_id: String,
     /// Owning account ID.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// MIME content type.
     pub content_type: String,
     /// Size in bytes.
@@ -81,7 +83,7 @@ pub struct BlobMetadata {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ExpiringBlob {
     /// Oyster account ID of the blob owner.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// On-chain Sui object ID.
     pub sui_object_id: String,
     /// Blob size in bytes.
@@ -138,7 +140,7 @@ pub struct StoreBlobResponse {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct CreateAccountResponse {
     /// The new account ID.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// The initial API key (with secret).
     pub api_key: ApiKeyWithSecret,
 }

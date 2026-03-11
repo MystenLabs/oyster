@@ -96,11 +96,11 @@ fn authenticated<T>(msg: T) -> Request<T> {
 async fn get_address() {
     let (mut client, _url) = start_server().await;
 
-    let account_id = "test-account-1";
+    let account_id = b"test-account-1";
 
     let address_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.to_vec(),
         }))
         .await
         .unwrap()
@@ -129,7 +129,7 @@ async fn sign_transaction_invalid_tx_data() {
 
     let status = client
         .sign_transaction(authenticated(proto::SignTransactionRequest {
-            account_id: "test-account-2".to_string(),
+            account_id: b"test-account-2".to_vec(),
             tx_data: vec![1, 2, 3],
         }))
         .await
@@ -142,12 +142,12 @@ async fn sign_transaction_invalid_tx_data() {
 async fn sign_transaction_success() {
     let (mut client, _url) = start_server().await;
 
-    let account_id = "test-account-3";
+    let account_id = b"test-account-3";
 
     // Get the account's address to build a valid TransactionData.
     let address_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.to_vec(),
         }))
         .await
         .unwrap()
@@ -159,7 +159,7 @@ async fn sign_transaction_success() {
 
     let resp = client
         .sign_transaction(authenticated(proto::SignTransactionRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.to_vec(),
             tx_data: tx_data_bytes,
         }))
         .await
@@ -183,7 +183,7 @@ async fn auth_rejection_no_token() {
     // Request with no auth token.
     let status = client
         .get_address(Request::new(proto::GetAddressRequest {
-            account_id: "test".to_string(),
+            account_id: b"test".to_vec(),
         }))
         .await
         .unwrap_err();
@@ -196,7 +196,7 @@ async fn auth_rejection_wrong_token() {
     let (mut client, _url) = start_server().await;
 
     let mut req = Request::new(proto::GetAddressRequest {
-        account_id: "test".to_string(),
+        account_id: b"test".to_vec(),
     });
     req.metadata_mut()
         .insert("authorization", "Bearer wrong-secret".parse().unwrap());
@@ -209,11 +209,11 @@ async fn auth_rejection_wrong_token() {
 async fn get_address_deterministic() {
     let (mut client, _url) = start_server().await;
 
-    let account_id = "deterministic-test-account";
+    let account_id = b"deterministic-test-account";
 
     let first_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.to_vec(),
         }))
         .await
         .unwrap()
@@ -223,7 +223,7 @@ async fn get_address_deterministic() {
     for i in 0..3 {
         let resp = client
             .get_address(authenticated(proto::GetAddressRequest {
-                account_id: account_id.to_string(),
+                account_id: account_id.to_vec(),
             }))
             .await
             .unwrap()
@@ -245,7 +245,7 @@ async fn multiple_accounts_unique() {
     for i in 0..10 {
         let resp = client
             .get_address(authenticated(proto::GetAddressRequest {
-                account_id: format!("unique-account-{i}"),
+                account_id: format!("unique-account-{i}").into_bytes(),
             }))
             .await
             .unwrap()

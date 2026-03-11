@@ -1,12 +1,15 @@
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::models::{ApiKey, ApiKeyWithSecret};
+use crate::{
+    AccountId,
+    models::{ApiKey, ApiKeyWithSecret},
+};
 
 /// Insert a new API key and return it with the plaintext secret.
 pub async fn create_api_key(
     pool: &super::DbPool,
-    account_id: &str,
+    account_id: &AccountId,
     key_hash: &str,
     prefix: &str,
     raw_key: &str,
@@ -55,7 +58,7 @@ pub async fn find_by_hash(
 pub async fn revoke_api_key(
     pool: &super::DbPool,
     key_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let result = sqlx::query(

@@ -2,6 +2,8 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 use blake2::{Blake2s256, Digest};
 
+use crate::AccountId;
+
 /// Content-addressed blob identifier (hex-encoded BLAKE2s-256 hash for local store).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlobId(pub String);
@@ -50,7 +52,7 @@ pub trait BlobStore: Send + Sync + 'static {
     fn store(
         &self,
         data: &[u8],
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     /// Read blob data by its ID.
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
@@ -59,7 +61,7 @@ pub trait BlobStore: Send + Sync + 'static {
         &self,
         blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     /// Check whether a blob exists.
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
@@ -98,7 +100,7 @@ impl BlobStore for LocalBlobStore {
     fn store(
         &self,
         data: &[u8],
-        _account_id: &str,
+        _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let blob_id = compute_blob_id(data);
         let path = self.blob_path(&blob_id);
@@ -135,7 +137,7 @@ impl BlobStore for LocalBlobStore {
         &self,
         blob_id: &BlobId,
         _sui_object_id: Option<&str>,
-        _account_id: &str,
+        _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);
         Box::pin(async move {

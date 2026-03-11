@@ -1,7 +1,10 @@
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::models::{BlobMetadata, ExpiringBlob};
+use crate::{
+    AccountId,
+    models::{BlobMetadata, ExpiringBlob},
+};
 
 fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
     BlobMetadata {
@@ -30,7 +33,7 @@ pub async fn insert_blob(
     pool: &super::DbPool,
     blob_id: &str,
     bucket_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
     content_type: &str,
     size: i64,
     expires_at: &str,
@@ -93,7 +96,7 @@ pub async fn get_blob_by_blob_id(
 pub async fn list_blobs_in_bucket(
     pool: &super::DbPool,
     bucket_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
     after_created_at: Option<&str>,
     after_id: Option<&str>,
     limit: i64,
@@ -132,7 +135,7 @@ pub async fn list_blobs_in_bucket(
 pub async fn update_blob_metadata(
     pool: &super::DbPool,
     object_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
     content_type: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     sqlx::query("UPDATE blobs SET content_type = ? WHERE object_id = ? AND account_id = ?")
@@ -157,7 +160,7 @@ pub struct DeletedBlobInfo {
 pub async fn delete_blob(
     pool: &super::DbPool,
     object_id: &str,
-    account_id: &str,
+    account_id: &AccountId,
 ) -> Result<Option<DeletedBlobInfo>, sqlx::Error> {
     let row = sqlx::query(
         "DELETE FROM blobs WHERE object_id = ? AND account_id = ? RETURNING blob_id, sui_object_id",
@@ -266,8 +269,8 @@ mod tests {
         db::create_pool("sqlite::memory:").await.unwrap()
     }
 
-    async fn seed_account_and_bucket(pool: &super::super::DbPool) -> (String, String) {
-        let account_id = uuid::Uuid::new_v4().to_string();
+    async fn seed_account_and_bucket(pool: &super::super::DbPool) -> (AccountId, String) {
+        let account_id = AccountId::new();
         let bucket_id = uuid::Uuid::new_v4().to_string();
         sqlx::query("INSERT INTO accounts (id) VALUES (?)")
             .bind(&account_id)

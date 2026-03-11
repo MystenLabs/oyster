@@ -5,6 +5,7 @@ use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
 
 use crate::{
+    AccountId,
     db::{self, DbPool},
     metrics::{
         EXTENSION_BLOBS_EXPIRING,
@@ -91,7 +92,7 @@ pub async fn run_extension_loop(
 
         let mut extended = 0u32;
         let mut errors = 0u32;
-        let mut address_cache: HashMap<String, SuiAddress> = HashMap::new();
+        let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
 
         for blob in &blobs {
             // Resolve sender address (cached per account per cycle).
@@ -100,7 +101,7 @@ pub async fn run_extension_loop(
                 None => {
                     match sui_transaction::resolve_sender_address(&pearl, &blob.account_id).await {
                         Ok(addr) => {
-                            address_cache.insert(blob.account_id.clone(), addr);
+                            address_cache.insert(blob.account_id, addr);
                             addr
                         }
                         Err(e) => {
@@ -142,7 +143,7 @@ pub async fn run_extension_loop(
                     && webhook::is_insufficient_funds_error(e.as_ref())
                 {
                     wh.notify_insufficient_funds(&InsufficientFundsPayload {
-                        account_id: blob.account_id.clone(),
+                        account_id: blob.account_id,
                         address: sender_address.to_string(),
                         error: e.to_string(),
                     })
@@ -186,7 +187,7 @@ pub async fn run_extension_loop(
 async fn extend_single_blob(
     read_client: &Arc<SuiReadClient>,
     pearl: &PearlConnection,
-    account_id: &str,
+    account_id: &AccountId,
     rpc_url: &str,
     sender_address: SuiAddress,
     sui_object_id: &str,

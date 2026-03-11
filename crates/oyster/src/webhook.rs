@@ -8,11 +8,14 @@ use std::{
 use metrics::counter;
 use serde::Serialize;
 
-use crate::metrics::{
-    WEBHOOK_ATTEMPTS_TOTAL,
-    WEBHOOK_CIRCUIT_OPEN_TOTAL,
-    WEBHOOK_FAILURES_TOTAL,
-    WEBHOOK_SUCCESSES_TOTAL,
+use crate::{
+    AccountId,
+    metrics::{
+        WEBHOOK_ATTEMPTS_TOTAL,
+        WEBHOOK_CIRCUIT_OPEN_TOTAL,
+        WEBHOOK_FAILURES_TOTAL,
+        WEBHOOK_SUCCESSES_TOTAL,
+    },
 };
 
 /// Maximum number of retry attempts per webhook call.
@@ -26,7 +29,7 @@ const COOLDOWN_SECS: u64 = 60;
 #[derive(Debug, Serialize)]
 pub struct InsufficientFundsPayload {
     /// Oyster account ID that owns the blob.
-    pub account_id: String,
+    pub account_id: AccountId,
     /// Sui wallet address that lacks funds.
     pub address: String,
     /// The error message from the failed transaction.

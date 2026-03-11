@@ -1,6 +1,8 @@
 use tonic::{Request, transport::Channel};
 use tonic_health::pb::{health_check_response::ServingStatus, health_client::HealthClient};
 
+use crate::AccountId;
+
 #[allow(missing_docs)]
 pub mod proto {
     tonic::include_proto!("pearl");
@@ -57,9 +59,9 @@ impl PearlConnection {
     }
 
     /// Get the Sui wallet address for a Pearl account.
-    pub async fn get_address(&self, account_id: &str) -> Result<String, tonic::Status> {
+    pub async fn get_address(&self, account_id: &AccountId) -> Result<String, tonic::Status> {
         let req = self.authenticated(proto::GetAddressRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.as_bytes().to_vec(),
         });
         let start = std::time::Instant::now();
         let result = self.client.clone().get_address(req).await;
@@ -90,11 +92,11 @@ impl PearlConnection {
     /// Sign a transaction using the Pearl account's derived key.
     pub async fn sign_transaction(
         &self,
-        account_id: &str,
+        account_id: &AccountId,
         tx_data: Vec<u8>,
     ) -> Result<Vec<u8>, tonic::Status> {
         let req = self.authenticated(proto::SignTransactionRequest {
-            account_id: account_id.to_string(),
+            account_id: account_id.as_bytes().to_vec(),
             tx_data,
         });
         let start = std::time::Instant::now();

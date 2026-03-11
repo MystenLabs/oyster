@@ -11,7 +11,7 @@ use sui_types::{
 use walrus_sui::client::{SuiReadClient, contract_config::ContractConfig};
 use walrus_utils::backoff::ExponentialBackoffConfig;
 
-use crate::pearl_client::PearlConnection;
+use crate::{AccountId, pearl_client::PearlConnection};
 
 /// Build a `SuiReadClient` connected to the given RPC and Walrus contracts.
 pub async fn build_sui_read_client(
@@ -33,7 +33,7 @@ pub async fn build_sui_read_client(
 /// Resolve a Pearl account ID to its Sui wallet address.
 pub async fn resolve_sender_address(
     pearl: &PearlConnection,
-    account_id: &str,
+    account_id: &AccountId,
 ) -> Result<SuiAddress, Box<dyn std::error::Error + Send + Sync>> {
     let address = pearl.get_address(account_id).await?;
     let addr = address.parse()?;
@@ -43,7 +43,7 @@ pub async fn resolve_sender_address(
 /// Sign transaction data via Pearl and submit it to the Sui network.
 pub async fn sign_and_submit(
     pearl: &PearlConnection,
-    account_id: &str,
+    account_id: &AccountId,
     rpc_url: &str,
     tx_data: TransactionData,
 ) -> Result<SuiTransactionBlockResponse, Box<dyn std::error::Error + Send + Sync>> {

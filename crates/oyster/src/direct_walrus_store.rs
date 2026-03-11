@@ -12,6 +12,7 @@ use walrus_sui::client::{
 };
 
 use crate::{
+    AccountId,
     blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     pearl_client::PearlConnection,
     sui_transaction,
@@ -64,7 +65,7 @@ impl DirectWalrusBlobStore {
     async fn store_impl(
         &self,
         data: &[u8],
-        account_id: &str,
+        account_id: &AccountId,
     ) -> Result<StoreResult, BlobStoreError> {
         let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
             .await
@@ -173,10 +174,10 @@ impl BlobStore for DirectWalrusBlobStore {
     fn store(
         &self,
         data: &[u8],
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         let data = data.to_vec();
-        let account_id = account_id.to_string();
+        let account_id = *account_id;
         Box::pin(async move { self.store_impl(&data, &account_id).await })
     }
 
@@ -212,10 +213,10 @@ impl BlobStore for DirectWalrusBlobStore {
         &self,
         _blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let sui_object_id = sui_object_id.map(String::from);
-        let account_id = account_id.to_string();
+        let account_id = *account_id;
         Box::pin(async move {
             let Some(sui_oid) = sui_object_id else {
                 return Ok(());

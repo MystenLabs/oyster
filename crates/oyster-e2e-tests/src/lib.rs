@@ -42,7 +42,7 @@ pub struct OysterTestHarness {
     /// Pearl connection for direct gRPC calls if needed.
     pub pearl: PearlConnection,
     /// The operator Pearl account ID (used as the default blob-signing account).
-    pub operator_account_id: String,
+    pub operator_account_id: oyster::AccountId,
     /// The operator wallet address on Sui.
     pub operator_address: String,
     /// Handle to the Sui test cluster (for funding wallets, etc.).
@@ -95,7 +95,7 @@ impl OysterTestHarness {
         eprintln!("[harness] pearl ready");
 
         // 3. Generate an operator account ID and derive its address from Pearl.
-        let operator_account_id = uuid::Uuid::new_v4().to_string();
+        let operator_account_id = oyster::AccountId::new();
         let operator_address = pearl
             .get_address(&operator_account_id)
             .await

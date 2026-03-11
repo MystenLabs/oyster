@@ -6,10 +6,10 @@ use zeroize::Zeroizing;
 
 const SALT: &[u8] = b"pearl-key-derivation-v1";
 
-fn derive_keypair(master_seed: &[u8], account_id: &str) -> (SuiAddress, Zeroizing<Vec<u8>>) {
+fn derive_keypair(master_seed: &[u8], account_id: &[u8]) -> (SuiAddress, Zeroizing<Vec<u8>>) {
     let hk = Hkdf::<Sha256>::new(Some(SALT), master_seed);
     let mut okm = Zeroizing::new([0u8; 32]);
-    hk.expand(account_id.as_bytes(), &mut *okm)
+    hk.expand(account_id, &mut *okm)
         .expect("32 bytes is a valid length for HKDF-SHA256");
 
     let kp = Ed25519KeyPair::from_bytes(&*okm).expect("32 bytes is a valid Ed25519 seed");
@@ -20,13 +20,13 @@ fn derive_keypair(master_seed: &[u8], account_id: &str) -> (SuiAddress, Zeroizin
 }
 
 /// Derive the Sui wallet address for an account (without exposing the private key).
-pub fn derive_address(master_seed: &[u8], account_id: &str) -> String {
+pub fn derive_address(master_seed: &[u8], account_id: &[u8]) -> String {
     let (address, _) = derive_keypair(master_seed, account_id);
     address.to_string()
 }
 
 /// Derive the Ed25519 private key bytes for an account.
-pub fn derive_private_key(master_seed: &[u8], account_id: &str) -> Zeroizing<Vec<u8>> {
+pub fn derive_private_key(master_seed: &[u8], account_id: &[u8]) -> Zeroizing<Vec<u8>> {
     let (_, private_key) = derive_keypair(master_seed, account_id);
     private_key
 }
@@ -42,8 +42,8 @@ mod tests {
     #[test]
     fn deterministic_same_inputs_same_output() {
         let seed = test_seed();
-        let (addr1, key1) = derive_keypair(&seed, "account-1");
-        let (addr2, key2) = derive_keypair(&seed, "account-1");
+        let (addr1, key1) = derive_keypair(&seed, b"account-1");
+        let (addr2, key2) = derive_keypair(&seed, b"account-1");
         assert_eq!(addr1, addr2);
         assert_eq!(key1, key2);
     }
@@ -51,8 +51,8 @@ mod tests {
     #[test]
     fn different_account_ids_different_keys() {
         let seed = test_seed();
-        let (addr1, key1) = derive_keypair(&seed, "account-1");
-        let (addr2, key2) = derive_keypair(&seed, "account-2");
+        let (addr1, key1) = derive_keypair(&seed, b"account-1");
+        let (addr2, key2) = derive_keypair(&seed, b"account-2");
         assert_ne!(addr1, addr2);
         assert_ne!(key1, key2);
     }
@@ -61,8 +61,8 @@ mod tests {
     fn different_seeds_different_keys() {
         let seed_a = vec![0xab; 32];
         let seed_b = vec![0xcd; 32];
-        let (addr1, key1) = derive_keypair(&seed_a, "account-1");
-        let (addr2, key2) = derive_keypair(&seed_b, "account-1");
+        let (addr1, key1) = derive_keypair(&seed_a, b"account-1");
+        let (addr2, key2) = derive_keypair(&seed_b, b"account-1");
         assert_ne!(addr1, addr2);
         assert_ne!(key1, key2);
     }
@@ -70,7 +70,7 @@ mod tests {
     #[test]
     fn derived_key_is_valid_ed25519() {
         let seed = test_seed();
-        let (_, key) = derive_keypair(&seed, "test-account");
+        let (_, key) = derive_keypair(&seed, b"test-account");
         assert_eq!(key.len(), 32);
         Ed25519KeyPair::from_bytes(&key).expect("valid Ed25519 key");
     }
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn address_is_well_formed_sui_address() {
         let seed = test_seed();
-        let address = derive_address(&seed, "test-account");
+        let address = derive_address(&seed, b"test-account");
         assert!(address.starts_with("0x"));
         assert_eq!(address.len(), 66);
     }

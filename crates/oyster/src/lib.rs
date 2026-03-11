@@ -1,5 +1,7 @@
 //! Oyster — a content-addressed object storage service backed by Walrus and Sui.
 
+/// Strongly-typed account identifier.
+pub mod account_id;
 /// API key authentication and account extraction from requests.
 pub mod auth;
 /// Blob storage trait and local filesystem implementation.
@@ -33,6 +35,7 @@ pub mod webhook;
 
 use std::sync::Arc;
 
+pub use account_id::AccountId;
 use blob_store::BlobStore;
 use config::Config;
 use pearl_client::PearlConnection;

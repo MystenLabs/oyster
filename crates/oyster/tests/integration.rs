@@ -13,6 +13,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oyster::{
+    AccountId,
     AppState,
     auth,
     blob_store::{BlobId, BlobStore, BlobStoreError, LocalBlobStore, StoreResult},
@@ -28,12 +29,12 @@ use tower::ServiceExt;
 // SpyBlobStore – wraps LocalBlobStore and records account_id from store()
 // ---------------------------------------------------------------------------
 
-type DeleteCall = (String, Option<String>, String);
+type DeleteCall = (String, Option<String>, AccountId);
 
 struct SpyBlobStore {
     inner: LocalBlobStore,
     /// Each `store()` call appends the `account_id` argument here.
-    calls: Mutex<Vec<String>>,
+    calls: Mutex<Vec<AccountId>>,
     /// Each `delete()` call appends (blob_id, sui_object_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
 }
@@ -47,7 +48,7 @@ impl SpyBlobStore {
         }
     }
 
-    fn recorded_calls(&self) -> Vec<String> {
+    fn recorded_calls(&self) -> Vec<AccountId> {
         self.calls.lock().unwrap().clone()
     }
 
@@ -62,9 +63,9 @@ impl BlobStore for SpyBlobStore {
     fn store(
         &self,
         data: &[u8],
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
-        self.calls.lock().unwrap().push(account_id.to_string());
+        self.calls.lock().unwrap().push(*account_id);
         self.inner.store(data, account_id)
     }
 
@@ -76,12 +77,12 @@ impl BlobStore for SpyBlobStore {
         &self,
         blob_id: &BlobId,
         sui_object_id: Option<&str>,
-        account_id: &str,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         self.delete_calls.lock().unwrap().push((
             blob_id.0.clone(),
             sui_object_id.map(|s| s.to_string()),
-            account_id.to_string(),
+            *account_id,
         ));
         self.inner.delete(blob_id, sui_object_id, account_id)
     }
@@ -843,10 +844,10 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
 async fn pearl_client_get_address() {
     let pearl = start_pearl().await;
 
-    let account_id = "test-pearl-account";
+    let account_id = AccountId::new();
 
     // Fetch address through the wrapper — any account_id works now (stateless).
-    let address = pearl.get_address(account_id).await.unwrap();
+    let address = pearl.get_address(&account_id).await.unwrap();
     assert!(address.starts_with("0x"));
     assert_eq!(
         address.len(),
@@ -855,7 +856,7 @@ async fn pearl_client_get_address() {
     );
 
     // Same account_id returns the same address (deterministic).
-    let address2 = pearl.get_address(account_id).await.unwrap();
+    let address2 = pearl.get_address(&account_id).await.unwrap();
     assert_eq!(address, address2);
 }
 
@@ -869,8 +870,8 @@ async fn pearl_client_sign_transaction_success() {
 
     let pearl = start_pearl().await;
 
-    let account_id = "sign-test-account";
-    let address = pearl.get_address(account_id).await.unwrap();
+    let account_id = AccountId::new();
+    let address = pearl.get_address(&account_id).await.unwrap();
 
     let sender: SuiAddress = address.parse().expect("valid SuiAddress");
     let gas_ref = (
@@ -883,7 +884,7 @@ async fn pearl_client_sign_transaction_success() {
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 
     let signed_bytes = pearl
-        .sign_transaction(account_id, tx_data_bytes)
+        .sign_transaction(&account_id, tx_data_bytes)
         .await
         .unwrap();
 
@@ -899,7 +900,7 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
     let pearl = start_pearl().await;
 
     let err = pearl
-        .sign_transaction("invalid-tx-test-account", vec![1, 2, 3])
+        .sign_transaction(&AccountId::new(), vec![1, 2, 3])
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -994,10 +995,6 @@ async fn store_blob_passes_account_id() {
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 1);
-    assert!(
-        !calls[0].is_empty(),
-        "account_id should always be passed to store()"
-    );
 }
 
 #[tokio::test]
@@ -1019,8 +1016,6 @@ async fn store_blob_distinguishes_accounts() {
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 2);
-    assert!(!calls[0].is_empty());
-    assert!(!calls[1].is_empty());
     assert_ne!(
         calls[0], calls[1],
         "different accounts should have different IDs"
@@ -1055,13 +1050,9 @@ async fn delete_blob_threads_account_id() {
 
     let delete_calls = spy.recorded_delete_calls();
     assert_eq!(delete_calls.len(), 1, "expected exactly one delete call");
-    let (ref _blob_id, ref sui_object_id, ref account_id) = delete_calls[0];
+    let (ref _blob_id, ref sui_object_id, ref _account_id) = delete_calls[0];
     // sui_object_id is None because LocalBlobStore::store() returns StoreResult { sui_object_id: None }.
     assert_eq!(*sui_object_id, None);
-    assert!(
-        !account_id.is_empty(),
-        "account_id should be threaded through to delete()"
-    );
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,7 @@ use axum::{extract::FromRequestParts, http::request::Parts};
 use blake2::{Blake2s256, Digest};
 use rand::RngExt;
 
-use crate::{AppState, db, error::AppError};
+use crate::{AccountId, AppState, db, error::AppError};
 
 const API_KEY_BYTES: usize = 32;
 
@@ -28,7 +28,7 @@ pub fn key_prefix(raw_key: &str) -> String {
 /// Extractor that authenticates an incoming request via a Bearer API key.
 pub struct AuthenticatedAccount {
     /// The account ID associated with the valid API key.
-    pub account_id: String,
+    pub account_id: AccountId,
 }
 
 impl FromRequestParts<AppState> for AuthenticatedAccount {
