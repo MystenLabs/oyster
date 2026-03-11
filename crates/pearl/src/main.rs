@@ -26,6 +26,7 @@ struct Cli {
 #[tokio::main]
 async fn main() {
     tracing_subscriber::fmt::init();
+    tracing::info!("pearl starting up");
 
     let cli = Cli::parse();
     let overrides = pearl::config::SecretOverrides {
