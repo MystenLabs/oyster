@@ -243,6 +243,8 @@ pub async fn delete_blobs_in_bucket(
     pool: &super::DbPool,
     bucket_id: &str,
 ) -> Result<Vec<DeletedBlobInfo>, sqlx::Error> {
+    // TODO: This does not delete the actual blobs, it just deletes them from the blobs table.
+    // We should also delete the blobs from storage.
     let rows =
         sqlx::query("DELETE FROM blobs WHERE bucket_id = ? RETURNING blob_id, sui_object_id")
             .bind(bucket_id)

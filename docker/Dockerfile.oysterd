@@ -8,7 +8,9 @@ RUN cargo build --release -p oyster
 
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates postgresql-client \
+  && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 10001 oyster
 
 COPY --from=builder /build/target/release/oysterd /usr/local/bin/oysterd
