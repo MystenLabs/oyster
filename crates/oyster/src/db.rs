@@ -21,6 +21,8 @@ static IS_POSTGRES: OnceLock<bool> = OnceLock::new();
 ///
 /// SQLite uses `?` while PostgreSQL uses `$N`. The `sqlx::Any` driver does not
 /// always translate automatically, so we handle it ourselves.
+///
+/// See https://github.com/launchbadge/sqlx/issues/875 for more details on a potential future fix.
 pub fn sql(query: &str) -> Cow<'_, str> {
     if !*IS_POSTGRES.get().unwrap_or(&false) {
         return Cow::Borrowed(query);
