@@ -28,10 +28,10 @@ const DEFAULT_DURATION_DAYS: i64 = 30;
 
 #[utoipa::path(
     put,
-    path = "/buckets/{bucket_id}/blobs",
+    path = "/buckets/{bucket_name}/blobs",
     tag = "Blobs",
     security(("bearer" = [])),
-    params(("bucket_id" = String, Path, description = "Bucket ID")),
+    params(("bucket_name" = String, Path, description = "Bucket name")),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses(
         (status = 201, description = "Blob stored", body = StoreBlobResponse),
@@ -44,7 +44,7 @@ const DEFAULT_DURATION_DAYS: i64 = 30;
 pub async fn store_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(bucket_id): Path<String>,
+    Path(bucket_name): Path<String>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<StoreBlobResponse>), AppError> {
@@ -53,10 +53,14 @@ pub async fn store_blob(
     }
 
     // Verify bucket exists and belongs to the account
-    let _bucket = db::buckets::get_bucket(&state.db, &bucket_id, &auth.account_id)
+    let _bucket = db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
-    tracing::debug!("bucket {} found for account {}", bucket_id, auth.account_id);
+    tracing::debug!(
+        "bucket {} found for account {}",
+        bucket_name,
+        auth.account_id
+    );
 
     let content_type = headers
         .get("content-type")
@@ -93,7 +97,7 @@ pub async fn store_blob(
     let metadata = db::blobs::insert_blob(
         &state.db,
         result.blob_id.as_str(),
-        &bucket_id,
+        &bucket_name,
         &auth.account_id,
         content_type,
         body.len() as i64,
@@ -117,11 +121,11 @@ pub async fn store_blob(
 
 #[utoipa::path(
     get,
-    path = "/buckets/{bucket_id}/blobs",
+    path = "/buckets/{bucket_name}/blobs",
     tag = "Blobs",
     security(("bearer" = [])),
     params(
-        ("bucket_id" = String, Path, description = "Bucket ID"),
+        ("bucket_name" = String, Path, description = "Bucket name"),
         PaginationParams,
     ),
     responses(
@@ -133,7 +137,7 @@ pub async fn store_blob(
 pub async fn list_blobs(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(bucket_id): Path<String>,
+    Path(bucket_name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<BlobMetadata>>, AppError> {
     let limit = pagination::clamp_limit(params.limit);
@@ -145,7 +149,7 @@ pub async fn list_blobs(
 
     let blobs = db::blobs::list_blobs_in_bucket(
         &state.db,
-        &bucket_id,
+        &bucket_name,
         &auth.account_id,
         cursor_data.as_ref().map(|c| c.created_at.as_str()),
         cursor_data.as_ref().map(|c| c.id.as_str()),

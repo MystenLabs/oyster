@@ -45,12 +45,10 @@ pub struct ApiKeyWithSecret {
 /// A named container for blobs within an account.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Bucket {
-    /// Unique identifier.
-    pub id: String,
+    /// Globally unique bucket name (primary key).
+    pub name: String,
     /// Owning account ID.
     pub account_id: AccountId,
-    /// Human-readable bucket name.
-    pub name: String,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -62,8 +60,8 @@ pub struct BlobMetadata {
     pub object_id: String,
     /// Content-addressed blob identifier.
     pub blob_id: String,
-    /// Containing bucket ID.
-    pub bucket_id: String,
+    /// Containing bucket name.
+    pub bucket_name: String,
     /// Owning account ID.
     pub account_id: AccountId,
     /// MIME content type.

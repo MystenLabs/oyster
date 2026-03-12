@@ -4,9 +4,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Bucket {
-    pub id: String,
-    pub account_id: String,
     pub name: String,
+    pub account_id: String,
     pub created_at: String,
 }
 
@@ -14,7 +13,7 @@ pub struct Bucket {
 pub struct BlobMetadata {
     pub object_id: String,
     pub blob_id: String,
-    pub bucket_id: String,
+    pub bucket_name: String,
     pub account_id: String,
     pub content_type: String,
     pub size: i64,
@@ -163,10 +162,10 @@ impl OysterClient {
         Ok(resp.json().await?)
     }
 
-    pub async fn delete_bucket(&self, bucket_id: &str) -> Result<(), ApiError> {
+    pub async fn delete_bucket(&self, bucket_name: &str) -> Result<(), ApiError> {
         let resp = self
             .http
-            .delete(format!("{}/buckets/{bucket_id}", self.base_url))
+            .delete(format!("{}/buckets/{bucket_name}", self.base_url))
             .header("Authorization", self.auth_header().unwrap_or_default())
             .send()
             .await?;
@@ -178,13 +177,13 @@ impl OysterClient {
 
     pub async fn store_blob(
         &self,
-        bucket_id: &str,
+        bucket_name: &str,
         data: Vec<u8>,
         content_type: &str,
     ) -> Result<StoreBlobResponse, ApiError> {
         let resp = self
             .http
-            .put(format!("{}/buckets/{bucket_id}/blobs", self.base_url))
+            .put(format!("{}/buckets/{bucket_name}/blobs", self.base_url))
             .header("Authorization", self.auth_header().unwrap_or_default())
             .header("Content-Type", content_type)
             .body(data)
@@ -196,13 +195,13 @@ impl OysterClient {
 
     pub async fn list_blobs(
         &self,
-        bucket_id: &str,
+        bucket_name: &str,
         cursor: Option<&str>,
         limit: Option<u32>,
     ) -> Result<PaginatedResponse<BlobMetadata>, ApiError> {
         let url = build_url(
             &self.base_url,
-            &format!("/buckets/{bucket_id}/blobs"),
+            &format!("/buckets/{bucket_name}/blobs"),
             cursor,
             limit,
         );
@@ -279,28 +278,5 @@ impl OysterClient {
             .await?;
         let resp = self.check_error(resp).await?;
         Ok(resp.json().await?)
-    }
-
-    // Bucket name resolution
-
-    pub async fn resolve_bucket_name(&self, name: &str) -> Result<String, ApiError> {
-        let mut cursor = None;
-        loop {
-            let page = self.list_buckets(cursor.as_deref(), Some(100)).await?;
-            for bucket in &page.data {
-                if bucket.name == name {
-                    return Ok(bucket.id.clone());
-                }
-            }
-            match page.next_cursor {
-                Some(c) => cursor = Some(c),
-                None => {
-                    return Err(ApiError::Server {
-                        status: 404,
-                        message: format!("bucket '{name}' not found"),
-                    });
-                }
-            }
-        }
     }
 }

@@ -150,10 +150,9 @@ async fn cmd_store(
     bucket: &str,
     content_type: Option<&str>,
 ) -> Result<(), CliError> {
-    let bucket_id = client.resolve_bucket_name(bucket).await?;
     let data = std::fs::read(file)?;
     let ct = content_type.unwrap_or_else(|| guess_content_type(file));
-    let resp = client.store_blob(&bucket_id, data, ct).await?;
+    let resp = client.store_blob(bucket, data, ct).await?;
     out.print(&resp, |r| {
         println!("Stored blob:");
         println!("  object_id:      {}", r.object_id);
@@ -200,8 +199,7 @@ async fn cmd_list_blobs(
     bucket: &str,
     limit: Option<u32>,
 ) -> Result<(), CliError> {
-    let bucket_id = client.resolve_bucket_name(bucket).await?;
-    let resp = client.list_blobs(&bucket_id, None, limit).await?;
+    let resp = client.list_blobs(bucket, None, limit).await?;
     out.print(&resp, |r| {
         println!(
             "{:<40} {:<20} {:>10} CREATED",
@@ -229,7 +227,6 @@ async fn cmd_create_bucket(
     out.print(&bucket, |b| {
         println!("Created bucket:");
         println!("  name:  {}", b.name);
-        println!("  id:    {}", b.id);
     });
     Ok(())
 }
@@ -241,9 +238,9 @@ async fn cmd_list_buckets(
 ) -> Result<(), CliError> {
     let resp = client.list_buckets(None, limit).await?;
     out.print(&resp, |r| {
-        println!("{:<20} {:<40} CREATED", "NAME", "ID");
+        println!("{:<20} CREATED", "NAME");
         for b in &r.data {
-            println!("{:<20} {:<40} {}", b.name, b.id, b.created_at);
+            println!("{:<20} {}", b.name, b.created_at);
         }
         if let Some(ref cursor) = r.next_cursor {
             println!("\n(more results available, cursor: {cursor})");
@@ -257,9 +254,8 @@ async fn cmd_delete_bucket(
     out: &Output,
     name: &str,
 ) -> Result<(), CliError> {
-    let bucket_id = client.resolve_bucket_name(name).await?;
-    client.delete_bucket(&bucket_id).await?;
-    out.success(&format!("Deleted bucket '{name}' ({bucket_id})"));
+    client.delete_bucket(name).await?;
+    out.success(&format!("Deleted bucket '{name}'"));
     Ok(())
 }
 

@@ -1,13 +1,11 @@
 use sqlx::Row;
-use uuid::Uuid;
 
 use crate::{AccountId, models::Bucket};
 
 fn row_to_bucket(row: sqlx::any::AnyRow) -> Bucket {
     Bucket {
-        id: row.get("id"),
-        account_id: row.get("account_id"),
         name: row.get("name"),
+        account_id: row.get("account_id"),
         created_at: row.get("created_at"),
     }
 }
@@ -18,13 +16,11 @@ pub async fn create_bucket(
     account_id: &AccountId,
     name: &str,
 ) -> Result<Bucket, sqlx::Error> {
-    let id = Uuid::new_v4().to_string();
     let row = sqlx::query(&super::sql(
-        "INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?) RETURNING id, account_id, name, created_at",
+        "INSERT INTO buckets (name, account_id) VALUES (?, ?) RETURNING name, account_id, created_at",
     ))
-    .bind(&id)
-    .bind(account_id)
     .bind(name)
+    .bind(account_id)
     .fetch_one(pool)
     .await?;
 
@@ -36,27 +32,27 @@ pub async fn list_buckets(
     pool: &super::DbPool,
     account_id: &AccountId,
     after_created_at: Option<&str>,
-    after_id: Option<&str>,
+    after_name: Option<&str>,
     limit: i64,
 ) -> Result<Vec<Bucket>, sqlx::Error> {
-    let rows = match (after_created_at, after_id) {
-        (Some(created_at), Some(id)) => {
+    let rows = match (after_created_at, after_name) {
+        (Some(created_at), Some(name)) => {
             sqlx::query(&super::sql(
-                "SELECT id, account_id, name, created_at FROM buckets \
-                 WHERE account_id = ? AND (created_at, id) > (?, ?) \
-                 ORDER BY created_at, id LIMIT ?",
+                "SELECT name, account_id, created_at FROM buckets \
+                 WHERE account_id = ? AND (created_at, name) > (?, ?) \
+                 ORDER BY created_at, name LIMIT ?",
             ))
             .bind(account_id)
             .bind(created_at)
-            .bind(id)
+            .bind(name)
             .bind(limit)
             .fetch_all(pool)
             .await?
         }
         _ => {
             sqlx::query(&super::sql(
-                "SELECT id, account_id, name, created_at FROM buckets \
-                 WHERE account_id = ? ORDER BY created_at, id LIMIT ?",
+                "SELECT name, account_id, created_at FROM buckets \
+                 WHERE account_id = ? ORDER BY created_at, name LIMIT ?",
             ))
             .bind(account_id)
             .bind(limit)
@@ -67,16 +63,16 @@ pub async fn list_buckets(
     Ok(rows.into_iter().map(row_to_bucket).collect())
 }
 
-/// Fetch a single bucket by ID, scoped to the given account.
+/// Fetch a single bucket by name, scoped to the given account.
 pub async fn get_bucket(
     pool: &super::DbPool,
-    bucket_id: &str,
+    bucket_name: &str,
     account_id: &AccountId,
 ) -> Result<Option<Bucket>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT id, account_id, name, created_at FROM buckets WHERE id = ? AND account_id = ?",
+        "SELECT name, account_id, created_at FROM buckets WHERE name = ? AND account_id = ?",
     ))
-    .bind(bucket_id)
+    .bind(bucket_name)
     .bind(account_id)
     .fetch_optional(pool)
     .await?;
@@ -87,13 +83,13 @@ pub async fn get_bucket(
 /// Delete a bucket. Returns `true` if the bucket existed.
 pub async fn delete_bucket(
     pool: &super::DbPool,
-    bucket_id: &str,
+    bucket_name: &str,
     account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(&super::sql(
-        "DELETE FROM buckets WHERE id = ? AND account_id = ?",
+        "DELETE FROM buckets WHERE name = ? AND account_id = ?",
     ))
-    .bind(bucket_id)
+    .bind(bucket_name)
     .bind(account_id)
     .execute(pool)
     .await?;

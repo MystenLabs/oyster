@@ -10,7 +10,7 @@ fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
     BlobMetadata {
         object_id: row.get("object_id"),
         blob_id: row.get("blob_id"),
-        bucket_id: row.get("bucket_id"),
+        bucket_name: row.get("bucket_name"),
         account_id: row.get("account_id"),
         content_type: row.get("content_type"),
         size: row.get("size"),
@@ -32,7 +32,7 @@ pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
 pub async fn insert_blob(
     pool: &super::DbPool,
     blob_id: &str,
-    bucket_id: &str,
+    bucket_name: &str,
     account_id: &AccountId,
     content_type: &str,
     size: i64,
@@ -41,13 +41,13 @@ pub async fn insert_blob(
 ) -> Result<BlobMetadata, sqlx::Error> {
     let object_id = Uuid::new_v4().to_string();
     let row = sqlx::query(&super::sql(
-        "INSERT INTO blobs (object_id, blob_id, bucket_id, account_id, content_type, size, expires_at, sui_object_id) \
+        "INSERT INTO blobs (object_id, blob_id, bucket_name, account_id, content_type, size, expires_at, sui_object_id) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         RETURNING object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at",
+         RETURNING object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at",
     ))
     .bind(&object_id)
     .bind(blob_id)
-    .bind(bucket_id)
+    .bind(bucket_name)
     .bind(account_id)
     .bind(content_type)
     .bind(size)
@@ -65,7 +65,7 @@ pub async fn get_blob_by_object_id(
     object_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs WHERE object_id = ?",
     ))
     .bind(object_id)
@@ -82,7 +82,7 @@ pub async fn get_blob_by_blob_id(
     blob_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs WHERE blob_id = ? LIMIT 1",
     ))
     .bind(blob_id)
@@ -95,7 +95,7 @@ pub async fn get_blob_by_blob_id(
 /// List blobs in a bucket with cursor-based pagination.
 pub async fn list_blobs_in_bucket(
     pool: &super::DbPool,
-    bucket_id: &str,
+    bucket_name: &str,
     account_id: &AccountId,
     after_created_at: Option<&str>,
     after_id: Option<&str>,
@@ -104,11 +104,11 @@ pub async fn list_blobs_in_bucket(
     let rows = match (after_created_at, after_id) {
         (Some(created_at), Some(id)) => {
             sqlx::query(&super::sql(
-                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
-                 FROM blobs WHERE bucket_id = ? AND account_id = ? AND (created_at, object_id) > (?, ?) \
+                "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
+                 FROM blobs WHERE bucket_name = ? AND account_id = ? AND (created_at, object_id) > (?, ?) \
                  ORDER BY created_at, object_id LIMIT ?",
             ))
-            .bind(bucket_id)
+            .bind(bucket_name)
             .bind(account_id)
             .bind(created_at)
             .bind(id)
@@ -118,10 +118,10 @@ pub async fn list_blobs_in_bucket(
         }
         _ => {
             sqlx::query(&super::sql(
-                "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
-                 FROM blobs WHERE bucket_id = ? AND account_id = ? ORDER BY created_at, object_id LIMIT ?",
+                "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
+                 FROM blobs WHERE bucket_name = ? AND account_id = ? ORDER BY created_at, object_id LIMIT ?",
             ))
-            .bind(bucket_id)
+            .bind(bucket_name)
             .bind(account_id)
             .bind(limit)
             .fetch_all(pool)
@@ -192,7 +192,7 @@ pub async fn get_expiring_blobs(
     limit: i64,
 ) -> Result<Vec<BlobMetadata>, sqlx::Error> {
     let rows = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_id, account_id, content_type, size, sui_object_id, created_at, expires_at \
+        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
          FROM blobs \
          WHERE sui_object_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ? \
          ORDER BY expires_at \
@@ -246,14 +246,14 @@ pub async fn update_blob_expires_at(
 /// Delete all blobs in a bucket, returning their IDs for backend cleanup.
 pub async fn delete_blobs_in_bucket(
     pool: &super::DbPool,
-    bucket_id: &str,
+    bucket_name: &str,
 ) -> Result<Vec<DeletedBlobInfo>, sqlx::Error> {
     // TODO: This does not delete the actual blobs, it just deletes them from the blobs table.
     // We should also delete the blobs from storage.
     let rows = sqlx::query(&super::sql(
-        "DELETE FROM blobs WHERE bucket_id = ? RETURNING blob_id, sui_object_id",
+        "DELETE FROM blobs WHERE bucket_name = ? RETURNING blob_id, sui_object_id",
     ))
-    .bind(bucket_id)
+    .bind(bucket_name)
     .fetch_all(pool)
     .await?;
     Ok(rows
@@ -276,22 +276,21 @@ mod tests {
 
     async fn seed_account_and_bucket(pool: &super::super::DbPool) -> (AccountId, String) {
         let account_id = AccountId::new();
-        let bucket_id = uuid::Uuid::new_v4().to_string();
+        let bucket_name = format!("test-bucket-{}", uuid::Uuid::new_v4());
         sqlx::query(&super::super::sql("INSERT INTO accounts (id) VALUES (?)"))
             .bind(&account_id)
             .execute(pool)
             .await
             .unwrap();
         sqlx::query(&super::super::sql(
-            "INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?)",
+            "INSERT INTO buckets (name, account_id) VALUES (?, ?)",
         ))
-        .bind(&bucket_id)
+        .bind(&bucket_name)
         .bind(&account_id)
-        .bind("test-bucket")
         .execute(pool)
         .await
         .unwrap();
-        (account_id, bucket_id)
+        (account_id, bucket_name)
     }
 
     #[tokio::test]

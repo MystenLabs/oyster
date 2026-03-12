@@ -11,6 +11,7 @@ use crate::{
     error::AppError,
     models::{Bucket, CreateBucketRequest, ErrorResponse, PaginatedResponse, PaginationParams},
     pagination,
+    validation,
 };
 
 #[utoipa::path(
@@ -26,15 +27,13 @@ use crate::{
         (status = 409, description = "Bucket name already exists", body = ErrorResponse),
     ),
 )]
-/// Create a new bucket. Bucket names must be unique within an account.
+/// Create a new bucket. Bucket names must be globally unique.
 pub async fn create_bucket(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
     Json(body): Json<CreateBucketRequest>,
 ) -> Result<(StatusCode, Json<Bucket>), AppError> {
-    if body.name.is_empty() {
-        return Err(AppError::BadRequest("name is required".into()));
-    }
+    validation::validate_bucket_name(&body.name).map_err(AppError::BadRequest)?;
 
     let bucket = db::buckets::create_bucket(&state.db, &auth.account_id, &body.name)
         .await
@@ -90,7 +89,7 @@ pub async fn list_buckets(
     let data: Vec<Bucket> = buckets.into_iter().take(limit as usize).collect();
     let next_cursor = if has_more {
         data.last()
-            .map(|b| pagination::encode_cursor(&b.created_at, &b.id))
+            .map(|b| pagination::encode_cursor(&b.created_at, &b.name))
     } else {
         None
     };
@@ -100,10 +99,10 @@ pub async fn list_buckets(
 
 #[utoipa::path(
     delete,
-    path = "/buckets/{bucket_id}",
+    path = "/buckets/{bucket_name}",
     tag = "Buckets",
     security(("bearer" = [])),
-    params(("bucket_id" = String, Path, description = "Bucket ID")),
+    params(("bucket_name" = String, Path, description = "Bucket name")),
     responses(
         (status = 204, description = "Bucket deleted"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
@@ -114,10 +113,10 @@ pub async fn list_buckets(
 pub async fn delete_bucket(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(bucket_id): Path<String>,
+    Path(bucket_name): Path<String>,
 ) -> Result<StatusCode, AppError> {
     // First delete all blobs in the bucket
-    let deleted_blobs = db::blobs::delete_blobs_in_bucket(&state.db, &bucket_id).await?;
+    let deleted_blobs = db::blobs::delete_blobs_in_bucket(&state.db, &bucket_name).await?;
 
     // Clean up unreferenced blob data from the store
     for info in &deleted_blobs {
@@ -134,7 +133,7 @@ pub async fn delete_bucket(
         }
     }
 
-    let deleted = db::buckets::delete_bucket(&state.db, &bucket_id, &auth.account_id).await?;
+    let deleted = db::buckets::delete_bucket(&state.db, &bucket_name, &auth.account_id).await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
