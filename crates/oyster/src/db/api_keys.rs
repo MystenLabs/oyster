@@ -15,9 +15,9 @@ pub async fn create_api_key(
     raw_key: &str,
 ) -> Result<ApiKeyWithSecret, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    let row = sqlx::query(
+    let row = sqlx::query(&super::sql(
         "INSERT INTO api_keys (id, account_id, key_hash, prefix) VALUES (?, ?, ?, ?) RETURNING id, prefix, created_at",
-    )
+    ))
     .bind(&id)
     .bind(account_id)
     .bind(key_hash)
@@ -38,9 +38,9 @@ pub async fn find_by_hash(
     pool: &super::DbPool,
     key_hash: &str,
 ) -> Result<Option<ApiKey>, sqlx::Error> {
-    let row = sqlx::query(
+    let row = sqlx::query(&super::sql(
         "SELECT id, account_id, prefix, created_at, revoked_at FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL",
-    )
+    ))
     .bind(key_hash)
     .fetch_optional(pool)
     .await?;
@@ -61,9 +61,9 @@ pub async fn revoke_api_key(
     account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
-    let result = sqlx::query(
+    let result = sqlx::query(&super::sql(
         "UPDATE api_keys SET revoked_at = ? WHERE id = ? AND account_id = ? AND revoked_at IS NULL",
-    )
+    ))
     .bind(&now)
     .bind(key_id)
     .bind(account_id)

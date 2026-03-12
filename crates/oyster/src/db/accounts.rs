@@ -5,11 +5,12 @@ use crate::{AccountId, models::Account};
 /// Insert a new account.
 pub async fn create_account(pool: &super::DbPool) -> Result<Account, sqlx::Error> {
     let id = AccountId::new();
-    let row =
-        sqlx::query("INSERT INTO accounts (id) VALUES (?) RETURNING id, created_at, updated_at")
-            .bind(&id)
-            .fetch_one(pool)
-            .await?;
+    let row = sqlx::query(&super::sql(
+        "INSERT INTO accounts (id) VALUES (?) RETURNING id, created_at, updated_at",
+    ))
+    .bind(&id)
+    .fetch_one(pool)
+    .await?;
 
     Ok(Account {
         id: row.get("id"),
@@ -23,10 +24,12 @@ pub async fn get_account(
     pool: &super::DbPool,
     id: &AccountId,
 ) -> Result<Option<Account>, sqlx::Error> {
-    let row = sqlx::query("SELECT id, created_at, updated_at FROM accounts WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await?;
+    let row = sqlx::query(&super::sql(
+        "SELECT id, created_at, updated_at FROM accounts WHERE id = ?",
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
 
     Ok(row.map(|r| Account {
         id: r.get("id"),
@@ -37,7 +40,7 @@ pub async fn get_account(
 
 /// Count the total number of accounts.
 pub async fn count_accounts(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
-    sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
+    sqlx::query_scalar(&super::sql("SELECT COUNT(*) FROM accounts"))
         .fetch_one(pool)
         .await
 }

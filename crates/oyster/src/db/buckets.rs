@@ -19,9 +19,9 @@ pub async fn create_bucket(
     name: &str,
 ) -> Result<Bucket, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
-    let row = sqlx::query(
+    let row = sqlx::query(&super::sql(
         "INSERT INTO buckets (id, account_id, name) VALUES (?, ?, ?) RETURNING id, account_id, name, created_at",
-    )
+    ))
     .bind(&id)
     .bind(account_id)
     .bind(name)
@@ -41,11 +41,11 @@ pub async fn list_buckets(
 ) -> Result<Vec<Bucket>, sqlx::Error> {
     let rows = match (after_created_at, after_id) {
         (Some(created_at), Some(id)) => {
-            sqlx::query(
+            sqlx::query(&super::sql(
                 "SELECT id, account_id, name, created_at FROM buckets \
                  WHERE account_id = ? AND (created_at, id) > (?, ?) \
                  ORDER BY created_at, id LIMIT ?",
-            )
+            ))
             .bind(account_id)
             .bind(created_at)
             .bind(id)
@@ -54,10 +54,10 @@ pub async fn list_buckets(
             .await?
         }
         _ => {
-            sqlx::query(
+            sqlx::query(&super::sql(
                 "SELECT id, account_id, name, created_at FROM buckets \
                  WHERE account_id = ? ORDER BY created_at, id LIMIT ?",
-            )
+            ))
             .bind(account_id)
             .bind(limit)
             .fetch_all(pool)
@@ -73,9 +73,9 @@ pub async fn get_bucket(
     bucket_id: &str,
     account_id: &AccountId,
 ) -> Result<Option<Bucket>, sqlx::Error> {
-    let row = sqlx::query(
+    let row = sqlx::query(&super::sql(
         "SELECT id, account_id, name, created_at FROM buckets WHERE id = ? AND account_id = ?",
-    )
+    ))
     .bind(bucket_id)
     .bind(account_id)
     .fetch_optional(pool)
@@ -90,10 +90,12 @@ pub async fn delete_bucket(
     bucket_id: &str,
     account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM buckets WHERE id = ? AND account_id = ?")
-        .bind(bucket_id)
-        .bind(account_id)
-        .execute(pool)
-        .await?;
+    let result = sqlx::query(&super::sql(
+        "DELETE FROM buckets WHERE id = ? AND account_id = ?",
+    ))
+    .bind(bucket_id)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
     Ok(result.rows_affected() > 0)
 }

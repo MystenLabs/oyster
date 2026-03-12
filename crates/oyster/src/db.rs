@@ -7,10 +7,36 @@ pub mod blobs;
 /// Bucket database operations.
 pub mod buckets;
 
+use std::{borrow::Cow, fmt::Write, sync::OnceLock};
+
 use sqlx::any::AnyPoolOptions;
 
 /// Database connection pool type alias.
 pub type DbPool = sqlx::AnyPool;
+
+/// Whether the connected database is PostgreSQL (requires `$1`-style placeholders).
+static IS_POSTGRES: OnceLock<bool> = OnceLock::new();
+
+/// Translate `?` placeholders to `$1, $2, …` when connected to PostgreSQL.
+///
+/// SQLite uses `?` while PostgreSQL uses `$N`. The `sqlx::Any` driver does not
+/// always translate automatically, so we handle it ourselves.
+pub fn sql(query: &str) -> Cow<'_, str> {
+    if !*IS_POSTGRES.get().unwrap_or(&false) {
+        return Cow::Borrowed(query);
+    }
+    let mut result = String::with_capacity(query.len() + 16);
+    let mut n = 0u32;
+    for c in query.chars() {
+        if c == '?' {
+            n += 1;
+            write!(result, "${n}").unwrap();
+        } else {
+            result.push(c);
+        }
+    }
+    Cow::Owned(result)
+}
 
 /// Create and migrate a database connection pool.
 ///
@@ -20,6 +46,7 @@ pub async fn create_pool(database_url: &str) -> Result<DbPool, sqlx::Error> {
     sqlx::any::install_default_drivers();
 
     let is_sqlite = database_url.starts_with("sqlite");
+    IS_POSTGRES.set(!is_sqlite).ok();
 
     // In-memory SQLite databases are per-connection, so we must limit to a
     // single connection so that migrations and queries share the same database.
