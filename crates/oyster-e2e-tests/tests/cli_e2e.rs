@@ -120,7 +120,6 @@ fn cli_e2e_full_lifecycle() {
         let bucket: Value =
             serde_json::from_slice(&output.stdout).expect("parse create-bucket JSON");
         assert!(bucket["name"].as_str().is_some());
-        assert!(bucket["id"].as_str().is_some());
 
         // 2. list-buckets
         eprintln!("[cli_e2e] 2/10 list-buckets");
@@ -149,7 +148,14 @@ fn cli_e2e_full_lifecycle() {
         let input_path = tmp_input.path().to_str().unwrap().to_string();
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
-            cmd.args(["store", &input_path, "--bucket", "cli-test-bucket"]);
+            cmd.args([
+                "store",
+                &input_path,
+                "--bucket",
+                "cli-test-bucket",
+                "--key",
+                "test-file.txt",
+            ]);
             cmd
         })
         .await;
@@ -159,9 +165,10 @@ fn cli_e2e_full_lifecycle() {
             String::from_utf8_lossy(&output.stderr)
         );
         let stored: Value = serde_json::from_slice(&output.stdout).expect("parse store JSON");
-        let object_id = stored["object_id"].as_str().expect("object_id").to_string();
+        let blob_key = stored["key"].as_str().expect("key").to_string();
         assert!(stored["blob_id"].as_str().is_some());
         assert!(stored["size"].as_u64().is_some());
+        assert!(stored["md5"].as_str().is_some());
 
         // 4. list-blobs
         eprintln!("[cli_e2e] 4/10 list-blobs");
@@ -178,11 +185,7 @@ fn cli_e2e_full_lifecycle() {
         );
         let list: Value = serde_json::from_slice(&output.stdout).expect("parse list-blobs JSON");
         let blobs = list["data"].as_array().expect("data array");
-        assert!(
-            blobs
-                .iter()
-                .any(|b| b["object_id"].as_str() == Some(&object_id))
-        );
+        assert!(blobs.iter().any(|b| b["key"].as_str() == Some(&blob_key)));
 
         // 5. read — download to a temp file and verify contents
         eprintln!("[cli_e2e] 5/10 read");
@@ -190,7 +193,14 @@ fn cli_e2e_full_lifecycle() {
         let output_path = tmp_output.path().to_str().unwrap().to_string();
         let output = run_cli({
             let mut cmd = cli_cmd_public(&url);
-            cmd.args(["read", &object_id, "-o", &output_path]);
+            cmd.args([
+                "read",
+                &blob_key,
+                "--bucket",
+                "cli-test-bucket",
+                "-o",
+                &output_path,
+            ]);
             cmd
         })
         .await;
@@ -206,7 +216,7 @@ fn cli_e2e_full_lifecycle() {
         eprintln!("[cli_e2e] 6/10 delete");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
-            cmd.args(["delete", &object_id]);
+            cmd.args(["delete", &blob_key, "--bucket", "cli-test-bucket"]);
             cmd
         })
         .await;

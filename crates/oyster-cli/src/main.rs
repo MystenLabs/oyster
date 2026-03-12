@@ -35,22 +35,31 @@ enum Command {
         /// Bucket name
         #[arg(long)]
         bucket: String,
+        /// Object key (defaults to filename)
+        #[arg(long)]
+        key: Option<String>,
         /// Content type (guessed from extension if omitted)
         #[arg(long)]
         content_type: Option<String>,
     },
-    /// Download a blob by object ID
+    /// Download a blob by bucket and key
     Read {
-        /// Object ID to read
-        object_id: String,
+        /// Object key
+        key: String,
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
         /// Write to file instead of stdout
         #[arg(short, long)]
         output: Option<PathBuf>,
     },
-    /// Delete a blob by object ID
+    /// Delete a blob by bucket and key
     Delete {
-        /// Object ID to delete
-        object_id: String,
+        /// Object key
+        key: String,
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
     },
     /// List blobs in a bucket
     ListBlobs {
@@ -148,16 +157,18 @@ async fn cmd_store(
     out: &Output,
     file: &std::path::Path,
     bucket: &str,
+    key: &str,
     content_type: Option<&str>,
 ) -> Result<(), CliError> {
     let data = std::fs::read(file)?;
     let ct = content_type.unwrap_or_else(|| guess_content_type(file));
-    let resp = client.store_blob(bucket, data, ct).await?;
+    let resp = client.store_blob(bucket, key, data, ct).await?;
     out.print(&resp, |r| {
         println!("Stored blob:");
-        println!("  object_id:      {}", r.object_id);
+        println!("  key:            {}", r.key);
         println!("  blob_id:        {}", r.blob_id);
         println!("  size:           {} bytes", r.size);
+        println!("  md5:            {}", r.md5);
         if let Some(ref sui) = r.sui_object_id {
             println!("  sui_object_id:  {sui}");
         }
@@ -170,10 +181,11 @@ async fn cmd_store(
 
 async fn cmd_read(
     client: &OysterClient,
-    object_id: &str,
+    bucket: &str,
+    key: &str,
     output_path: Option<&std::path::Path>,
 ) -> Result<(), CliError> {
-    let (bytes, _content_type) = client.read_blob(object_id).await?;
+    let (bytes, _content_type) = client.read_blob(bucket, key).await?;
     match output_path {
         Some(path) => {
             std::fs::write(path, &bytes)?;
@@ -187,9 +199,14 @@ async fn cmd_read(
     Ok(())
 }
 
-async fn cmd_delete(client: &OysterClient, out: &Output, object_id: &str) -> Result<(), CliError> {
-    client.delete_blob(object_id).await?;
-    out.success(&format!("Deleted blob {object_id}"));
+async fn cmd_delete(
+    client: &OysterClient,
+    out: &Output,
+    bucket: &str,
+    key: &str,
+) -> Result<(), CliError> {
+    client.delete_blob(bucket, key).await?;
+    out.success(&format!("Deleted blob {bucket}/{key}"));
     Ok(())
 }
 
@@ -203,12 +220,12 @@ async fn cmd_list_blobs(
     out.print(&resp, |r| {
         println!(
             "{:<40} {:<20} {:>10} CREATED",
-            "OBJECT_ID", "CONTENT_TYPE", "SIZE"
+            "KEY", "CONTENT_TYPE", "SIZE"
         );
         for b in &r.data {
             println!(
                 "{:<40} {:<20} {:>10} {}",
-                b.object_id, b.content_type, b.size, b.created_at
+                b.key, b.content_type, b.size, b.created_at
             );
         }
         if let Some(ref cursor) = r.next_cursor {
@@ -335,12 +352,13 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
     match cli.command {
         // Public commands — only need URL
         Command::Read {
-            ref object_id,
+            ref key,
+            ref bucket,
             ref output,
         } => {
             let (url, _) = config::resolve_url_only(cli.config.as_deref(), cli.url.as_deref())?;
             let client = OysterClient::new(url, None);
-            cmd_read(&client, object_id, output.as_deref()).await
+            cmd_read(&client, bucket, key, output.as_deref()).await
         }
 
         Command::Info => {
@@ -370,9 +388,20 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                 Command::Store {
                     ref file,
                     ref bucket,
+                    ref key,
                     ref content_type,
-                } => cmd_store(&client, out, file, bucket, content_type.as_deref()).await,
-                Command::Delete { ref object_id } => cmd_delete(&client, out, object_id).await,
+                } => {
+                    let default_key = file
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_else(|| "unnamed".to_string());
+                    let key = key.as_deref().unwrap_or(&default_key);
+                    cmd_store(&client, out, file, bucket, key, content_type.as_deref()).await
+                }
+                Command::Delete {
+                    ref key,
+                    ref bucket,
+                } => cmd_delete(&client, out, bucket, key).await,
                 Command::ListBlobs { ref bucket, limit } => {
                     cmd_list_blobs(&client, out, bucket, limit).await
                 }

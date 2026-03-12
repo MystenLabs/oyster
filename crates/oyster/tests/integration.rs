@@ -226,15 +226,16 @@ async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
     body["name"].as_str().unwrap().to_string()
 }
 
-/// Helper: store a blob, returns (object_id, blob_id).
+/// Helper: store a blob, returns (key, blob_id).
 async fn store_test_blob(
     app: &Router,
     api_key: &str,
     bucket_name: &str,
+    key: &str,
     content_type: &str,
     data: &[u8],
 ) -> (String, String) {
-    let req = Request::put(format!("/buckets/{bucket_name}/blobs"))
+    let req = Request::put(format!("/buckets/{bucket_name}/blobs/{key}"))
         .header("authorization", format!("Bearer {api_key}"))
         .header("content-type", content_type)
         .body(Body::from(data.to_vec()))
@@ -245,9 +246,13 @@ async fn store_test_blob(
         body.get("sui_object_id").is_some(),
         "response should include sui_object_id field"
     );
-    let object_id = body["object_id"].as_str().unwrap().to_string();
+    assert!(
+        body.get("md5").is_some(),
+        "response should include md5 field"
+    );
+    let resp_key = body["key"].as_str().unwrap().to_string();
     let blob_id = body["blob_id"].as_str().unwrap().to_string();
-    (object_id, blob_id)
+    (resp_key, blob_id)
 }
 
 // ---------------------------------------------------------------------------
@@ -283,13 +288,20 @@ async fn full_lifecycle() {
     let bucket_name = create_test_bucket(&app, &key, "my-bucket").await;
 
     // 3. Store blob
-    let (object_id, blob_id) =
-        store_test_blob(&app, &key, &bucket_name, "text/plain", b"hello oyster").await;
+    let (blob_key, blob_id) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "hello.txt",
+        "text/plain",
+        b"hello oyster",
+    )
+    .await;
 
-    // 4. Read blob by object_id (no auth)
+    // 4. Read blob by bucket+key (no auth)
     let (status, body) = raw_response(
         &app,
-        Request::get(format!("/blobs/{object_id}"))
+        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -320,15 +332,16 @@ async fn full_lifecycle() {
     assert_eq!(status, StatusCode::OK);
     let blobs = body["data"].as_array().unwrap();
     assert_eq!(blobs.len(), 1);
-    assert_eq!(blobs[0]["object_id"].as_str().unwrap(), object_id);
+    assert_eq!(blobs[0]["key"].as_str().unwrap(), blob_key);
     assert!(blobs[0].get("sui_object_id").is_some());
+    assert!(blobs[0].get("md5").is_some());
 
     // 7. Update blob metadata
     let (status, body) = json_response(
         &app,
         Request::builder()
             .method("PATCH")
-            .uri(format!("/blobs/{object_id}/metadata"))
+            .uri(format!("/buckets/{bucket_name}/blobs/{blob_key}/metadata"))
             .header("authorization", format!("Bearer {key}"))
             .header("content-type", "application/json")
             .body(Body::from(r#"{"content_type":"text/html"}"#))
@@ -342,7 +355,7 @@ async fn full_lifecycle() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/blobs/{object_id}"))
+            Request::delete(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -354,7 +367,7 @@ async fn full_lifecycle() {
     // 9. Blob is gone
     let (status, _) = raw_response(
         &app,
-        Request::get(format!("/blobs/{object_id}"))
+        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -471,11 +484,12 @@ async fn different_accounts_same_bucket_name() {
 async fn not_found_cases() {
     let (app, _tmp) = test_app().await;
     let (_, key) = create_test_account(&app).await;
+    let bucket_name = create_test_bucket(&app, &key, "nf-test").await;
 
     // Read non-existent blob
     let (status, _) = raw_response(
         &app,
-        Request::get("/blobs/nonexistent-id")
+        Request::get(format!("/buckets/{bucket_name}/blobs/nonexistent-key"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -497,7 +511,7 @@ async fn not_found_cases() {
     // Delete non-existent blob
     let (status, _) = json_response(
         &app,
-        Request::delete("/blobs/nonexistent-id")
+        Request::delete(format!("/buckets/{bucket_name}/blobs/nonexistent-key"))
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -522,7 +536,7 @@ async fn store_blob_to_nonexistent_bucket() {
     let (app, _tmp) = test_app().await;
     let (_, key) = create_test_account(&app).await;
 
-    let req = Request::put("/buckets/nonexistent-bucket/blobs")
+    let req = Request::put("/buckets/nonexistent-bucket/blobs/test.txt")
         .header("authorization", format!("Bearer {key}"))
         .header("content-type", "application/octet-stream")
         .body(Body::from(b"data".to_vec()))
@@ -538,18 +552,20 @@ async fn content_addressed_dedup() {
     let bucket_name = create_test_bucket(&app, &key, "dedup-test").await;
 
     let data = b"identical content";
-    let (oid1, bid1) = store_test_blob(&app, &key, &bucket_name, "text/plain", data).await;
-    let (oid2, bid2) = store_test_blob(&app, &key, &bucket_name, "text/plain", data).await;
+    let (key1, bid1) =
+        store_test_blob(&app, &key, &bucket_name, "file1.txt", "text/plain", data).await;
+    let (key2, bid2) =
+        store_test_blob(&app, &key, &bucket_name, "file2.txt", "text/plain", data).await;
 
-    // Same content -> same blob_id, different object_ids
+    // Same content -> same blob_id, different keys
     assert_eq!(bid1, bid2);
-    assert_ne!(oid1, oid2);
+    assert_ne!(key1, key2);
 
     // Delete one — the other should still be readable
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/blobs/{oid1}"))
+            Request::delete(format!("/buckets/{bucket_name}/blobs/{key1}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -560,7 +576,7 @@ async fn content_addressed_dedup() {
 
     let (status, body) = raw_response(
         &app,
-        Request::get(format!("/blobs/{oid2}"))
+        Request::get(format!("/buckets/{bucket_name}/blobs/{key2}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -668,10 +684,11 @@ async fn delete_bucket_cascades_blobs() {
     let (_, key) = create_test_account(&app).await;
     let bucket_name = create_test_bucket(&app, &key, "cascade-test").await;
 
-    let (object_id, _) = store_test_blob(
+    let (blob_key, _) = store_test_blob(
         &app,
         &key,
         &bucket_name,
+        "cascade.bin",
         "application/octet-stream",
         b"cascade me",
     )
@@ -693,7 +710,7 @@ async fn delete_bucket_cascades_blobs() {
     // Blob should be gone
     let (status, _) = raw_response(
         &app,
-        Request::get(format!("/blobs/{object_id}"))
+        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -709,10 +726,8 @@ async fn cross_account_isolation() {
 
     let bucket_name = create_test_bucket(&app, &key1, "private").await;
 
-    // Account 2 cannot list blobs in account 1's bucket (gets empty, not an error,
-    // because bucket lookup is scoped to account).
-    // But storing to a bucket you don't own should fail (not found).
-    let req = Request::put(format!("/buckets/{bucket_name}/blobs"))
+    // Account 2 cannot store to a bucket they don't own (not found).
+    let req = Request::put(format!("/buckets/{bucket_name}/blobs/intruder.txt"))
         .header("authorization", format!("Bearer {key2}"))
         .header("content-type", "text/plain")
         .body(Body::from(b"intruder".to_vec()))
@@ -740,13 +755,20 @@ async fn blob_content_type_preserved() {
     let (_, key) = create_test_account(&app).await;
     let bucket_name = create_test_bucket(&app, &key, "ct-test").await;
 
-    let (object_id, _) =
-        store_test_blob(&app, &key, &bucket_name, "image/png", b"\x89PNG fake").await;
+    let (blob_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "image.png",
+        "image/png",
+        b"\x89PNG fake",
+    )
+    .await;
 
     let resp = app
         .clone()
         .oneshot(
-            Request::get(format!("/blobs/{object_id}"))
+            Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -991,7 +1013,7 @@ async fn store_blob_passes_account_id() {
     let key = create_test_account_via_db(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "test-bucket").await;
 
-    store_test_blob(&app, &key, &bucket_name, "text/plain", b"data").await;
+    store_test_blob(&app, &key, &bucket_name, "test.txt", "text/plain", b"data").await;
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 1);
@@ -1011,8 +1033,8 @@ async fn store_blob_distinguishes_accounts() {
     let bucket_a = create_test_bucket(&app, &key_a, "bucket-a").await;
     let bucket_b = create_test_bucket(&app, &key_b, "bucket-b").await;
 
-    store_test_blob(&app, &key_a, &bucket_a, "text/plain", b"aaa").await;
-    store_test_blob(&app, &key_b, &bucket_b, "text/plain", b"bbb").await;
+    store_test_blob(&app, &key_a, &bucket_a, "a.txt", "text/plain", b"aaa").await;
+    store_test_blob(&app, &key_b, &bucket_b, "b.txt", "text/plain", b"bbb").await;
 
     let calls = spy.recorded_calls();
     assert_eq!(calls.len(), 2);
@@ -1032,14 +1054,21 @@ async fn delete_blob_threads_account_id() {
     let key = create_test_account_via_db(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "delete-test").await;
 
-    let (object_id, _blob_id) =
-        store_test_blob(&app, &key, &bucket_name, "text/plain", b"delete me").await;
+    let (blob_key, _blob_id) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "delete-me.txt",
+        "text/plain",
+        b"delete me",
+    )
+    .await;
 
     // Delete the blob via the API.
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/blobs/{object_id}"))
+            Request::delete(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),

@@ -56,8 +56,8 @@ pub struct Bucket {
 /// Metadata for a stored blob.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BlobMetadata {
-    /// Internal object ID (UUID).
-    pub object_id: String,
+    /// User-chosen object key (like a file path).
+    pub key: String,
     /// Content-addressed blob identifier.
     pub blob_id: String,
     /// Containing bucket name.
@@ -68,6 +68,8 @@ pub struct BlobMetadata {
     pub content_type: String,
     /// Size in bytes.
     pub size: i64,
+    /// Hex-encoded MD5 digest (S3 ETag).
+    pub md5: String,
     /// On-chain Sui object ID for the blob, if stored on Walrus.
     pub sui_object_id: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -120,12 +122,14 @@ pub struct PaginatedResponse<T: Serialize + ToSchema> {
 /// Response after successfully storing a blob.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct StoreBlobResponse {
-    /// Internal object ID.
-    pub object_id: String,
+    /// User-chosen object key.
+    pub key: String,
     /// Content-addressed blob ID.
     pub blob_id: String,
     /// Size in bytes.
     pub size: i64,
+    /// Hex-encoded MD5 digest (S3 ETag).
+    pub md5: String,
     /// On-chain Sui object ID, if applicable.
     pub sui_object_id: Option<String>,
     /// ISO 8601 creation timestamp.

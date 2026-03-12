@@ -28,10 +28,13 @@ const DEFAULT_DURATION_DAYS: i64 = 30;
 
 #[utoipa::path(
     put,
-    path = "/buckets/{bucket_name}/blobs",
+    path = "/buckets/{bucket_name}/blobs/{key}",
     tag = "Blobs",
     security(("bearer" = [])),
-    params(("bucket_name" = String, Path, description = "Bucket name")),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses(
         (status = 201, description = "Blob stored", body = StoreBlobResponse),
@@ -40,11 +43,11 @@ const DEFAULT_DURATION_DAYS: i64 = 30;
         (status = 413, description = "Payload too large", body = ErrorResponse),
     ),
 )]
-/// Upload a blob into a bucket. The request body is the raw binary content. Content is deduplicated by hash.
+/// Upload a blob into a bucket at the given key. The request body is the raw binary content. Uploading to the same key overwrites.
 pub async fn store_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(bucket_name): Path<String>,
+    Path((bucket_name, key)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<(StatusCode, Json<StoreBlobResponse>), AppError> {
@@ -71,6 +74,9 @@ pub async fn store_blob(
         auth.account_id,
         content_type
     );
+
+    let md5_digest = format!("{:x}", md5::compute(&body));
+
     let result = match state.blob_store.store(&body, &auth.account_id).await {
         Ok(r) => {
             metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
@@ -96,11 +102,13 @@ pub async fn store_blob(
 
     let metadata = db::blobs::insert_blob(
         &state.db,
+        &key,
         result.blob_id.as_str(),
         &bucket_name,
         &auth.account_id,
         content_type,
         body.len() as i64,
+        &md5_digest,
         &expires_at,
         result.sui_object_id.as_deref(),
     )
@@ -109,9 +117,10 @@ pub async fn store_blob(
     Ok((
         StatusCode::CREATED,
         Json(StoreBlobResponse {
-            object_id: metadata.object_id,
+            key: metadata.key,
             blob_id: metadata.blob_id,
             size: metadata.size,
+            md5: metadata.md5,
             sui_object_id: metadata.sui_object_id,
             created_at: metadata.created_at,
             expires_at: metadata.expires_at,
@@ -161,7 +170,7 @@ pub async fn list_blobs(
     let data: Vec<BlobMetadata> = blobs.into_iter().take(limit as usize).collect();
     let next_cursor = if has_more {
         data.last()
-            .map(|b| pagination::encode_cursor(&b.created_at, &b.object_id))
+            .map(|b| pagination::encode_cursor(&b.created_at, &b.key))
     } else {
         None
     };
@@ -171,20 +180,23 @@ pub async fn list_blobs(
 
 #[utoipa::path(
     get,
-    path = "/blobs/{object_id}",
+    path = "/buckets/{bucket_name}/blobs/{key}",
     tag = "Blobs",
-    params(("object_id" = String, Path, description = "Object ID")),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
     responses(
         (status = 200, description = "Blob data", content_type = "application/octet-stream"),
         (status = 404, description = "Blob not found", body = ErrorResponse),
     ),
 )]
-/// Read a blob's content by its object ID. No authentication required.
+/// Read a blob's content by bucket name and key. No authentication required.
 pub async fn read_blob(
     State(state): State<AppState>,
-    Path(object_id): Path<String>,
+    Path((bucket_name, key)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
-    let metadata = db::blobs::get_blob_by_object_id(&state.db, &object_id)
+    let metadata = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key)
         .await?
         .ok_or(AppError::NotFound)?;
 
@@ -260,10 +272,13 @@ pub async fn read_blob_by_blob_id(
 
 #[utoipa::path(
     patch,
-    path = "/blobs/{object_id}/metadata",
+    path = "/buckets/{bucket_name}/blobs/{key}/metadata",
     tag = "Blobs",
     security(("bearer" = [])),
-    params(("object_id" = String, Path, description = "Object ID")),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
     request_body = UpdateBlobMetadataRequest,
     responses(
         (status = 200, description = "Metadata updated", body = BlobMetadata),
@@ -276,7 +291,7 @@ pub async fn read_blob_by_blob_id(
 pub async fn update_blob_metadata(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(object_id): Path<String>,
+    Path((bucket_name, key)): Path<(String, String)>,
     Json(body): Json<UpdateBlobMetadataRequest>,
 ) -> Result<Json<BlobMetadata>, AppError> {
     let content_type = body
@@ -284,33 +299,41 @@ pub async fn update_blob_metadata(
         .as_deref()
         .ok_or_else(|| AppError::BadRequest("content_type must be provided".into()))?;
 
-    let metadata =
-        db::blobs::update_blob_metadata(&state.db, &object_id, &auth.account_id, content_type)
-            .await?
-            .ok_or(AppError::NotFound)?;
+    let metadata = db::blobs::update_blob_metadata(
+        &state.db,
+        &bucket_name,
+        &key,
+        &auth.account_id,
+        content_type,
+    )
+    .await?
+    .ok_or(AppError::NotFound)?;
 
     Ok(Json(metadata))
 }
 
 #[utoipa::path(
     delete,
-    path = "/blobs/{object_id}",
+    path = "/buckets/{bucket_name}/blobs/{key}",
     tag = "Blobs",
     security(("bearer" = [])),
-    params(("object_id" = String, Path, description = "Object ID")),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
     responses(
         (status = 204, description = "Blob deleted"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Blob not found", body = ErrorResponse),
     ),
 )]
-/// Delete a blob by its object ID. The underlying data is only removed when no other objects reference it.
+/// Delete a blob by its bucket name and key. The underlying data is only removed when no other objects reference it.
 pub async fn delete_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-    Path(object_id): Path<String>,
+    Path((bucket_name, key)): Path<(String, String)>,
 ) -> Result<StatusCode, AppError> {
-    let info = db::blobs::delete_blob(&state.db, &object_id, &auth.account_id)
+    let info = db::blobs::delete_blob(&state.db, &bucket_name, &key, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
 

@@ -1,5 +1,4 @@
 use sqlx::Row;
-use uuid::Uuid;
 
 use crate::{
     AccountId,
@@ -8,17 +7,20 @@ use crate::{
 
 fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
     BlobMetadata {
-        object_id: row.get("object_id"),
+        key: row.get("key"),
         blob_id: row.get("blob_id"),
         bucket_name: row.get("bucket_name"),
         account_id: row.get("account_id"),
         content_type: row.get("content_type"),
         size: row.get("size"),
+        md5: row.get("md5"),
         sui_object_id: row.get("sui_object_id"),
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
     }
 }
+
+const BLOB_COLUMNS: &str = "key, blob_id, bucket_name, account_id, content_type, size, md5, sui_object_id, created_at, expires_at";
 
 /// Count the total number of blobs.
 pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
@@ -27,52 +29,48 @@ pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
-/// Insert a new blob metadata row and return it.
+/// Insert a new blob metadata row (or overwrite on key conflict) and return it.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_blob(
     pool: &super::DbPool,
+    key: &str,
     blob_id: &str,
     bucket_name: &str,
     account_id: &AccountId,
     content_type: &str,
     size: i64,
+    md5: &str,
     expires_at: &str,
     sui_object_id: Option<&str>,
 ) -> Result<BlobMetadata, sqlx::Error> {
-    let object_id = Uuid::new_v4().to_string();
-    let row = sqlx::query(&super::sql(
-        "INSERT INTO blobs (object_id, blob_id, bucket_name, account_id, content_type, size, expires_at, sui_object_id) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?) \
-         RETURNING object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at",
+    // Delete-then-insert for cross-DB upsert compatibility
+    sqlx::query(&super::sql(
+        "DELETE FROM blobs WHERE bucket_name = ? AND key = ?",
     ))
-    .bind(&object_id)
-    .bind(blob_id)
     .bind(bucket_name)
-    .bind(account_id)
-    .bind(content_type)
-    .bind(size)
-    .bind(expires_at)
-    .bind(sui_object_id)
-    .fetch_one(pool)
+    .bind(key)
+    .execute(pool)
     .await?;
+
+    let query = format!(
+        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, expires_at, sui_object_id) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         RETURNING {BLOB_COLUMNS}",
+    );
+    let row = sqlx::query(&super::sql(&query))
+        .bind(key)
+        .bind(blob_id)
+        .bind(bucket_name)
+        .bind(account_id)
+        .bind(content_type)
+        .bind(size)
+        .bind(md5)
+        .bind(expires_at)
+        .bind(sui_object_id)
+        .fetch_one(pool)
+        .await?;
 
     Ok(row_to_blob(row))
-}
-
-/// Fetch blob metadata by its internal object ID.
-pub async fn get_blob_by_object_id(
-    pool: &super::DbPool,
-    object_id: &str,
-) -> Result<Option<BlobMetadata>, sqlx::Error> {
-    let row = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
-         FROM blobs WHERE object_id = ?",
-    ))
-    .bind(object_id)
-    .fetch_optional(pool)
-    .await?;
-
-    Ok(row.map(row_to_blob))
 }
 
 /// Fetch blob metadata by its content-addressed blob ID.
@@ -81,13 +79,27 @@ pub async fn get_blob_by_blob_id(
     pool: &super::DbPool,
     blob_id: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
-    let row = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
-         FROM blobs WHERE blob_id = ? LIMIT 1",
-    ))
-    .bind(blob_id)
-    .fetch_optional(pool)
-    .await?;
+    let query = format!("SELECT {BLOB_COLUMNS} FROM blobs WHERE blob_id = ? LIMIT 1");
+    let row = sqlx::query(&super::sql(&query))
+        .bind(blob_id)
+        .fetch_optional(pool)
+        .await?;
+
+    Ok(row.map(row_to_blob))
+}
+
+/// Fetch blob metadata by bucket name and key.
+pub async fn get_blob_by_key(
+    pool: &super::DbPool,
+    bucket_name: &str,
+    key: &str,
+) -> Result<Option<BlobMetadata>, sqlx::Error> {
+    let query = format!("SELECT {BLOB_COLUMNS} FROM blobs WHERE bucket_name = ? AND key = ?");
+    let row = sqlx::query(&super::sql(&query))
+        .bind(bucket_name)
+        .bind(key)
+        .fetch_optional(pool)
+        .await?;
 
     Ok(row.map(row_to_blob))
 }
@@ -98,34 +110,36 @@ pub async fn list_blobs_in_bucket(
     bucket_name: &str,
     account_id: &AccountId,
     after_created_at: Option<&str>,
-    after_id: Option<&str>,
+    after_key: Option<&str>,
     limit: i64,
 ) -> Result<Vec<BlobMetadata>, sqlx::Error> {
-    let rows = match (after_created_at, after_id) {
-        (Some(created_at), Some(id)) => {
-            sqlx::query(&super::sql(
-                "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
-                 FROM blobs WHERE bucket_name = ? AND account_id = ? AND (created_at, object_id) > (?, ?) \
-                 ORDER BY created_at, object_id LIMIT ?",
-            ))
-            .bind(bucket_name)
-            .bind(account_id)
-            .bind(created_at)
-            .bind(id)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?
+    let rows = match (after_created_at, after_key) {
+        (Some(created_at), Some(key)) => {
+            let query = format!(
+                "SELECT {BLOB_COLUMNS} \
+                 FROM blobs WHERE bucket_name = ? AND account_id = ? AND (created_at, key) > (?, ?) \
+                 ORDER BY created_at, key LIMIT ?",
+            );
+            sqlx::query(&super::sql(&query))
+                .bind(bucket_name)
+                .bind(account_id)
+                .bind(created_at)
+                .bind(key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
         }
         _ => {
-            sqlx::query(&super::sql(
-                "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
-                 FROM blobs WHERE bucket_name = ? AND account_id = ? ORDER BY created_at, object_id LIMIT ?",
-            ))
-            .bind(bucket_name)
-            .bind(account_id)
-            .bind(limit)
-            .fetch_all(pool)
-            .await?
+            let query = format!(
+                "SELECT {BLOB_COLUMNS} \
+                 FROM blobs WHERE bucket_name = ? AND account_id = ? ORDER BY created_at, key LIMIT ?",
+            );
+            sqlx::query(&super::sql(&query))
+                .bind(bucket_name)
+                .bind(account_id)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
         }
     };
     Ok(rows.into_iter().map(row_to_blob).collect())
@@ -134,20 +148,22 @@ pub async fn list_blobs_in_bucket(
 /// Update a blob's content type.
 pub async fn update_blob_metadata(
     pool: &super::DbPool,
-    object_id: &str,
+    bucket_name: &str,
+    key: &str,
     account_id: &AccountId,
     content_type: &str,
 ) -> Result<Option<BlobMetadata>, sqlx::Error> {
     sqlx::query(&super::sql(
-        "UPDATE blobs SET content_type = ? WHERE object_id = ? AND account_id = ?",
+        "UPDATE blobs SET content_type = ? WHERE bucket_name = ? AND key = ? AND account_id = ?",
     ))
     .bind(content_type)
-    .bind(object_id)
+    .bind(bucket_name)
+    .bind(key)
     .bind(account_id)
     .execute(pool)
     .await?;
 
-    get_blob_by_object_id(pool, object_id).await
+    get_blob_by_key(pool, bucket_name, key).await
 }
 
 /// Information returned when a blob is deleted.
@@ -158,16 +174,18 @@ pub struct DeletedBlobInfo {
     pub sui_object_id: Option<String>,
 }
 
-/// Delete a blob by object ID and account, returning its IDs if it existed.
+/// Delete a blob by bucket name, key, and account, returning its IDs if it existed.
 pub async fn delete_blob(
     pool: &super::DbPool,
-    object_id: &str,
+    bucket_name: &str,
+    key: &str,
     account_id: &AccountId,
 ) -> Result<Option<DeletedBlobInfo>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "DELETE FROM blobs WHERE object_id = ? AND account_id = ? RETURNING blob_id, sui_object_id",
+        "DELETE FROM blobs WHERE bucket_name = ? AND key = ? AND account_id = ? RETURNING blob_id, sui_object_id",
     ))
-    .bind(object_id)
+    .bind(bucket_name)
+    .bind(key)
     .bind(account_id)
     .fetch_optional(pool)
     .await?;
@@ -191,17 +209,18 @@ pub async fn get_expiring_blobs(
     before: &str,
     limit: i64,
 ) -> Result<Vec<BlobMetadata>, sqlx::Error> {
-    let rows = sqlx::query(&super::sql(
-        "SELECT object_id, blob_id, bucket_name, account_id, content_type, size, sui_object_id, created_at, expires_at \
+    let query = format!(
+        "SELECT {BLOB_COLUMNS} \
          FROM blobs \
          WHERE sui_object_id IS NOT NULL AND expires_at IS NOT NULL AND expires_at < ? \
          ORDER BY expires_at \
          LIMIT ?",
-    ))
-    .bind(before)
-    .bind(limit)
-    .fetch_all(pool)
-    .await?;
+    );
+    let rows = sqlx::query(&super::sql(&query))
+        .bind(before)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
@@ -296,9 +315,8 @@ mod tests {
     #[tokio::test]
     async fn get_expiring_blobs_returns_approaching() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
+        let (account_id, bucket_name) = seed_account_and_bucket(&pool).await;
 
-        // Insert a blob that expires in 3 days with a sui_object_id
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(3))
             .unwrap()
@@ -307,18 +325,19 @@ mod tests {
 
         insert_blob(
             &pool,
+            "file1.txt",
             "blob-hash-1",
-            &bucket_id,
+            &bucket_name,
             &account_id,
             "text/plain",
             100,
+            "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
             Some("0xabc123"),
         )
         .await
         .unwrap();
 
-        // Lookahead of 7 days should return it
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(7))
             .unwrap()
@@ -332,7 +351,7 @@ mod tests {
     #[tokio::test]
     async fn get_expiring_blobs_skips_no_sui_object() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
+        let (account_id, bucket_name) = seed_account_and_bucket(&pool).await;
 
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(3))
@@ -340,14 +359,15 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        // Insert blob without sui_object_id
         insert_blob(
             &pool,
+            "file2.txt",
             "blob-hash-2",
-            &bucket_id,
+            &bucket_name,
             &account_id,
             "text/plain",
             100,
+            "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
             None,
         )
@@ -366,16 +386,18 @@ mod tests {
     #[tokio::test]
     async fn update_blob_expires_at_works() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
+        let (account_id, bucket_name) = seed_account_and_bucket(&pool).await;
 
         let expires_at = "2026-03-01 00:00:00";
         let blob = insert_blob(
             &pool,
+            "file4.txt",
             "blob-hash-4",
-            &bucket_id,
+            &bucket_name,
             &account_id,
             "text/plain",
             100,
+            "d41d8cd98f00b204e9800998ecf8427e",
             expires_at,
             Some("0xupdate789"),
         )
@@ -387,7 +409,7 @@ mod tests {
             .await
             .unwrap();
 
-        let updated = get_blob_by_object_id(&pool, &blob.object_id)
+        let updated = get_blob_by_key(&pool, &blob.bucket_name, &blob.key)
             .await
             .unwrap()
             .unwrap();
@@ -397,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn get_expiring_blobs_with_accounts_returns_account() {
         let pool = test_pool().await;
-        let (account_id, bucket_id) = seed_account_and_bucket(&pool).await;
+        let (account_id, bucket_name) = seed_account_and_bucket(&pool).await;
 
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(3))
@@ -407,11 +429,13 @@ mod tests {
 
         insert_blob(
             &pool,
+            "pa1.txt",
             "blob-hash-pa1",
-            &bucket_id,
+            &bucket_name,
             &account_id,
             "text/plain",
             100,
+            "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
             Some("0xpa1"),
         )
@@ -445,11 +469,13 @@ mod tests {
 
         insert_blob(
             &pool,
+            "mixed1.txt",
             "blob-hash-mixed1",
             &bucket1,
             &acct1,
             "text/plain",
             100,
+            "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
             Some("0xmixed1"),
         )
@@ -458,11 +484,13 @@ mod tests {
 
         insert_blob(
             &pool,
+            "mixed2.txt",
             "blob-hash-mixed2",
             &bucket2,
             &acct2,
             "text/plain",
             200,
+            "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
             Some("0xmixed2"),
         )

@@ -11,12 +11,13 @@ pub struct Bucket {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct BlobMetadata {
-    pub object_id: String,
+    pub key: String,
     pub blob_id: String,
     pub bucket_name: String,
     pub account_id: String,
     pub content_type: String,
     pub size: i64,
+    pub md5: String,
     pub sui_object_id: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
@@ -24,9 +25,10 @@ pub struct BlobMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct StoreBlobResponse {
-    pub object_id: String,
+    pub key: String,
     pub blob_id: String,
     pub size: i64,
+    pub md5: String,
     pub sui_object_id: Option<String>,
     pub created_at: String,
     pub expires_at: Option<String>,
@@ -178,12 +180,16 @@ impl OysterClient {
     pub async fn store_blob(
         &self,
         bucket_name: &str,
+        key: &str,
         data: Vec<u8>,
         content_type: &str,
     ) -> Result<StoreBlobResponse, ApiError> {
         let resp = self
             .http
-            .put(format!("{}/buckets/{bucket_name}/blobs", self.base_url))
+            .put(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}",
+                self.base_url
+            ))
             .header("Authorization", self.auth_header().unwrap_or_default())
             .header("Content-Type", content_type)
             .body(data)
@@ -215,10 +221,17 @@ impl OysterClient {
         Ok(resp.json().await?)
     }
 
-    pub async fn read_blob(&self, object_id: &str) -> Result<(Vec<u8>, String), ApiError> {
+    pub async fn read_blob(
+        &self,
+        bucket_name: &str,
+        key: &str,
+    ) -> Result<(Vec<u8>, String), ApiError> {
         let resp = self
             .http
-            .get(format!("{}/blobs/{object_id}", self.base_url))
+            .get(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}",
+                self.base_url
+            ))
             .send()
             .await?;
         let resp = self.check_error(resp).await?;
@@ -232,10 +245,13 @@ impl OysterClient {
         Ok((bytes, content_type))
     }
 
-    pub async fn delete_blob(&self, object_id: &str) -> Result<(), ApiError> {
+    pub async fn delete_blob(&self, bucket_name: &str, key: &str) -> Result<(), ApiError> {
         let resp = self
             .http
-            .delete(format!("{}/blobs/{object_id}", self.base_url))
+            .delete(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}",
+                self.base_url
+            ))
             .header("Authorization", self.auth_header().unwrap_or_default())
             .send()
             .await?;
