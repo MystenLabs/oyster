@@ -20,6 +20,7 @@ use oyster::{
     config::Config,
     db,
     routes,
+    s3::OysterS3,
 };
 use serde_json::Value;
 use tempfile::TempDir;
@@ -117,6 +118,7 @@ async fn test_app() -> (Router, TempDir) {
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
         fund_manager_webhook_url: None,
+        s3_bind_addr: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -158,6 +160,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
         fund_manager_webhook_url: None,
+        s3_bind_addr: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -953,6 +956,7 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
         fund_manager_webhook_url: None,
+        s3_bind_addr: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1120,6 +1124,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
         fund_manager_webhook_url: None,
+        s3_bind_addr: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1298,4 +1303,396 @@ async fn access_key_cross_account_isolation() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body.as_array().unwrap().len(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// S3 trait-level integration tests
+// ---------------------------------------------------------------------------
+
+use s3s::{
+    S3,
+    S3Request,
+    auth::{Credentials, SecretKey},
+    dto::*,
+};
+
+/// Build an OysterS3 with an in-memory DB and local blob store, plus an account
+/// with an access key. Returns (OysterS3, access_key_id, TempDir).
+async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
+        fund_manager_webhook_url: None,
+        s3_bind_addr: None,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: Arc::new(blob_store),
+        pearl: None,
+        config,
+        metrics_handle: None,
+    };
+
+    let account = db::accounts::create_account(&pool).await.unwrap();
+    let access_key = db::access_keys::create_access_key(&pool, &account.id)
+        .await
+        .unwrap();
+
+    let s3 = OysterS3::new(state);
+    (s3, access_key.access_key_id, tmp)
+}
+
+/// Build an S3Request with credentials populated.
+fn s3_req<T>(input: T, access_key_id: &str) -> S3Request<T> {
+    use axum::http;
+    S3Request {
+        input,
+        method: http::Method::GET,
+        uri: http::Uri::from_static("/"),
+        headers: http::HeaderMap::new(),
+        extensions: http::Extensions::new(),
+        credentials: Some(Credentials {
+            access_key: access_key_id.to_string(),
+            secret_key: SecretKey::from("unused-in-trait-tests"),
+        }),
+        region: None,
+        service: None,
+        trailing_headers: None,
+    }
+}
+
+#[tokio::test]
+async fn s3_create_and_list_buckets() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    // Create a bucket
+    let resp = s3
+        .create_bucket(s3_req(
+            CreateBucketInput {
+                bucket: "test-bucket".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.output.location, Some("/test-bucket".into()));
+
+    // List buckets — should contain the new bucket
+    let resp = s3
+        .list_buckets(s3_req(ListBucketsInput::default(), &ak))
+        .await
+        .unwrap();
+    let names: Vec<_> = resp
+        .output
+        .buckets
+        .unwrap()
+        .iter()
+        .map(|b| b.name.clone().unwrap())
+        .collect();
+    assert!(names.contains(&"test-bucket".to_string()));
+}
+
+#[tokio::test]
+async fn s3_head_bucket() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    // HeadBucket on nonexistent → NoSuchBucket
+    let err = s3
+        .head_bucket(s3_req(
+            HeadBucketInput {
+                bucket: "no-such-bucket".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchBucket);
+
+    // Create and then head → OK
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "my-bucket".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    s3.head_bucket(s3_req(
+        HeadBucketInput {
+            bucket: "my-bucket".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn s3_put_get_delete_object() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "data".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // PutObject
+    let body_bytes = b"hello world";
+    let body = StreamingBlob::from(s3s::Body::from(body_bytes.to_vec()));
+    let put_resp = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "data".into(),
+                key: "greeting.txt".into(),
+                body: Some(body),
+                content_type: Some("text/plain".into()),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert!(put_resp.output.e_tag.is_some());
+
+    // GetObject
+    let get_resp = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "data".into(),
+                key: "greeting.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(get_resp.output.content_type, Some("text/plain".into()));
+    // Read the body
+    let mut stream = get_resp.output.body.unwrap();
+    let mut data = Vec::new();
+    while let Some(chunk) = futures::StreamExt::next(&mut stream).await {
+        data.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(data, body_bytes);
+
+    // DeleteObject
+    s3.delete_object(s3_req(
+        DeleteObjectInput {
+            bucket: "data".into(),
+            key: "greeting.txt".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // GetObject after delete → NoSuchKey
+    let err = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "data".into(),
+                key: "greeting.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchKey);
+}
+
+#[tokio::test]
+async fn s3_head_object() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "meta".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let content = b"some binary data";
+    let body = StreamingBlob::from(s3s::Body::from(content.to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "meta".into(),
+            key: "file.bin".into(),
+            body: Some(body),
+            content_type: Some("application/octet-stream".into()),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let resp = s3
+        .head_object(s3_req(
+            HeadObjectInput {
+                bucket: "meta".into(),
+                key: "file.bin".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.output.content_length, Some(content.len() as i64));
+    assert_eq!(
+        resp.output.content_type,
+        Some("application/octet-stream".into())
+    );
+    assert!(resp.output.e_tag.is_some());
+}
+
+#[tokio::test]
+async fn s3_list_objects_v2_with_prefix() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "mixed".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    for (key, data) in [
+        ("photos/a.jpg", "a"),
+        ("photos/b.jpg", "b"),
+        ("docs/c.txt", "c"),
+    ] {
+        let body = StreamingBlob::from(s3s::Body::from(data.as_bytes().to_vec()));
+        s3.put_object(s3_req(
+            PutObjectInput {
+                bucket: "mixed".into(),
+                key: key.into(),
+                body: Some(body),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    }
+
+    let resp = s3
+        .list_objects_v2(s3_req(
+            ListObjectsV2Input {
+                bucket: "mixed".into(),
+                prefix: Some("photos/".into()),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+
+    let keys: Vec<_> = resp
+        .output
+        .contents
+        .unwrap()
+        .iter()
+        .map(|o| o.key.clone().unwrap())
+        .collect();
+    assert_eq!(keys.len(), 2);
+    assert!(keys.contains(&"photos/a.jpg".to_string()));
+    assert!(keys.contains(&"photos/b.jpg".to_string()));
+}
+
+#[tokio::test]
+async fn s3_list_objects_v2_with_delimiter() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "structured".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    for (key, data) in [
+        ("photos/a.jpg", "a"),
+        ("photos/b.jpg", "b"),
+        ("docs/c.txt", "c"),
+    ] {
+        let body = StreamingBlob::from(s3s::Body::from(data.as_bytes().to_vec()));
+        s3.put_object(s3_req(
+            PutObjectInput {
+                bucket: "structured".into(),
+                key: key.into(),
+                body: Some(body),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    }
+
+    let resp = s3
+        .list_objects_v2(s3_req(
+            ListObjectsV2Input {
+                bucket: "structured".into(),
+                delimiter: Some("/".into()),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+
+    let common_prefixes: Vec<_> = resp
+        .output
+        .common_prefixes
+        .unwrap()
+        .iter()
+        .map(|cp| cp.prefix.clone().unwrap())
+        .collect();
+    assert!(common_prefixes.contains(&"photos/".to_string()));
+    assert!(common_prefixes.contains(&"docs/".to_string()));
+
+    // No top-level objects (all keys contain the delimiter)
+    let contents = resp.output.contents.unwrap();
+    assert!(contents.is_empty());
 }
