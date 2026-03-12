@@ -29,6 +29,28 @@ pub struct ApiKey {
     pub revoked_at: Option<String>,
 }
 
+/// An S3 access key record (without the secret).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AccessKey {
+    /// The 20-character access key ID (e.g. "OYAK...").
+    pub access_key_id: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 revocation timestamp, if revoked.
+    pub revoked_at: Option<String>,
+}
+
+/// A newly created S3 access key, including the secret (shown only once).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AccessKeyWithSecret {
+    /// The 20-character access key ID.
+    pub access_key_id: String,
+    /// The 40-character hex secret access key.
+    pub secret_access_key: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
 /// A newly created API key, including the plaintext secret (shown only once).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ApiKeyWithSecret {

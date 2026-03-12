@@ -9,7 +9,15 @@ use crate::{
     auth::{self, AuthenticatedAccount},
     db,
     error::AppError,
-    models::{ApiKeyWithSecret, CreateAccountResponse, ErrorResponse, WalletInfo, WalletResponse},
+    models::{
+        AccessKey,
+        AccessKeyWithSecret,
+        ApiKeyWithSecret,
+        CreateAccountResponse,
+        ErrorResponse,
+        WalletInfo,
+        WalletResponse,
+    },
 };
 
 #[utoipa::path(
@@ -57,6 +65,83 @@ pub async fn revoke_api_key(
     Path(key_id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     let revoked = db::api_keys::revoke_api_key(&state.db, &key_id, &auth.account_id).await?;
+    if revoked {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(AppError::NotFound)
+    }
+}
+
+// Access keys
+
+/// Maximum number of active access keys per account.
+const MAX_ACCESS_KEYS: i64 = 3;
+
+#[utoipa::path(
+    post,
+    path = "/account/access-keys",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 201, description = "Access key created", body = AccessKeyWithSecret),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 409, description = "Access key limit reached", body = ErrorResponse),
+    ),
+)]
+/// Create a new S3 access key for the authenticated account. Limited to 3 active keys.
+pub async fn create_access_key(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+) -> Result<(StatusCode, Json<AccessKeyWithSecret>), AppError> {
+    let count = db::access_keys::count_access_keys(&state.db, &auth.account_id).await?;
+    if count >= MAX_ACCESS_KEYS {
+        return Err(AppError::Conflict(format!(
+            "access key limit reached ({MAX_ACCESS_KEYS})"
+        )));
+    }
+    let key = db::access_keys::create_access_key(&state.db, &auth.account_id).await?;
+    Ok((StatusCode::CREATED, Json(key)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/account/access-keys",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "List of access keys", body = Vec<AccessKey>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// List all S3 access keys for the authenticated account. Never returns secrets.
+pub async fn list_access_keys(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+) -> Result<Json<Vec<AccessKey>>, AppError> {
+    let keys = db::access_keys::list_access_keys(&state.db, &auth.account_id).await?;
+    Ok(Json(keys))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/account/access-keys/{access_key_id}",
+    tag = "Account",
+    security(("bearer" = [])),
+    params(("access_key_id" = String, Path, description = "Access key ID to revoke")),
+    responses(
+        (status = 204, description = "Access key revoked"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Access key not found", body = ErrorResponse),
+    ),
+)]
+/// Revoke an S3 access key by its access key ID. Only the owner can revoke it.
+pub async fn delete_access_key(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path(access_key_id): Path<String>,
+) -> Result<StatusCode, AppError> {
+    let revoked =
+        db::access_keys::delete_access_key(&state.db, &access_key_id, &auth.account_id).await?;
     if revoked {
         Ok(StatusCode::NO_CONTENT)
     } else {

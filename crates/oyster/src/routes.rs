@@ -62,6 +62,12 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(account::create_api_key))
         .routes(routes!(account::revoke_api_key))
         .routes(routes!(account::get_wallet))
+        // Access keys
+        .routes(routes!(
+            account::create_access_key,
+            account::list_access_keys
+        ))
+        .routes(routes!(account::delete_access_key))
         // Stubs
         .routes(routes!(account::update_billing))
         .routes(routes!(account::get_report))

@@ -1157,3 +1157,145 @@ async fn metrics_endpoint_returns_prometheus_format() {
         "should contain active blobs gauge"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Access key CRUD
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn access_key_crud() {
+    let (app, _tmp) = test_app().await;
+    let (_, key) = create_test_account(&app).await;
+
+    // Create an access key
+    let (status, body) = json_response(
+        &app,
+        Request::post("/account/access-keys")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let access_key_id = body["access_key_id"].as_str().unwrap().to_string();
+    assert!(access_key_id.starts_with("OYAK"));
+    assert_eq!(access_key_id.len(), 20);
+    assert!(body["secret_access_key"].as_str().is_some());
+    assert_eq!(body["secret_access_key"].as_str().unwrap().len(), 40);
+
+    // List — should contain the key
+    let (status, body) = json_response(
+        &app,
+        Request::get("/account/access-keys")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0]["access_key_id"].as_str().unwrap(), access_key_id);
+    // Secret must NOT be in list response
+    assert!(keys[0].get("secret_access_key").is_none());
+
+    // Delete
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/account/access-keys/{access_key_id}"))
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // List — key should show revoked_at
+    let (status, body) = json_response(
+        &app,
+        Request::get("/account/access-keys")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert!(keys[0]["revoked_at"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn access_key_limit() {
+    let (app, _tmp) = test_app().await;
+    let (_, key) = create_test_account(&app).await;
+
+    // Create 3 access keys (the maximum)
+    for _ in 0..3 {
+        let (status, _) = json_response(
+            &app,
+            Request::post("/account/access-keys")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // 4th should be rejected with 409
+    let (status, body) = json_response(
+        &app,
+        Request::post("/account/access-keys")
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("limit"));
+}
+
+#[tokio::test]
+async fn access_key_cross_account_isolation() {
+    let (app, _tmp) = test_app().await;
+    let (_, key_a) = create_test_account(&app).await;
+    let (_, key_b) = create_test_account(&app).await;
+
+    // Account A creates an access key
+    let (status, body) = json_response(
+        &app,
+        Request::post("/account/access-keys")
+            .header("authorization", format!("Bearer {key_a}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let access_key_id = body["access_key_id"].as_str().unwrap().to_string();
+
+    // Account B cannot delete account A's access key
+    let (status, _) = json_response(
+        &app,
+        Request::delete(format!("/account/access-keys/{access_key_id}"))
+            .header("authorization", format!("Bearer {key_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Account B's list should be empty
+    let (status, body) = json_response(
+        &app,
+        Request::get("/account/access-keys")
+            .header("authorization", format!("Bearer {key_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body.as_array().unwrap().len(), 0);
+}

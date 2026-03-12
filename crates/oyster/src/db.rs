@@ -1,3 +1,5 @@
+/// S3 access key database operations.
+pub mod access_keys;
 /// Account database operations.
 pub mod accounts;
 /// API key database operations.
