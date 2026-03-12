@@ -44,7 +44,10 @@ impl IntoResponse for AppError {
             AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             AppError::NotImplemented => (StatusCode::NOT_IMPLEMENTED, self.to_string()),
             AppError::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
-            AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into()),
+            AppError::Internal(e) => {
+                tracing::error!("internal error: {e}");
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+            }
             AppError::Database(e) => {
                 tracing::error!("database error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())

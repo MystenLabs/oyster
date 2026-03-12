@@ -50,8 +50,7 @@ impl FromRequestParts<AppState> for AuthenticatedAccount {
 
         let key_hash = hash_api_key(raw_key);
         let api_key = db::api_keys::find_by_hash(&state.db, &key_hash)
-            .await
-            .map_err(|e| AppError::Internal(e.to_string()))?
+            .await?
             .ok_or(AppError::Unauthorized)?;
 
         Ok(AuthenticatedAccount {
