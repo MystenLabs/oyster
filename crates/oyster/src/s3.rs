@@ -25,7 +25,35 @@ pub struct OysterS3Auth {
 }
 
 fn internal_error(e: impl std::error::Error + Send + Sync + 'static) -> S3Error {
+    tracing::error!(error = %e, "S3 internal error");
     S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+}
+
+fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
+    use crate::blob_store::BlobStoreError;
+    match e {
+        BlobStoreError::NotFound(ref id) => {
+            tracing::warn!(blob = %id, "blob not found");
+            S3Error::with_message(S3ErrorCode::NoSuchKey, format!("blob not found: {id}"))
+        }
+        BlobStoreError::InsufficientBalance(ref msg) => {
+            tracing::warn!(error = %msg, "insufficient balance for blob operation");
+            let mut err = S3Error::with_message(
+                S3ErrorCode::Custom(bytestring::ByteString::from("InsufficientBalance")),
+                format!("account has insufficient balance: {msg}"),
+            );
+            err.set_status_code(hyper::StatusCode::PAYMENT_REQUIRED);
+            err
+        }
+        BlobStoreError::Io(ref io_err) => {
+            tracing::error!(error = %io_err, "blob store I/O error");
+            S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+        }
+        BlobStoreError::Http(ref msg) => {
+            tracing::error!(error = %msg, "blob store HTTP error");
+            S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+        }
+    }
 }
 
 fn parse_timestamp(s: &str) -> Option<Timestamp> {
@@ -225,7 +253,7 @@ impl s3s::S3 for OysterS3 {
             .blob_store
             .store(&body_bytes, &account_id)
             .await
-            .map_err(|e| internal_error(std::io::Error::other(e.to_string())))?;
+            .map_err(blob_store_error)?;
 
         let expires_at = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(30))
@@ -277,7 +305,7 @@ impl s3s::S3 for OysterS3 {
             .blob_store
             .read(&BlobId(metadata.blob_id))
             .await
-            .map_err(|e| internal_error(std::io::Error::other(e.to_string())))?;
+            .map_err(blob_store_error)?;
 
         let body = StreamingBlob::from(s3s::Body::from(data));
 

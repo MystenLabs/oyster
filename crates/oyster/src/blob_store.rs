@@ -42,6 +42,9 @@ pub enum BlobStoreError {
     /// An HTTP or network error occurred.
     #[error("http error: {0}")]
     Http(String),
+    /// The account has insufficient on-chain balance to complete the operation.
+    #[error("insufficient balance: {0}")]
+    InsufficientBalance(String),
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

@@ -18,6 +18,21 @@ use crate::{
     sui_transaction,
 };
 
+/// Check whether an error message indicates insufficient on-chain balance.
+fn is_insufficient_balance(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("insufficientgas")
+        || lower.contains("insufficient gas")
+        || lower.contains("insufficientcoinbalance")
+        || lower.contains("insufficient coin balance")
+        || lower.contains("gasbalancetoolow")
+        || lower.contains("gas balance too low")
+        || lower.contains("unable to select gas")
+        || lower.contains("not enough balance")
+        || lower.contains("not enough coins")
+        || lower.contains("cannot pay gas")
+}
+
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 /// Blob store that writes directly to Walrus via on-chain Sui transactions.
@@ -87,7 +102,14 @@ impl DirectWalrusBlobStore {
         let storage_arg = ptb
             .reserve_space(blob_obj_metadata.encoded_size, self.epochs)
             .await
-            .map_err(|e| BlobStoreError::Http(format!("reserve_space error: {e}")))?;
+            .map_err(|e| {
+                let msg = format!("reserve_space error: {e}");
+                if is_insufficient_balance(&msg) {
+                    BlobStoreError::InsufficientBalance(msg)
+                } else {
+                    BlobStoreError::Http(msg)
+                }
+            })?;
 
         let blob_arg = ptb
             .register_blob(
@@ -107,7 +129,14 @@ impl DirectWalrusBlobStore {
         let register_resp =
             sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
                 .await
-                .map_err(|e| BlobStoreError::Http(format!("register tx error: {e}")))?;
+                .map_err(|e| {
+                    let msg = format!("register tx error: {e}");
+                    if is_insufficient_balance(&msg) {
+                        BlobStoreError::InsufficientBalance(msg)
+                    } else {
+                        BlobStoreError::Http(msg)
+                    }
+                })?;
 
         tracing::info!("register tx digest: {:?}", register_resp.digest);
 
@@ -161,7 +190,14 @@ impl DirectWalrusBlobStore {
 
         sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
             .await
-            .map_err(|e| BlobStoreError::Http(format!("certify tx error: {e}")))?;
+            .map_err(|e| {
+                let msg = format!("certify tx error: {e}");
+                if is_insufficient_balance(&msg) {
+                    BlobStoreError::InsufficientBalance(msg)
+                } else {
+                    BlobStoreError::Http(msg)
+                }
+            })?;
 
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id.to_string()),
@@ -239,7 +275,14 @@ impl BlobStore for DirectWalrusBlobStore {
                 .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
             sui_transaction::sign_and_submit(&self.pearl, &account_id, &self.rpc_url, tx_data)
                 .await
-                .map_err(|e| BlobStoreError::Http(format!("delete tx: {e}")))?;
+                .map_err(|e| {
+                    let msg = format!("delete tx: {e}");
+                    if is_insufficient_balance(&msg) {
+                        BlobStoreError::InsufficientBalance(msg)
+                    } else {
+                        BlobStoreError::Http(msg)
+                    }
+                })?;
 
             Ok(())
         })
