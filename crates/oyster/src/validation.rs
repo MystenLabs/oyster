@@ -1,3 +1,10 @@
+/// Reserved bucket names that would shadow infrastructure routes.
+///
+/// This list is hardcoded because Axum's `Router` doesn't expose its registered
+/// routes, and the registrations use heterogeneous methods (`.route`, `.nest`,
+/// `.merge`), so a shared list wouldn't simplify things.
+const RESERVED_BUCKET_NAMES: [&str; 4] = ["health", "ready", "metrics", "api"];
+
 /// Validate a bucket name against S3 naming rules.
 ///
 /// Rules:
@@ -6,6 +13,7 @@
 /// - Must start and end with a letter or number
 /// - No consecutive hyphens
 /// - Cannot be formatted as an IP address
+/// - Cannot be a reserved infrastructure route name
 pub fn validate_bucket_name(name: &str) -> Result<(), String> {
     let len = name.len();
     if !(3..=63).contains(&len) {
@@ -36,6 +44,10 @@ pub fn validate_bucket_name(name: &str) -> Result<(), String> {
     // Reject IP address format (e.g., 192.168.5.4)
     if name.parse::<std::net::Ipv4Addr>().is_ok() {
         return Err("bucket name cannot be formatted as an IP address".into());
+    }
+
+    if RESERVED_BUCKET_NAMES.contains(&name) {
+        return Err(format!("bucket name '{name}' is reserved"));
     }
 
     Ok(())
@@ -93,5 +105,25 @@ mod tests {
     fn dots_rejected() {
         // Dots are not in the allowed set (lowercase, digits, hyphens)
         assert!(validate_bucket_name("my.bucket").is_err());
+    }
+
+    #[test]
+    fn reserved_names_rejected() {
+        for name in &["health", "ready", "metrics", "api"] {
+            assert!(
+                validate_bucket_name(name).is_err(),
+                "expected '{name}' to be rejected as reserved"
+            );
+        }
+    }
+
+    #[test]
+    fn reserved_name_substrings_allowed() {
+        for name in &["healthy", "api-store", "my-metrics"] {
+            assert!(
+                validate_bucket_name(name).is_ok(),
+                "expected '{name}' to be allowed"
+            );
+        }
     }
 }
