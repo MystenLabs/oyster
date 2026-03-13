@@ -15,7 +15,6 @@ use crate::{
         ApiKeyWithSecret,
         CreateAccountResponse,
         ErrorResponse,
-        WalletInfo,
         WalletResponse,
     },
 };
@@ -201,6 +200,7 @@ pub async fn transfer() -> Result<StatusCode, AppError> {
     responses(
         (status = 200, description = "Wallet information", body = WalletResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 503, description = "Wallet service unavailable", body = ErrorResponse),
     ),
 )]
 /// Get wallet information for the authenticated account.
@@ -209,10 +209,9 @@ pub async fn get_wallet(
     auth: AuthenticatedAccount,
 ) -> Result<Json<WalletResponse>, AppError> {
     let Some(ref pearl) = state.pearl else {
-        return Ok(Json(WalletResponse {
-            provisioned: false,
-            wallet: None,
-        }));
+        return Err(AppError::ServiceUnavailable(
+            "wallet service not configured".into(),
+        ));
     };
 
     let address = pearl
@@ -220,10 +219,7 @@ pub async fn get_wallet(
         .await
         .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 
-    Ok(Json(WalletResponse {
-        provisioned: true,
-        wallet: Some(WalletInfo { address }),
-    }))
+    Ok(Json(WalletResponse { address }))
 }
 
 // Debug endpoint

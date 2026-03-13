@@ -345,11 +345,7 @@ async fn cmd_delete_access_key(
 async fn cmd_wallet(client: &OysterClient, out: &Output) -> Result<(), CliError> {
     let resp = client.get_wallet().await?;
     out.print(&resp, |r| {
-        println!("provisioned: {}", r.provisioned);
-        match &r.wallet {
-            Some(w) => println!("wallet: {}", w.address),
-            None => println!("wallet: (none)"),
-        }
+        println!("address: {}", r.address);
     });
     Ok(())
 }

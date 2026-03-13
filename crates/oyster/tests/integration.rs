@@ -793,11 +793,11 @@ async fn blob_content_type_preserved() {
 }
 
 #[tokio::test]
-async fn wallet_returns_not_provisioned_in_local_mode() {
+async fn wallet_returns_503_without_pearl() {
     let (app, _tmp) = test_app().await;
     let (_, key) = create_test_account(&app).await;
 
-    let (status, body) = json_response(
+    let (status, _body) = json_response(
         &app,
         Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {key}"))
@@ -805,9 +805,7 @@ async fn wallet_returns_not_provisioned_in_local_mode() {
             .unwrap(),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["provisioned"].as_bool(), Some(false));
-    assert!(body["wallet"].is_null());
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 // ---------------------------------------------------------------------------
@@ -992,9 +990,8 @@ async fn wallet_with_pearl_returns_address() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["provisioned"].as_bool(), Some(true));
 
-    let address = body["wallet"]["address"].as_str().unwrap();
+    let address = body["address"].as_str().unwrap();
     assert!(
         address.starts_with("0x"),
         "address should start with 0x, got: {address}"

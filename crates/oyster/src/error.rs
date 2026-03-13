@@ -18,6 +18,9 @@ pub enum AppError {
     /// Resource conflict (409).
     #[error("conflict: {0}")]
     Conflict(String),
+    /// Service unavailable (503).
+    #[error("service unavailable: {0}")]
+    ServiceUnavailable(String),
     /// Feature not yet implemented (501).
     #[error("not implemented")]
     NotImplemented,
@@ -42,6 +45,7 @@ impl IntoResponse for AppError {
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),
             AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
+            AppError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             AppError::NotImplemented => (StatusCode::NOT_IMPLEMENTED, self.to_string()),
             AppError::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
             AppError::Internal(e) => {

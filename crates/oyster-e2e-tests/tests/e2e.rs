@@ -64,7 +64,7 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    let address = body["wallet"]["address"].as_str().expect("wallet address");
+    let address = body["address"].as_str().expect("wallet address");
     harness.fund_wallet(address).await;
 }
 
@@ -263,9 +263,8 @@ fn e2e_wallet_provisioning() {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        assert_eq!(body["provisioned"].as_bool(), Some(true));
 
-        let address = body["wallet"]["address"].as_str().unwrap();
+        let address = body["address"].as_str().unwrap();
         assert!(
             address.starts_with("0x"),
             "wallet address should start with 0x, got: {address}"
@@ -336,7 +335,7 @@ fn e2e_deterministic_wallet_address() {
             )
             .await;
             assert_eq!(status, axum::http::StatusCode::OK);
-            let addr = body["wallet"]["address"].as_str().unwrap().to_string();
+            let addr = body["address"].as_str().unwrap().to_string();
             addresses.push(addr);
         }
         assert_eq!(

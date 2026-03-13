@@ -64,12 +64,6 @@ pub struct AccessKeyWithSecret {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
-    pub provisioned: bool,
-    pub wallet: Option<WalletInfo>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct WalletInfo {
     pub address: String,
 }
 

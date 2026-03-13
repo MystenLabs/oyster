@@ -88,7 +88,7 @@ wallet_json="$(
     "$BASE_URL/api/v1/account/wallet"
 )" || die "failed to fetch wallet address (is the API key correct?)"
 
-address="$(echo "$wallet_json" | jq -r '.wallet.address')"
+address="$(echo "$wallet_json" | jq -r '.address')"
 [[ -n "$address" && "$address" != "null" ]] \
   || die "could not extract wallet address from response"
 echo "  wallet: $address"
