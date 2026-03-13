@@ -155,6 +155,7 @@ files to `/run/secrets/`).
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
 | `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
+| `S3_BIND_ADDR` | -- | S3-compatible API listen address (e.g. `0.0.0.0:3003`); disabled if unset |
 | `WALRUS_DEFAULT_EPOCHS` | `5` | Storage epochs for new blobs |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |
 | `WALRUS_SYSTEM_OBJECT` | -- | Walrus system object ID on Sui |
@@ -247,7 +248,7 @@ machine-readable output.
 
 Dockerfiles are provided for both services:
 
-- `docker/Dockerfile.oysterd` -- Builds the `oysterd` binary. Exposes port 3000.
+- `docker/Dockerfile.oysterd` -- Builds the `oysterd` binary. Exposes ports 3000 (HTTP) and 3003 (S3).
 - `docker/Dockerfile.pearl` -- Builds the `pearl` binary. Exposes ports 50051 (gRPC) and 50052 (metrics).
 
 ---

@@ -17,5 +17,6 @@ COPY --from=builder /build/target/release/oysterd /usr/local/bin/oysterd
 
 USER oyster
 EXPOSE 3000
+EXPOSE 3003
 ENTRYPOINT ["oysterd"]
 CMD ["serve"]
