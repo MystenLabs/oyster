@@ -39,6 +39,8 @@ const WAL_FUND_AMOUNT: u64 = 500_000_000_000; // 500 WAL in FROST
 pub struct OysterTestHarness {
     /// The Oyster HTTP router, ready for `tower::ServiceExt::oneshot` calls.
     pub router: Router,
+    /// The Oyster AppState (shared between JSON and S3 APIs).
+    pub state: AppState,
     /// Pearl connection for direct gRPC calls if needed.
     pub pearl: PearlConnection,
     /// The operator Pearl account ID (used as the default blob-signing account).
@@ -172,11 +174,12 @@ impl OysterTestHarness {
             metrics_handle: None,
         };
 
-        let router = routes::build_router(state);
+        let router = routes::build_router(state.clone());
         eprintln!("[harness] oyster router built, harness ready");
 
         Self {
             router,
+            state,
             pearl,
             operator_account_id,
             operator_address,
@@ -225,6 +228,29 @@ impl OysterTestHarness {
             }
         }
         panic!("oyster http server at {url} did not become ready");
+    }
+
+    /// Bind the S3-compatible API to a random TCP port and serve it.
+    /// Returns the base URL (e.g., "http://127.0.0.1:12345").
+    /// Waits until the server is accepting TCP connections before returning.
+    pub async fn serve_s3_on_random_port(&self) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind s3");
+        let addr = listener.local_addr().unwrap();
+        let state = self.state.clone();
+        tokio::spawn(async move {
+            oyster::s3::serve_s3_with_listener(state, listener).await;
+        });
+        let url = format!("http://{addr}");
+        for i in 0..50 {
+            if tokio::net::TcpStream::connect(addr).await.is_ok() {
+                eprintln!("[harness] S3 server ready after {i} polls");
+                return url;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("S3 server at {url} did not become ready");
     }
 
     /// Fund an address with SUI from the test cluster's admin wallet.
