@@ -56,7 +56,7 @@ impl Modify for SecurityAddon {
 }
 
 /// Build the Axum router with all API routes under `/api/v1`, S3-compatible API at the root
-/// (as a fallback), and infrastructure routes (`/health`, `/ready`, `/docs`, `/metrics`) at root.
+/// (as a fallback), and infrastructure routes (`/health`, `/ready`, `/api/docs`, `/metrics`) at root.
 pub fn build_router(state: AppState) -> Router {
     let s3_service = crate::s3::build_s3_service(&state);
     let s3_fallback = move |req: axum::extract::Request| {
@@ -118,7 +118,7 @@ pub fn build_router(state: AppState) -> Router {
         .nest("/api/v1", api_router)
         .route("/health", axum::routing::get(health::health))
         .route("/ready", axum::routing::get(health::ready))
-        .merge(Scalar::with_url("/docs", api))
+        .merge(Scalar::with_url("/api/docs", api))
         .route("/metrics", axum::routing::get(metrics::metrics))
         .fallback(s3_fallback)
         .with_state(state)

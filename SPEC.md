@@ -73,7 +73,7 @@ Important boundaries:
    - Delegates blob storage to a pluggable `BlobStore` backend (local filesystem or Walrus).
    - Calls Pearl gRPC to sign Sui transactions when using the Walrus backend.
    - Runs a background extension task to renew expiring blob leases.
-   - Exposes OpenAPI docs at `/docs` and Prometheus metrics at `/metrics`.
+   - Exposes OpenAPI docs at `/api/docs` and Prometheus metrics at `/metrics`.
 
 2. **Pearl**
    - Tonic gRPC server on port 50051 (default).

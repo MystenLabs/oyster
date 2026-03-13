@@ -61,7 +61,7 @@ deterministic key derivation and transaction signing in isolation.
 
 ## Oyster (HTTP API)
 
-Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/docs`. The server
+Oyster is an Axum-based HTTP server with OpenAPI documentation served at `/api/docs`. The server
 binary is `oysterd`, which supports two subcommands: `oysterd serve` (default) starts the HTTP
 API, and `oysterd extend` runs the blob extension background worker.
 
