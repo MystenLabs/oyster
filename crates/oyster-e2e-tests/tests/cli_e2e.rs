@@ -32,7 +32,7 @@ async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusC
 
 /// Helper: create a test account via the debug endpoint.
 async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/debug/create-account")
+    let req = Request::post("/api/v1/debug/create-account")
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -46,7 +46,7 @@ async fn create_test_account(app: &Router) -> (String, String) {
 async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
     let (status, body) = json_response(
         app,
-        Request::get("/account/wallet")
+        Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),

@@ -205,7 +205,7 @@ async fn raw_response(app: &Router, req: Request<Body>) -> (StatusCode, Vec<u8>)
 
 /// Helper: create an account via the debug endpoint, returns (account_id, api_key_secret).
 async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/debug/create-account")
+    let req = Request::post("/api/v1/debug/create-account")
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -217,7 +217,7 @@ async fn create_test_account(app: &Router) -> (String, String) {
 
 /// Helper: create a bucket, returns the bucket name.
 async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
-    let req = Request::post("/buckets")
+    let req = Request::post("/api/v1/buckets")
         .header("authorization", format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .body(Body::from(format!(r#"{{"name":"{name}"}}"#)))
@@ -236,7 +236,7 @@ async fn store_test_blob(
     content_type: &str,
     data: &[u8],
 ) -> (String, String) {
-    let req = Request::put(format!("/buckets/{bucket_name}/blobs/{key}"))
+    let req = Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/{key}"))
         .header("authorization", format!("Bearer {api_key}"))
         .header("content-type", content_type)
         .body(Body::from(data.to_vec()))
@@ -302,7 +302,7 @@ async fn full_lifecycle() {
     // 4. Read blob by bucket+key (no auth)
     let (status, body) = raw_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -313,7 +313,7 @@ async fn full_lifecycle() {
     // 5. Read blob by blob_id (no auth)
     let (status, body) = raw_response(
         &app,
-        Request::get(format!("/blobs/by-blob-id/{blob_id}"))
+        Request::get(format!("/api/v1/blobs/by-blob-id/{blob_id}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -324,7 +324,7 @@ async fn full_lifecycle() {
     // 6. List blobs in bucket
     let (status, body) = json_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs"))
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs"))
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -342,7 +342,9 @@ async fn full_lifecycle() {
         &app,
         Request::builder()
             .method("PATCH")
-            .uri(format!("/buckets/{bucket_name}/blobs/{blob_key}/metadata"))
+            .uri(format!(
+                "/api/v1/buckets/{bucket_name}/blobs/{blob_key}/metadata"
+            ))
             .header("authorization", format!("Bearer {key}"))
             .header("content-type", "application/json")
             .body(Body::from(r#"{"content_type":"text/html"}"#))
@@ -356,7 +358,7 @@ async fn full_lifecycle() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -368,7 +370,7 @@ async fn full_lifecycle() {
     // 9. Blob is gone
     let (status, _) = raw_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -379,7 +381,7 @@ async fn full_lifecycle() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -395,9 +397,9 @@ async fn stubs_return_501() {
     let (_, key) = create_test_account(&app).await;
 
     let cases = vec![
-        ("PUT", "/account/billing"),
-        ("GET", "/account/report"),
-        ("POST", "/account/transfer"),
+        ("PUT", "/api/v1/account/billing"),
+        ("GET", "/api/v1/account/report"),
+        ("POST", "/api/v1/account/transfer"),
     ];
 
     for (method, path) in cases {
@@ -422,14 +424,14 @@ async fn auth_required() {
 
     // Endpoints that require auth should reject unauthenticated requests.
     let cases = vec![
-        Request::post("/account/api-keys")
+        Request::post("/api/v1/account/api-keys")
             .body(Body::empty())
             .unwrap(),
-        Request::post("/buckets")
+        Request::post("/api/v1/buckets")
             .header("content-type", "application/json")
             .body(Body::from(r#"{"name":"x"}"#))
             .unwrap(),
-        Request::get("/buckets").body(Body::empty()).unwrap(),
+        Request::get("/api/v1/buckets").body(Body::empty()).unwrap(),
     ];
 
     for req in cases {
@@ -438,7 +440,7 @@ async fn auth_required() {
     }
 
     // Bad bearer token
-    let req = Request::get("/buckets")
+    let req = Request::get("/api/v1/buckets")
         .header("authorization", "Bearer bogus_key_value")
         .body(Body::empty())
         .unwrap();
@@ -454,7 +456,7 @@ async fn duplicate_bucket_name_conflict() {
     create_test_bucket(&app, &key, "dup-name").await;
 
     // Second bucket with same name should conflict
-    let req = Request::post("/buckets")
+    let req = Request::post("/api/v1/buckets")
         .header("authorization", format!("Bearer {key}"))
         .header("content-type", "application/json")
         .body(Body::from(r#"{"name":"dup-name"}"#))
@@ -472,7 +474,7 @@ async fn different_accounts_same_bucket_name() {
     create_test_bucket(&app, &key1, "shared-name").await;
 
     // Bucket names are globally unique — different account cannot reuse the name
-    let req = Request::post("/buckets")
+    let req = Request::post("/api/v1/buckets")
         .header("authorization", format!("Bearer {key2}"))
         .header("content-type", "application/json")
         .body(Body::from(r#"{"name":"shared-name"}"#))
@@ -490,9 +492,11 @@ async fn not_found_cases() {
     // Read non-existent blob
     let (status, _) = raw_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs/nonexistent-key"))
-            .body(Body::empty())
-            .unwrap(),
+        Request::get(format!(
+            "/api/v1/buckets/{bucket_name}/blobs/nonexistent-key"
+        ))
+        .body(Body::empty())
+        .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -501,7 +505,7 @@ async fn not_found_cases() {
     let (status, _) = raw_response(
         &app,
         Request::get(
-            "/blobs/by-blob-id/0000000000000000000000000000000000000000000000000000000000000000",
+            "/api/v1/blobs/by-blob-id/0000000000000000000000000000000000000000000000000000000000000000",
         )
         .body(Body::empty())
         .unwrap(),
@@ -512,10 +516,12 @@ async fn not_found_cases() {
     // Delete non-existent blob
     let (status, _) = json_response(
         &app,
-        Request::delete(format!("/buckets/{bucket_name}/blobs/nonexistent-key"))
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
+        Request::delete(format!(
+            "/api/v1/buckets/{bucket_name}/blobs/nonexistent-key"
+        ))
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap(),
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -523,7 +529,7 @@ async fn not_found_cases() {
     // Delete non-existent bucket
     let (status, _) = json_response(
         &app,
-        Request::delete("/buckets/nonexistent-id")
+        Request::delete("/api/v1/buckets/nonexistent-id")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -537,7 +543,7 @@ async fn store_blob_to_nonexistent_bucket() {
     let (app, _tmp) = test_app().await;
     let (_, key) = create_test_account(&app).await;
 
-    let req = Request::put("/buckets/nonexistent-bucket/blobs/test.txt")
+    let req = Request::put("/api/v1/buckets/nonexistent-bucket/blobs/test.txt")
         .header("authorization", format!("Bearer {key}"))
         .header("content-type", "application/octet-stream")
         .body(Body::from(b"data".to_vec()))
@@ -566,7 +572,7 @@ async fn content_addressed_dedup() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}/blobs/{key1}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{key1}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -577,7 +583,7 @@ async fn content_addressed_dedup() {
 
     let (status, body) = raw_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs/{key2}"))
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{key2}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -594,7 +600,7 @@ async fn api_key_create_and_revoke() {
     // Create a second API key
     let (status, body) = json_response(
         &app,
-        Request::post("/account/api-keys")
+        Request::post("/api/v1/account/api-keys")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -607,7 +613,7 @@ async fn api_key_create_and_revoke() {
     // New key works
     let (status, _) = json_response(
         &app,
-        Request::get("/buckets")
+        Request::get("/api/v1/buckets")
             .header("authorization", format!("Bearer {new_secret}"))
             .body(Body::empty())
             .unwrap(),
@@ -619,7 +625,7 @@ async fn api_key_create_and_revoke() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/account/api-keys/{new_key_id}"))
+            Request::delete(format!("/api/v1/account/api-keys/{new_key_id}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -631,7 +637,7 @@ async fn api_key_create_and_revoke() {
     // Revoked key no longer works
     let (status, _) = json_response(
         &app,
-        Request::get("/buckets")
+        Request::get("/api/v1/buckets")
             .header("authorization", format!("Bearer {new_secret}"))
             .body(Body::empty())
             .unwrap(),
@@ -653,7 +659,7 @@ async fn bucket_pagination() {
     // Fetch with limit=2
     let (status, body) = json_response(
         &app,
-        Request::get("/buckets?limit=2")
+        Request::get("/api/v1/buckets?limit=2")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -667,7 +673,7 @@ async fn bucket_pagination() {
     // Fetch next page
     let (status, body) = json_response(
         &app,
-        Request::get(format!("/buckets?limit=2&cursor={cursor}"))
+        Request::get(format!("/api/v1/buckets?limit=2&cursor={cursor}"))
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -699,7 +705,7 @@ async fn delete_bucket_cascades_blobs() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -711,7 +717,7 @@ async fn delete_bucket_cascades_blobs() {
     // Blob should be gone
     let (status, _) = raw_response(
         &app,
-        Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
             .body(Body::empty())
             .unwrap(),
     )
@@ -728,7 +734,7 @@ async fn cross_account_isolation() {
     let bucket_name = create_test_bucket(&app, &key1, "private").await;
 
     // Account 2 cannot store to a bucket they don't own (not found).
-    let req = Request::put(format!("/buckets/{bucket_name}/blobs/intruder.txt"))
+    let req = Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/intruder.txt"))
         .header("authorization", format!("Bearer {key2}"))
         .header("content-type", "text/plain")
         .body(Body::from(b"intruder".to_vec()))
@@ -740,7 +746,7 @@ async fn cross_account_isolation() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}"))
                 .header("authorization", format!("Bearer {key2}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -769,7 +775,7 @@ async fn blob_content_type_preserved() {
     let resp = app
         .clone()
         .oneshot(
-            Request::get(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+            Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -793,7 +799,7 @@ async fn wallet_returns_not_provisioned_in_local_mode() {
 
     let (status, body) = json_response(
         &app,
-        Request::get("/account/wallet")
+        Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -979,7 +985,7 @@ async fn wallet_with_pearl_returns_address() {
 
     let (status, body) = json_response(
         &app,
-        Request::get("/account/wallet")
+        Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),
@@ -1069,7 +1075,7 @@ async fn delete_blob_threads_account_id() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/buckets/{bucket_name}/blobs/{blob_key}"))
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1171,7 +1177,7 @@ async fn access_key_crud() {
     // Create an access key
     let (status, body) = json_response(
         &app,
-        Request::post("/account/access-keys")
+        Request::post("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -1187,7 +1193,7 @@ async fn access_key_crud() {
     // List — should contain the key
     let (status, body) = json_response(
         &app,
-        Request::get("/account/access-keys")
+        Request::get("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -1204,7 +1210,7 @@ async fn access_key_crud() {
     let resp = app
         .clone()
         .oneshot(
-            Request::delete(format!("/account/access-keys/{access_key_id}"))
+            Request::delete(format!("/api/v1/account/access-keys/{access_key_id}"))
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1216,7 +1222,7 @@ async fn access_key_crud() {
     // List — key should show revoked_at
     let (status, body) = json_response(
         &app,
-        Request::get("/account/access-keys")
+        Request::get("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -1237,7 +1243,7 @@ async fn access_key_limit() {
     for _ in 0..3 {
         let (status, _) = json_response(
             &app,
-            Request::post("/account/access-keys")
+            Request::post("/api/v1/account/access-keys")
                 .header("authorization", format!("Bearer {key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -1249,7 +1255,7 @@ async fn access_key_limit() {
     // 4th should be rejected with 409
     let (status, body) = json_response(
         &app,
-        Request::post("/account/access-keys")
+        Request::post("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key}"))
             .body(Body::empty())
             .unwrap(),
@@ -1268,7 +1274,7 @@ async fn access_key_cross_account_isolation() {
     // Account A creates an access key
     let (status, body) = json_response(
         &app,
-        Request::post("/account/access-keys")
+        Request::post("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key_a}"))
             .body(Body::empty())
             .unwrap(),
@@ -1280,7 +1286,7 @@ async fn access_key_cross_account_isolation() {
     // Account B cannot delete account A's access key
     let (status, _) = json_response(
         &app,
-        Request::delete(format!("/account/access-keys/{access_key_id}"))
+        Request::delete(format!("/api/v1/account/access-keys/{access_key_id}"))
             .header("authorization", format!("Bearer {key_b}"))
             .body(Body::empty())
             .unwrap(),
@@ -1291,7 +1297,7 @@ async fn access_key_cross_account_isolation() {
     // Account B's list should be empty
     let (status, body) = json_response(
         &app,
-        Request::get("/account/access-keys")
+        Request::get("/api/v1/account/access-keys")
             .header("authorization", format!("Bearer {key_b}"))
             .body(Body::empty())
             .unwrap(),

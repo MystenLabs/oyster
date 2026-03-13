@@ -80,19 +80,19 @@ API, and `oysterd extend` runs the blob extension background worker.
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/debug/create-account` | No | Create account + first API key (dev only) |
-| `POST` | `/account/api-keys` | Yes | Generate new API key |
-| `DELETE` | `/account/api-keys/{key_id}` | Yes | Revoke API key |
-| `GET` | `/account/wallet` | Yes | Get Pearl wallet address |
-| `POST` | `/buckets` | Yes | Create bucket |
-| `GET` | `/buckets` | Yes | List buckets (paginated) |
-| `DELETE` | `/buckets/{bucket_id}` | Yes | Delete bucket (cascades blobs) |
-| `PUT` | `/buckets/{bucket_id}/blobs` | Yes | Upload blob |
-| `GET` | `/buckets/{bucket_id}/blobs` | Yes | List blobs in bucket (paginated) |
-| `GET` | `/blobs/{object_id}` | No | Read blob by object ID |
-| `GET` | `/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
-| `PATCH` | `/blobs/{object_id}/metadata` | Yes | Update content type |
-| `DELETE` | `/blobs/{object_id}` | Yes | Delete blob |
+| `POST` | `/api/v1/debug/create-account` | No | Create account + first API key (dev only) |
+| `POST` | `/api/v1/account/api-keys` | Yes | Generate new API key |
+| `DELETE` | `/api/v1/account/api-keys/{key_id}` | Yes | Revoke API key |
+| `GET` | `/api/v1/account/wallet` | Yes | Get Pearl wallet address |
+| `POST` | `/api/v1/buckets` | Yes | Create bucket |
+| `GET` | `/api/v1/buckets` | Yes | List buckets (paginated) |
+| `DELETE` | `/api/v1/buckets/{bucket_id}` | Yes | Delete bucket (cascades blobs) |
+| `PUT` | `/api/v1/buckets/{bucket_id}/blobs` | Yes | Upload blob |
+| `GET` | `/api/v1/buckets/{bucket_id}/blobs` | Yes | List blobs in bucket (paginated) |
+| `GET` | `/api/v1/blobs/{object_id}` | No | Read blob by object ID |
+| `GET` | `/api/v1/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
+| `PATCH` | `/api/v1/blobs/{object_id}/metadata` | Yes | Update content type |
+| `DELETE` | `/api/v1/blobs/{object_id}` | Yes | Delete blob |
 | `GET` | `/health` | No | Liveness probe |
 | `GET` | `/ready` | No | Readiness probe (checks DB and Pearl connectivity) |
 | `GET` | `/metrics` | No | Prometheus metrics |
@@ -247,7 +247,7 @@ machine-readable output.
 
 Dockerfiles are provided for both services:
 
-- `docker/Dockerfile.oysterd` -- Builds the `oysterd` binary. Exposes port 3000 (HTTP + S3).
+- `docker/Dockerfile.oysterd` -- Builds the `oysterd` binary. Exposes port 3000 (HTTP API + S3).
 - `docker/Dockerfile.pearl` -- Builds the `pearl` binary. Exposes ports 50051 (gRPC) and 50052 (metrics).
 
 ---
@@ -278,20 +278,20 @@ PEARL_SERVICE_SECRET=<shared-secret> \
 cargo run -p oyster  # runs `oysterd serve` by default
 
 # Terminal 3: use the API
-curl -X POST http://localhost:3000/debug/create-account
+curl -X POST http://localhost:3000/api/v1/debug/create-account
 # Returns { "account_id": "...", "api_key": { "secret": "..." } }
 
-curl -X POST http://localhost:3000/buckets \
+curl -X POST http://localhost:3000/api/v1/buckets \
   -H "Authorization: Bearer <api_key>" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-bucket"}'
 
-curl -X PUT http://localhost:3000/buckets/<bucket_id>/blobs \
+curl -X PUT http://localhost:3000/api/v1/buckets/<bucket_id>/blobs \
   -H "Authorization: Bearer <api_key>" \
   -H "Content-Type: text/plain" \
   -d 'hello world'
 
-curl http://localhost:3000/blobs/<object_id>
+curl http://localhost:3000/api/v1/blobs/<object_id>
 ```
 
 To run the extension worker separately:

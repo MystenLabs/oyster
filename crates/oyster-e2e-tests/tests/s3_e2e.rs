@@ -29,7 +29,7 @@ async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusC
 
 /// Helper: create a test account via the debug endpoint.
 async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/debug/create-account")
+    let req = Request::post("/api/v1/debug/create-account")
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -43,7 +43,7 @@ async fn create_test_account(app: &Router) -> (String, String) {
 async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
     let (status, body) = json_response(
         app,
-        Request::get("/account/wallet")
+        Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),
@@ -56,7 +56,7 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
 
 /// Helper: create an S3 access key for the given account.
 async fn create_access_key(app: &Router, api_key: &str) -> (String, String) {
-    let req = Request::post("/account/access-keys")
+    let req = Request::post("/api/v1/account/access-keys")
         .header("authorization", format!("Bearer {api_key}"))
         .body(Body::empty())
         .unwrap();
@@ -97,7 +97,7 @@ fn s3_e2e_full_lifecycle() {
         let (access_key_id, secret_access_key) = create_access_key(app, &api_key).await;
 
         // Start S3 server and build client.
-        let s3_url = format!("{}/storage", harness.serve_on_random_port().await);
+        let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
 
         // 1. CreateBucket
@@ -216,7 +216,7 @@ fn s3_e2e_list_with_prefix_and_delimiter() {
         fund_test_wallet(&harness, app, &api_key).await;
         let (access_key_id, secret_access_key) = create_access_key(app, &api_key).await;
 
-        let s3_url = format!("{}/storage", harness.serve_on_random_port().await);
+        let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
 
         s3.create_bucket()
@@ -289,7 +289,7 @@ fn s3_e2e_overwrite_object() {
         fund_test_wallet(&harness, app, &api_key).await;
         let (access_key_id, secret_access_key) = create_access_key(app, &api_key).await;
 
-        let s3_url = format!("{}/storage", harness.serve_on_random_port().await);
+        let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
 
         s3.create_bucket()
@@ -351,7 +351,7 @@ fn s3_e2e_error_cases() {
         let (_account_id, api_key) = create_test_account(app).await;
         let (access_key_id, secret_access_key) = create_access_key(app, &api_key).await;
 
-        let s3_url = format!("{}/storage", harness.serve_on_random_port().await);
+        let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
 
         // Create a bucket so we can test object-level errors.

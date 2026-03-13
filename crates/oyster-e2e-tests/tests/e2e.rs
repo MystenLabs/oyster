@@ -43,7 +43,7 @@ async fn raw_response(app: &Router, req: Request<Body>) -> (axum::http::StatusCo
 
 /// Helper: create a test account via the debug endpoint.
 async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/debug/create-account")
+    let req = Request::post("/api/v1/debug/create-account")
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -57,7 +57,7 @@ async fn create_test_account(app: &Router) -> (String, String) {
 async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
     let (status, body) = json_response(
         app,
-        Request::get("/account/wallet")
+        Request::get("/api/v1/account/wallet")
             .header("authorization", format!("Bearer {api_key}"))
             .body(Body::empty())
             .unwrap(),
@@ -70,7 +70,7 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
 
 /// Helper: create a bucket.
 async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
-    let req = Request::post("/buckets")
+    let req = Request::post("/api/v1/buckets")
         .header("authorization", format!("Bearer {api_key}"))
         .header("content-type", "application/json")
         .body(Body::from(format!(r#"{{"name":"{name}"}}"#)))
@@ -105,7 +105,7 @@ fn e2e_blob_lifecycle() {
 
         // 4. Store a blob.
         let blob_data = b"Hello from the Oyster E2E test!";
-        let store_req = Request::put(format!("/buckets/{bucket_id}/blobs"))
+        let store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs"))
             .header("authorization", format!("Bearer {api_key}"))
             .header("content-type", "text/plain")
             .body(Body::from(blob_data.to_vec()))
@@ -132,7 +132,7 @@ fn e2e_blob_lifecycle() {
         // 5. Read the blob back by object_id.
         let (status, body) = raw_response(
             app,
-            Request::get(format!("/blobs/{object_id}"))
+            Request::get(format!("/api/v1/blobs/{object_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -143,7 +143,7 @@ fn e2e_blob_lifecycle() {
         // 6. Read the blob by blob_id.
         let (status, body) = raw_response(
             app,
-            Request::get(format!("/blobs/by-blob-id/{blob_id}"))
+            Request::get(format!("/api/v1/blobs/by-blob-id/{blob_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -154,7 +154,7 @@ fn e2e_blob_lifecycle() {
         // 7. List blobs in the bucket.
         let (status, list_body) = json_response(
             app,
-            Request::get(format!("/buckets/{bucket_id}/blobs"))
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs"))
                 .header("authorization", format!("Bearer {api_key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -169,7 +169,7 @@ fn e2e_blob_lifecycle() {
         let resp = app
             .clone()
             .oneshot(
-                Request::delete(format!("/blobs/{object_id}"))
+                Request::delete(format!("/api/v1/blobs/{object_id}"))
                     .header("authorization", format!("Bearer {api_key}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -181,7 +181,7 @@ fn e2e_blob_lifecycle() {
         // 9. Verify the blob is gone from Oyster's perspective.
         let (status, _) = raw_response(
             app,
-            Request::get(format!("/blobs/{object_id}"))
+            Request::get(format!("/api/v1/blobs/{object_id}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -209,7 +209,7 @@ fn e2e_content_dedup() {
 
         // Store the same data twice.
         let make_store_req = |bucket: &str, key: &str, data: &[u8]| {
-            Request::put(format!("/buckets/{bucket}/blobs"))
+            Request::put(format!("/api/v1/buckets/{bucket}/blobs"))
                 .header("authorization", format!("Bearer {key}"))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(data.to_vec()))
@@ -256,7 +256,7 @@ fn e2e_wallet_provisioning() {
         // Check wallet endpoint.
         let (status, body) = json_response(
             app,
-            Request::get("/account/wallet")
+            Request::get("/api/v1/account/wallet")
                 .header("authorization", format!("Bearer {api_key}"))
                 .body(Body::empty())
                 .unwrap(),
@@ -291,7 +291,7 @@ fn e2e_deterministic_wallet_address() {
         for _ in 0..2 {
             let (status, body) = json_response(
                 app,
-                Request::get("/account/wallet")
+                Request::get("/api/v1/account/wallet")
                     .header("authorization", format!("Bearer {api_key}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -308,7 +308,7 @@ fn e2e_deterministic_wallet_address() {
 
         // Store a blob, then verify the address is still the same.
         let bucket_id = create_test_bucket(app, &api_key, "determinism-bucket").await;
-        let _store_req = Request::put(format!("/buckets/{bucket_id}/blobs"))
+        let _store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs"))
             .header("authorization", format!("Bearer {api_key}"))
             .header("content-type", "text/plain")
             .body(Body::from(b"determinism test".to_vec()))
@@ -318,7 +318,7 @@ fn e2e_deterministic_wallet_address() {
 
         let (status, body) = json_response(
             app,
-            Request::get("/account/wallet")
+            Request::get("/api/v1/account/wallet")
                 .header("authorization", format!("Bearer {api_key}"))
                 .body(Body::empty())
                 .unwrap(),

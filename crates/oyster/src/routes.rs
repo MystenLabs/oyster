@@ -55,11 +55,11 @@ impl Modify for SecurityAddon {
     }
 }
 
-/// Build the Axum router with all API routes, OpenAPI docs, and the S3-compatible API
-/// nested under `/storage`.
+/// Build the Axum router with all API routes under `/api/v1`, S3-compatible API at the root
+/// (as a fallback), and infrastructure routes (`/health`, `/ready`, `/docs`, `/metrics`) at root.
 pub fn build_router(state: AppState) -> Router {
     let s3_service = crate::s3::build_s3_service(&state);
-    let s3_router = Router::new().fallback(move |req: axum::extract::Request| {
+    let s3_fallback = move |req: axum::extract::Request| {
         let svc = s3_service.clone();
         async move {
             let req = req.map(s3s::Body::http_body_unsync);
@@ -69,16 +69,14 @@ pub fn build_router(state: AppState) -> Router {
                     tracing::error!(?err, "S3 service error");
                     axum::http::Response::builder()
                         .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
-                        .body(axum::body::Body::from(format!(
-                            "Internal Server Error: {err:?}"
-                        )))
+                        .body(axum::body::Body::from("Internal Server Error"))
                         .unwrap()
                 }
             }
         }
-    });
+    };
 
-    let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
+    let (api_router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         // Account / API keys
         .routes(routes!(account::create_api_key))
         .routes(routes!(account::revoke_api_key))
@@ -105,23 +103,23 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .routes(routes!(blobs::update_blob_metadata))
         .routes(routes!(blobs::read_blob_by_blob_id))
-        // Health / readiness
-        .routes(routes!(health::health))
-        .routes(routes!(health::ready))
         .split_for_parts();
 
-    let mut router = router;
+    let mut api_router = api_router;
 
     if state.config.enable_debug_endpoints {
         let (debug_router, _debug_api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
             .routes(routes!(account::debug_create_account))
             .split_for_parts();
-        router = router.merge(debug_router);
+        api_router = api_router.merge(debug_router);
     }
 
-    router
-        .nest("/storage", s3_router)
+    Router::new()
+        .nest("/api/v1", api_router)
+        .route("/health", axum::routing::get(health::health))
+        .route("/ready", axum::routing::get(health::ready))
         .merge(Scalar::with_url("/docs", api))
         .route("/metrics", axum::routing::get(metrics::metrics))
+        .fallback(s3_fallback)
         .with_state(state)
 }

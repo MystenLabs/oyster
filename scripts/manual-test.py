@@ -77,7 +77,7 @@ def json_body(raw):
 def scenario_1(base, auth):
     """Account & Wallet Info."""
     heading(1, "Account & Wallet Info")
-    status, _, body = request("GET", f"{base}/account/wallet", headers=auth)
+    status, _, body = request("GET", f"{base}/api/v1/account/wallet", headers=auth)
     if status != 200:
         fail(f"GET /account/wallet returned {status}")
         return False
@@ -100,7 +100,7 @@ def scenario_2(base, auth, ctx):
 
     # Create bucket
     status, _, body = request(
-        "POST", f"{base}/buckets", body={"name": "test-bucket"}, headers=auth
+        "POST", f"{base}/api/v1/buckets", body={"name": "test-bucket"}, headers=auth
     )
     if status != 201:
         fail(f"POST /buckets returned {status} (expected 201)")
@@ -111,7 +111,7 @@ def scenario_2(base, auth, ctx):
     ok(f"created bucket {bucket_id}")
 
     # List buckets
-    status, _, body = request("GET", f"{base}/buckets", headers=auth)
+    status, _, body = request("GET", f"{base}/api/v1/buckets", headers=auth)
     if status != 200:
         fail(f"GET /buckets returned {status}")
         passed = False
@@ -125,7 +125,7 @@ def scenario_2(base, auth, ctx):
 
     # Duplicate name → 409
     status, _, _ = request(
-        "POST", f"{base}/buckets", body={"name": "test-bucket"}, headers=auth
+        "POST", f"{base}/api/v1/buckets", body={"name": "test-bucket"}, headers=auth
     )
     if status != 409:
         fail(f"duplicate POST /buckets returned {status} (expected 409)")
@@ -146,7 +146,7 @@ def scenario_3(base, auth, ctx):
     # Store blob
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
-        "PUT", f"{base}/buckets/{bucket_id}/blobs", body=payload, headers=hdrs
+        "PUT", f"{base}/api/v1/buckets/{bucket_id}/blobs", body=payload, headers=hdrs
     )
     if status != 201:
         fail(f"PUT blob returned {status} (expected 201)")
@@ -159,7 +159,7 @@ def scenario_3(base, auth, ctx):
     ok(f"stored blob object_id={object_id} blob_id={blob_id}")
 
     # Read by object_id (no auth)
-    status, _, body = request("GET", f"{base}/blobs/{object_id}")
+    status, _, body = request("GET", f"{base}/api/v1/blobs/{object_id}")
     if status != 200:
         fail(f"GET /blobs/{{object_id}} returned {status}")
         passed = False
@@ -170,7 +170,7 @@ def scenario_3(base, auth, ctx):
         ok("read by object_id matches")
 
     # Read by blob_id (no auth)
-    status, _, body = request("GET", f"{base}/blobs/by-blob-id/{blob_id}")
+    status, _, body = request("GET", f"{base}/api/v1/blobs/by-blob-id/{blob_id}")
     if status != 200:
         fail(f"GET /blobs/by-blob-id/{{blob_id}} returned {status}")
         passed = False
@@ -191,7 +191,7 @@ def scenario_4(base, auth, ctx):
 
     # List — should have 1 blob from scenario 3
     status, _, body = request(
-        "GET", f"{base}/buckets/{bucket_id}/blobs", headers=auth
+        "GET", f"{base}/api/v1/buckets/{bucket_id}/blobs", headers=auth
     )
     if status != 200:
         fail(f"GET blobs listing returned {status}")
@@ -207,7 +207,7 @@ def scenario_4(base, auth, ctx):
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
         "PUT",
-        f"{base}/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket_id}/blobs",
         body=b"second blob",
         headers=hdrs,
     )
@@ -219,7 +219,7 @@ def scenario_4(base, auth, ctx):
 
     # List again — should have 2
     status, _, body = request(
-        "GET", f"{base}/buckets/{bucket_id}/blobs", headers=auth
+        "GET", f"{base}/api/v1/buckets/{bucket_id}/blobs", headers=auth
     )
     if status != 200:
         fail(f"GET blobs listing returned {status}")
@@ -245,7 +245,7 @@ def scenario_5(base, auth, ctx):
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
         "PUT",
-        f"{base}/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket_id}/blobs",
         body=b"hello oyster",
         headers=hdrs,
     )
@@ -275,7 +275,7 @@ def scenario_6(base, auth, ctx):
 
     status, _, body = request(
         "PATCH",
-        f"{base}/blobs/{object_id}/metadata",
+        f"{base}/api/v1/blobs/{object_id}/metadata",
         body={"content_type": "text/markdown"},
         headers=auth,
     )
@@ -296,13 +296,13 @@ def scenario_7(base, auth, ctx):
     passed = True
     object_id = ctx["object_id"]
 
-    status, _, _ = request("DELETE", f"{base}/blobs/{object_id}", headers=auth)
+    status, _, _ = request("DELETE", f"{base}/api/v1/blobs/{object_id}", headers=auth)
     if status != 204:
         fail(f"DELETE blob returned {status} (expected 204)")
         return False
     ok("blob deleted")
 
-    status, _, _ = request("GET", f"{base}/blobs/{object_id}")
+    status, _, _ = request("GET", f"{base}/api/v1/blobs/{object_id}")
     if status != 404:
         fail(f"GET deleted blob returned {status} (expected 404)")
         passed = False
@@ -321,7 +321,7 @@ def scenario_8(base, auth, ctx):
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, _ = request(
         "PUT",
-        f"{base}/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket_id}/blobs",
         body=b"about to be cascaded",
         headers=hdrs,
     )
@@ -338,7 +338,7 @@ def scenario_8(base, auth, ctx):
     ok("bucket deleted")
 
     # Verify bucket is gone
-    status, _, body = request("GET", f"{base}/buckets", headers=auth)
+    status, _, body = request("GET", f"{base}/api/v1/buckets", headers=auth)
     if status != 200:
         fail(f"GET /buckets returned {status}")
         return False
@@ -356,7 +356,7 @@ def scenario_9(base, auth, ctx):
     passed = True
 
     # Create new key
-    status, _, body = request("POST", f"{base}/account/api-keys", headers=auth)
+    status, _, body = request("POST", f"{base}/api/v1/account/api-keys", headers=auth)
     if status != 201:
         fail(f"POST /account/api-keys returned {status}")
         return False
@@ -367,7 +367,7 @@ def scenario_9(base, auth, ctx):
 
     # Use new key
     new_auth = {"Authorization": f"Bearer {new_key}"}
-    status, _, _ = request("GET", f"{base}/buckets", headers=new_auth)
+    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
     if status != 200:
         fail(f"GET /buckets with new key returned {status}")
         passed = False
@@ -376,7 +376,7 @@ def scenario_9(base, auth, ctx):
 
     # Revoke key
     status, _, _ = request(
-        "DELETE", f"{base}/account/api-keys/{key_id}", headers=auth
+        "DELETE", f"{base}/api/v1/account/api-keys/{key_id}", headers=auth
     )
     if status != 204:
         fail(f"DELETE api-key returned {status} (expected 204)")
@@ -385,7 +385,7 @@ def scenario_9(base, auth, ctx):
         ok("API key revoked")
 
     # Use revoked key
-    status, _, _ = request("GET", f"{base}/buckets", headers=new_auth)
+    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
     if status != 401:
         fail(f"revoked key returned {status} (expected 401)")
         passed = False
@@ -402,7 +402,7 @@ def scenario_10(base, auth):
     fake_id = str(uuid.uuid4())
 
     # GET non-existent blob
-    status, _, _ = request("GET", f"{base}/blobs/{fake_id}")
+    status, _, _ = request("GET", f"{base}/api/v1/blobs/{fake_id}")
     if status != 404:
         fail(f"GET /blobs/{{random}} returned {status} (expected 404)")
         passed = False
@@ -410,7 +410,7 @@ def scenario_10(base, auth):
         ok("GET non-existent blob → 404")
 
     # DELETE non-existent blob
-    status, _, _ = request("DELETE", f"{base}/blobs/{fake_id}", headers=auth)
+    status, _, _ = request("DELETE", f"{base}/api/v1/blobs/{fake_id}", headers=auth)
     if status != 404:
         fail(f"DELETE /blobs/{{random}} returned {status} (expected 404)")
         passed = False
@@ -418,7 +418,7 @@ def scenario_10(base, auth):
         ok("DELETE non-existent blob → 404")
 
     # No auth header
-    status, _, _ = request("GET", f"{base}/buckets")
+    status, _, _ = request("GET", f"{base}/api/v1/buckets")
     if status != 401:
         fail(f"GET /buckets without auth returned {status} (expected 401)")
         passed = False

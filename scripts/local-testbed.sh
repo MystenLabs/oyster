@@ -130,7 +130,7 @@ wait_for_oyster() {
   local elapsed=0
   while (( elapsed < STARTUP_TIMEOUT )); do
     # /buckets returns 401 without auth, so just check connectivity.
-    if curl -so /dev/null --connect-timeout 2 "http://$OYSTER_BIND_ADDR/buckets" 2>/dev/null; then
+    if curl -so /dev/null --connect-timeout 2 "http://$OYSTER_BIND_ADDR/health" 2>/dev/null; then
       echo " ready (${elapsed}s)"
       return 0
     fi
@@ -276,7 +276,7 @@ main() {
   # --- Create test user ---
   echo "Creating test user account..."
   local user_json
-  user_json="$(curl -sf -X POST "http://$OYSTER_BIND_ADDR/debug/create-account")"
+  user_json="$(curl -sf -X POST "http://$OYSTER_BIND_ADDR/api/v1/debug/create-account")"
   USER_ACCOUNT_ID="$(echo "$user_json" | jq -r '.account_id')"
   USER_API_SECRET="$(echo "$user_json" | jq -r '.api_key.secret')"
   echo "  account_id: $USER_ACCOUNT_ID"
@@ -286,7 +286,7 @@ main() {
   local wallet_json
   wallet_json="$(
     curl -sf -H "Authorization: Bearer $USER_API_SECRET" \
-      "http://$OYSTER_BIND_ADDR/account/wallet"
+      "http://$OYSTER_BIND_ADDR/api/v1/account/wallet"
   )"
   USER_WALLET="$(echo "$wallet_json" | jq -r '.wallet.address')"
   echo "  wallet: $USER_WALLET"
