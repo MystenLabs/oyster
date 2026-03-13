@@ -7367,8 +7367,6 @@ dependencies = [
  "futures",
  "hex",
  "http-body-util",
- "hyper 1.8.1",
- "hyper-util",
  "md5",
  "metrics",
  "metrics-exporter-prometheus",

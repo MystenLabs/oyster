@@ -41,8 +41,6 @@ pub struct Config {
     pub extension_metrics_bind_addr: String,
     /// Optional URL to POST a webhook when extension failures indicate insufficient funds.
     pub fund_manager_webhook_url: Option<String>,
-    /// Optional socket address for the S3-compatible API (e.g. `"0.0.0.0:3003"`).
-    pub s3_bind_addr: Option<String>,
 }
 
 impl Config {
@@ -88,7 +86,6 @@ impl Config {
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
             fund_manager_webhook_url: std::env::var("FUND_MANAGER_WEBHOOK_URL").ok(),
-            s3_bind_addr: std::env::var("S3_BIND_ADDR").ok(),
         }
     }
 

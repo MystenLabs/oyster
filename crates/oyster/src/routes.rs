@@ -55,8 +55,29 @@ impl Modify for SecurityAddon {
     }
 }
 
-/// Build the Axum router with all API routes and OpenAPI docs.
+/// Build the Axum router with all API routes, OpenAPI docs, and the S3-compatible API
+/// nested under `/storage`.
 pub fn build_router(state: AppState) -> Router {
+    let s3_service = crate::s3::build_s3_service(&state);
+    let s3_router = Router::new().fallback(move |req: axum::extract::Request| {
+        let svc = s3_service.clone();
+        async move {
+            let req = req.map(s3s::Body::http_body_unsync);
+            match svc.call(req).await {
+                Ok(resp) => resp.map(axum::body::Body::new),
+                Err(err) => {
+                    tracing::error!(?err, "S3 service error");
+                    axum::http::Response::builder()
+                        .status(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                        .body(axum::body::Body::from(format!(
+                            "Internal Server Error: {err:?}"
+                        )))
+                        .unwrap()
+                }
+            }
+        }
+    });
+
     let (router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         // Account / API keys
         .routes(routes!(account::create_api_key))
@@ -99,6 +120,7 @@ pub fn build_router(state: AppState) -> Router {
     }
 
     router
+        .nest("/storage", s3_router)
         .merge(Scalar::with_url("/docs", api))
         .route("/metrics", axum::routing::get(metrics::metrics))
         .with_state(state)

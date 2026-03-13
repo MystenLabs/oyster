@@ -473,38 +473,13 @@ fn blob_to_object(b: &crate::models::BlobMetadata) -> Object {
     }
 }
 
-/// Start the S3-compatible HTTP server using a pre-bound listener.
-pub async fn serve_s3_with_listener(state: AppState, listener: tokio::net::TcpListener) {
-    let s3 = OysterS3 {
-        state: state.clone(),
-    };
+/// Build the S3 service from application state.
+pub fn build_s3_service(state: &AppState) -> s3s::service::S3Service {
+    let s3 = OysterS3::new(state.clone());
     let auth = OysterS3Auth {
         db: state.db.clone(),
     };
     let mut builder = S3ServiceBuilder::new(s3);
     builder.set_auth(auth);
-    let service = builder.build();
-
-    loop {
-        let (stream, _) = listener
-            .accept()
-            .await
-            .expect("failed to accept S3 connection");
-        let svc = service.clone();
-        tokio::spawn(async move {
-            let io = hyper_util::rt::TokioIo::new(stream);
-            let _ = hyper::server::conn::http1::Builder::new()
-                .serve_connection(io, svc)
-                .await;
-        });
-    }
-}
-
-/// Start the S3-compatible HTTP server by binding to the given address.
-pub async fn serve_s3(state: AppState, bind_addr: String) {
-    let listener = tokio::net::TcpListener::bind(&bind_addr)
-        .await
-        .unwrap_or_else(|e| panic!("failed to bind S3 listener on {bind_addr}: {e}"));
-    tracing::info!("S3 API listening on {bind_addr}");
-    serve_s3_with_listener(state, listener).await;
+    builder.build()
 }

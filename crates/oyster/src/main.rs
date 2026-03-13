@@ -123,12 +123,6 @@ async fn main() {
                 metrics_handle: Some(metrics_handle),
             };
 
-            if let Some(ref s3_addr) = config.s3_bind_addr {
-                let s3_state = state.clone();
-                let s3_addr = s3_addr.clone();
-                tokio::spawn(async move { oyster::s3::serve_s3(s3_state, s3_addr).await });
-            }
-
             let app = routes::build_router(state)
                 .layer(axum::middleware::from_fn(
                     oyster::middleware::track_http_metrics,
