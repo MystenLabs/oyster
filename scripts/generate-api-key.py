@@ -15,6 +15,9 @@ import uuid
 
 if len(sys.argv) < 2:
     print(f"usage: {sys.argv[0]} <account_id>", file=sys.stderr)
+    print(f"", file=sys.stderr)
+    print(f"To create a test account, run this in psql first:", file=sys.stderr)
+    print(f"  INSERT INTO accounts (id) VALUES (gen_random_uuid()::text) RETURNING id;", file=sys.stderr)
     sys.exit(1)
 
 account_id = sys.argv[1]
