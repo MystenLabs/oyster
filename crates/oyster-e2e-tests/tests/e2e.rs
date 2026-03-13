@@ -77,7 +77,7 @@ async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
         .unwrap();
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, axum::http::StatusCode::CREATED);
-    body["id"].as_str().unwrap().to_string()
+    body["name"].as_str().unwrap().to_string()
 }
 
 /// Full end-to-end blob lifecycle:
@@ -270,6 +270,44 @@ fn e2e_wallet_provisioning() {
             address.starts_with("0x"),
             "wallet address should start with 0x, got: {address}"
         );
+    });
+}
+
+/// Verify that reserved bucket names (health, ready, metrics, api) are rejected
+/// through the full stack (router → handler → validation).
+#[test]
+fn reserved_bucket_names_rejected() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_account_id, api_key) = create_test_account(app).await;
+
+        // Hardcoded — must stay in sync with RESERVED_BUCKET_NAMES in validation.rs.
+        let reserved = ["health", "ready", "metrics", "api"];
+        for name in &reserved {
+            let req = Request::post("/api/v1/buckets")
+                .header("authorization", format!("Bearer {api_key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"name":"{name}"}}"#)))
+                .unwrap();
+            let (status, body) = json_response(app, req).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "expected 400 for reserved bucket name '{name}', got {status}"
+            );
+            let msg = body["error"].as_str().unwrap_or("");
+            assert!(
+                msg.contains("reserved"),
+                "error for '{name}' should mention 'reserved', got: {msg}"
+            );
+        }
+
+        // Non-reserved substrings must still be allowed.
+        create_test_bucket(app, &api_key, "healthy").await;
     });
 }
 

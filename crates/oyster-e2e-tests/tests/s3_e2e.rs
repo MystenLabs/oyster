@@ -338,6 +338,39 @@ fn s3_e2e_overwrite_object() {
     });
 }
 
+/// Verify that reserved bucket names are rejected through the S3 API.
+#[test]
+fn s3_reserved_bucket_names_rejected() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_account_id, api_key) = create_test_account(app).await;
+        let (access_key_id, secret_access_key) = create_access_key(app, &api_key).await;
+        let s3_url = harness.serve_on_random_port().await;
+        let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
+
+        // Hardcoded — must stay in sync with RESERVED_BUCKET_NAMES in validation.rs.
+        let reserved = ["health", "ready", "metrics", "api"];
+        for name in &reserved {
+            let result = s3.create_bucket().bucket(*name).send().await;
+            assert!(
+                result.is_err(),
+                "CreateBucket should fail for reserved name '{name}'"
+            );
+        }
+
+        // Non-reserved substring must succeed.
+        s3.create_bucket()
+            .bucket("healthy")
+            .send()
+            .await
+            .expect("CreateBucket should succeed for 'healthy'");
+    });
+}
+
 /// Test S3 error responses for nonexistent resources.
 #[test]
 fn s3_e2e_error_cases() {
