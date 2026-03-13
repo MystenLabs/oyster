@@ -13,7 +13,10 @@ use axum::Router;
 use utoipa::{
     Modify,
     OpenApi,
-    openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+    openapi::{
+        security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
+        server::Server,
+    },
 };
 use utoipa_axum::{router::OpenApiRouter, routes};
 use utoipa_scalar::{Scalar, Servable};
@@ -34,11 +37,19 @@ use crate::AppState;
         (name = "Health", description = "Health and readiness probes"),
         (name = "Debug", description = "Debug endpoints (development only)"),
     ),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ServerAddon),
 )]
 struct ApiDoc;
 
 struct SecurityAddon;
+
+struct ServerAddon;
+
+impl Modify for ServerAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        openapi.servers = Some(vec![Server::new("/api/v1")]);
+    }
+}
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
