@@ -16,8 +16,9 @@ import uuid
 if len(sys.argv) < 2:
     print(f"usage: {sys.argv[0]} <account_id>", file=sys.stderr)
     print(f"", file=sys.stderr)
-    print(f"To create a test account, run this in psql first:", file=sys.stderr)
-    print(f"  INSERT INTO accounts (id) VALUES (gen_random_uuid()::text) RETURNING id;", file=sys.stderr)
+    print(f"To create a test account first:", file=sys.stderr)
+    print(f"  PostgreSQL:  INSERT INTO accounts (id) VALUES (gen_random_uuid()::text) RETURNING id;", file=sys.stderr)
+    print(f"  SQLite:      INSERT INTO accounts (id) VALUES (lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)),2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(hex(randomblob(2)),2) || '-' || hex(randomblob(6)))) RETURNING id;", file=sys.stderr)
     sys.exit(1)
 
 account_id = sys.argv[1]
@@ -31,7 +32,8 @@ print(f"bearer_token: {bearer_token}")
 print(f"key_hash:     {key_hash}")
 print(f"prefix:       {prefix}")
 print()
-print(f"INSERT INTO api_keys (id, account_id, key_hash, prefix) VALUES ('{key_id}', '{account_id}', '{key_hash}', '{prefix}');")
+print(f"PostgreSQL / SQLite:")
+print(f"  INSERT INTO api_keys (id, account_id, key_hash, prefix) VALUES ('{key_id}', '{account_id}', '{key_hash}', '{prefix}');")
 print()
 print(f"Then create an S3 access key:")
 print(f"  curl -X POST http://localhost:3000/api/v1/account/access-keys -H 'Authorization: Bearer {bearer_token}'")

@@ -47,11 +47,11 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
         }
         BlobStoreError::Io(ref io_err) => {
             tracing::error!(error = %io_err, "blob store I/O error");
-            S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+            S3Error::with_message(S3ErrorCode::InternalError, io_err.to_string())
         }
         BlobStoreError::Http(ref msg) => {
             tracing::error!(error = %msg, "blob store HTTP error");
-            S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
+            S3Error::with_message(S3ErrorCode::InternalError, msg.clone())
         }
     }
 }

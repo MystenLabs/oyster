@@ -50,6 +50,9 @@ pub async fn create_pool(database_url: &str) -> Result<DbPool, sqlx::Error> {
     sqlx::any::install_default_drivers();
 
     let is_sqlite = database_url.starts_with("sqlite");
+    if is_sqlite {
+        tracing::info!("using SQLite database: {database_url}");
+    }
     IS_POSTGRES.set(!is_sqlite).ok();
 
     // In-memory SQLite databases are per-connection, so we must limit to a

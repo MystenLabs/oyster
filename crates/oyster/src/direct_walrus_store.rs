@@ -31,6 +31,8 @@ fn is_insufficient_balance(msg: &str) -> bool {
         || lower.contains("not enough balance")
         || lower.contains("not enough coins")
         || lower.contains("cannot pay gas")
+        || lower.contains("insufficient balance")
+        || lower.contains("could not find") && lower.contains("coins")
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

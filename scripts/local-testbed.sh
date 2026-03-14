@@ -19,6 +19,7 @@ PEARL_MASTER_SEED="deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0
 WALRUS_AGGREGATOR_URL="http://127.0.0.1:31415"
 PEARL_TMUX="oyster-testbed-pearl"
 OYSTER_TMUX="oyster-testbed-oyster"
+EXTEND_TMUX="oyster-testbed-extend"
 SUI_FUND_AMOUNT=1000000000       # 1 SUI
 WAL_FUND_AMOUNT=500000000000     # 500 WAL (in FROST)
 STARTUP_TIMEOUT=60               # seconds
@@ -51,7 +52,7 @@ die() { echo "error: $*" >&2; exit 1; }
 
 check_prereqs() {
   local missing=()
-  for cmd in cargo sui grpcurl tmux jq curl; do
+  for cmd in cargo sui walrus grpcurl tmux jq curl aws; do
     if ! command -v "$cmd" &>/dev/null; then
       missing+=("$cmd")
     fi
@@ -74,6 +75,7 @@ cleanup() {
   echo "Stopping testbed sessions..."
   tmux kill-session -t "$PEARL_TMUX" 2>/dev/null && echo "  killed $PEARL_TMUX session" || true
   tmux kill-session -t "$OYSTER_TMUX" 2>/dev/null && echo "  killed $OYSTER_TMUX session" || true
+  tmux kill-session -t "$EXTEND_TMUX" 2>/dev/null && echo "  killed $EXTEND_TMUX session" || true
   kill_port "${PEARL_BIND_ADDR##*:}" "pearl"
   kill_port "${OYSTER_BIND_ADDR##*:}" "oyster"
   echo "Done."
@@ -241,12 +243,15 @@ main() {
   # --- Create operator Pearl account ---
   echo "Creating operator Pearl account..."
   OPERATOR_ACCOUNT_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+  # Proto field is bytes — grpcurl needs base64-encoded raw UUID bytes.
+  local operator_id_b64
+  operator_id_b64="$(echo -n "$OPERATOR_ACCOUNT_ID" | tr -d '-' | xxd -r -p | base64)"
   local operator_json
   operator_json="$(
     grpcurl -plaintext \
       -import-path "$REPO_ROOT/crates/pearl/proto" -proto pearl.proto \
       -H "Authorization: Bearer $PEARL_SERVICE_SECRET" \
-      -d "{\"account_id\": \"$OPERATOR_ACCOUNT_ID\"}" \
+      -d "{\"account_id\": \"$operator_id_b64\"}" \
       "$PEARL_BIND_ADDR" pearl.Pearl/GetAddress
   )"
   OPERATOR_ADDRESS="$(echo "$operator_json" | jq -r '.address')"
@@ -266,7 +271,6 @@ main() {
      WALRUS_SYSTEM_OBJECT='$WALRUS_SYSTEM_OBJECT' \
      WALRUS_STAKING_OBJECT='$WALRUS_STAKING_OBJECT' \
      WALRUS_AGGREGATOR_URL='$WALRUS_AGGREGATOR_URL' \
-     PEARL_ACCOUNT_ID='$OPERATOR_ACCOUNT_ID' \
      RUST_LOG=info \
      cargo run -p oyster -- serve; \
      echo 'Oyster exited. Press Enter to close.'; read"
@@ -288,12 +292,63 @@ main() {
     curl -sf -H "Authorization: Bearer $USER_API_SECRET" \
       "http://$OYSTER_BIND_ADDR/api/v1/account/wallet"
   )"
-  USER_WALLET="$(echo "$wallet_json" | jq -r '.wallet.address')"
+  USER_WALLET="$(echo "$wallet_json" | jq -r '.address')"
   echo "  wallet: $USER_WALLET"
+
+  # --- Create S3 access key ---
+  echo "Creating S3 access key..."
+  local access_key_json
+  access_key_json="$(
+    curl -sf -X POST -H "Authorization: Bearer $USER_API_SECRET" \
+      "http://$OYSTER_BIND_ADDR/api/v1/account/access-keys"
+  )"
+  S3_ACCESS_KEY="$(echo "$access_key_json" | jq -r '.access_key_id')"
+  S3_SECRET_KEY="$(echo "$access_key_json" | jq -r '.secret_access_key')"
+  echo "  access_key_id:     $S3_ACCESS_KEY"
+  echo "  secret_access_key: $S3_SECRET_KEY"
 
   # --- Fund wallets ---
   fund_wallet "$OPERATOR_ADDRESS" "operator wallet"
-  fund_wallet "$USER_WALLET" "user wallet"
+  echo "Funding user wallet via fund-account.sh..."
+  SUI_CLIENT_CONFIG="$WALRUS_WORKING_DIR/sui_admin.yaml" \
+    WALRUS_CONFIG="$WALRUS_WORKING_DIR/client_config.yaml" \
+    "$REPO_ROOT/scripts/fund-account.sh" \
+    "http://$OYSTER_BIND_ADDR" "$USER_API_SECRET" \
+    100 sui 500 wal
+
+  # --- Query user wallet balance ---
+  local balances_json
+  balances_json="$(
+    curl -sf -X POST "$SUI_RPC_URL" \
+      -H 'Content-Type: application/json' \
+      -d "{\"jsonrpc\":\"2.0\",\"method\":\"suix_getAllBalances\",\"params\":[\"$USER_WALLET\"],\"id\":1}"
+  )"
+  USER_SUI_BALANCE="$(echo "$balances_json" | jq -r '[.result[] | select(.coinType == "0x2::sui::SUI") | .totalBalance | tonumber] | add // 0')"
+  USER_WAL_BALANCE="$(echo "$balances_json" | jq -r '[.result[] | select(.coinType | contains("WAL")) | .totalBalance | tonumber] | add // 0')"
+
+  # --- Start Extend worker ---
+  echo "Starting Oyster extend worker in tmux session '$EXTEND_TMUX'..."
+  tmux new-session -d -s "$EXTEND_TMUX" \
+    "cd '$REPO_ROOT' && \
+     DATABASE_URL='sqlite:oyster.db?mode=rwc' \
+     PEARL_GRPC_URL='http://$PEARL_BIND_ADDR' \
+     PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
+     SUI_RPC_URL='$SUI_RPC_URL' \
+     WALRUS_SYSTEM_OBJECT='$WALRUS_SYSTEM_OBJECT' \
+     WALRUS_STAKING_OBJECT='$WALRUS_STAKING_OBJECT' \
+     OYSTER_EXTENSION_METRICS_BIND_ADDR='127.0.0.1:50053' \
+     RUST_LOG=info \
+     cargo run -p oyster -- extend; \
+     echo 'Extend worker exited. Press Enter to close.'; read"
+
+  # --- Configure AWS CLI profile ---
+  local aws_profile="oyster-local-testbed"
+  echo "Configuring AWS CLI profile '$aws_profile'..."
+  aws configure set aws_access_key_id "$S3_ACCESS_KEY" --profile "$aws_profile"
+  aws configure set aws_secret_access_key "$S3_SECRET_KEY" --profile "$aws_profile"
+  aws configure set region "us-east-1" --profile "$aws_profile"
+  aws configure set endpoint_url "http://$OYSTER_BIND_ADDR" --profile "$aws_profile"
+  echo "  done"
 
   # --- Done ---
   cat <<EOF
@@ -302,13 +357,23 @@ main() {
  Oyster Local Testbed Ready
 ========================================
  Oyster URL:       http://$OYSTER_BIND_ADDR
- API Key:          $USER_API_SECRET
- User Wallet:      $USER_WALLET
+ Bearer Token:     $USER_API_SECRET
+ User Wallet:      $USER_WALLET ($((USER_SUI_BALANCE / 1000000000)) SUI, $((USER_WAL_BALANCE / 1000000000)) WAL)
  Operator Wallet:  $OPERATOR_ADDRESS
+
+ S3 Access Key:    $S3_ACCESS_KEY
+ S3 Secret Key:    $S3_SECRET_KEY
+ S3 Endpoint:      http://$OYSTER_BIND_ADDR
+
+ AWS CLI profile '$aws_profile' configured. Usage:
+   aws --profile $aws_profile s3api create-bucket --bucket my-bucket
+   aws --profile $aws_profile s3api put-object --bucket my-bucket --key hello.txt --body hello.txt
+   aws --profile $aws_profile s3api get-object --bucket my-bucket --key hello.txt out.txt
 
  tmux sessions:
    Pearl:  tmux attach -t $PEARL_TMUX
    Oyster: tmux attach -t $OYSTER_TMUX
+   Extend: tmux attach -t $EXTEND_TMUX
 
  Stop:  scripts/local-testbed.sh --stop
 ========================================

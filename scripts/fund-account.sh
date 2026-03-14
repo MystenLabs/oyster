@@ -20,6 +20,7 @@ Arguments:
 
 Environment variables:
   SUI_CLIENT_CONFIG  Path to sui client config (passed as --client.config)
+  WALRUS_CONFIG      Path to walrus client config (passed as --config to walrus)
   WALRUS_CONTEXT     Walrus network context (passed as --context to walrus)
 
 Examples:
@@ -103,13 +104,12 @@ if (( SUI_AMOUNT > 0 )); then
   )"
   [[ -n "$sui_coin" && "$sui_coin" != "null" ]] \
     || die "could not find a SUI gas coin in your wallet"
-
+  echo Found SUI coin: "$sui_coin"
   sui_client transfer-sui \
     --to "$address" \
     --sui-coin-object-id "$sui_coin" \
     --amount "$mist" \
-    --gas-budget 50000000 \
-    >/dev/null
+    --gas-budget 50000000
   echo "  sent $SUI_AMOUNT SUI ($mist MIST) to $address"
 fi
 
@@ -121,12 +121,15 @@ if (( WAL_AMOUNT > 0 )); then
   # Discover WAL coin type. Try `walrus info coin` first, fall back to
   # searching for "WAL" in coinType from `sui client balance`.
   walrus_args=()
+  if [[ -n "${WALRUS_CONFIG:-}" ]]; then
+    walrus_args+=(--config "$WALRUS_CONFIG")
+  fi
   if [[ -n "${WALRUS_CONTEXT:-}" ]]; then
     walrus_args+=(--context "$WALRUS_CONTEXT")
   fi
 
   wal_coin_type=""
-  if wal_coin_type_raw="$(walrus "${walrus_args[@]}" info coin 2>/dev/null)"; then
+  if wal_coin_type_raw="$(walrus "${walrus_args[@]}" info coin)"; then
     # walrus info coin outputs something like a Sui StructTag — extract it
     wal_coin_type="$(echo "$wal_coin_type_raw" | grep -oE '0x[0-9a-f]+::[a-zA-Z_]+::[a-zA-Z_]+' | head -1 || true)"
   fi
@@ -148,8 +151,7 @@ if (( WAL_AMOUNT > 0 )); then
     --input-coins "$wal_coin" \
     --recipients "$address" \
     --amounts "$frost" \
-    --gas-budget 50000000 \
-    >/dev/null
+    --gas-budget 50000000
   echo "  sent $WAL_AMOUNT WAL ($frost FROST) to $address"
 fi
 
