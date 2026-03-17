@@ -94,6 +94,7 @@ impl OysterS3 {
 #[async_trait::async_trait]
 impl S3Auth for OysterS3Auth {
     async fn get_secret_key(&self, access_key: &str) -> S3Result<SecretKey> {
+        tracing::info!(access_key_id = %access_key, "s3 auth lookup");
         let record = db::access_keys::find_by_access_key_id(&self.db, access_key)
             .await
             .map_err(internal_error)?
@@ -109,6 +110,7 @@ impl s3s::S3 for OysterS3 {
         req: S3Request<ListBucketsInput>,
     ) -> S3Result<S3Response<ListBucketsOutput>> {
         let account_id = self.account_id(&req).await?;
+        tracing::info!(account_id = %account_id, "s3 list_buckets");
         let buckets = db::buckets::list_buckets(&self.state.db, &account_id, None, None, 1000)
             .await
             .map_err(internal_error)?;
@@ -136,6 +138,7 @@ impl s3s::S3 for OysterS3 {
     ) -> S3Result<S3Response<CreateBucketOutput>> {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, "s3 create_bucket");
 
         validation::validate_bucket_name(bucket_name)
             .map_err(|e| S3Error::with_message(S3ErrorCode::InvalidBucketName, e))?;
@@ -162,6 +165,7 @@ impl s3s::S3 for OysterS3 {
     ) -> S3Result<S3Response<DeleteBucketOutput>> {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, "s3 delete_bucket");
 
         let deleted_blobs = db::blobs::delete_blobs_in_bucket(&self.state.db, bucket_name)
             .await
@@ -183,6 +187,11 @@ impl s3s::S3 for OysterS3 {
             }
         }
 
+        tracing::info!(
+            deleted_blobs = deleted_blobs.len(),
+            "s3 delete_bucket cascade-deleted blobs"
+        );
+
         let deleted = db::buckets::delete_bucket(&self.state.db, bucket_name, &account_id)
             .await
             .map_err(internal_error)?;
@@ -199,6 +208,7 @@ impl s3s::S3 for OysterS3 {
     ) -> S3Result<S3Response<HeadBucketOutput>> {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, "s3 head_bucket");
 
         db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
             .await
@@ -225,6 +235,7 @@ impl s3s::S3 for OysterS3 {
             .content_type
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_string());
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, content_type = %content_type, "s3 put_object");
 
         // Collect body bytes
         let body_bytes = match req.input.body {
@@ -240,6 +251,7 @@ impl s3s::S3 for OysterS3 {
             }
             None => Vec::new(),
         };
+        tracing::info!(body_size = body_bytes.len(), "s3 put_object body collected");
 
         db::buckets::get_bucket(&self.state.db, &bucket_name, &account_id)
             .await
@@ -289,6 +301,7 @@ impl s3s::S3 for OysterS3 {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
         let key = &req.input.key;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 get_object");
 
         db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
             .await
@@ -326,6 +339,7 @@ impl s3s::S3 for OysterS3 {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
         let key = &req.input.key;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 head_object");
 
         db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
             .await
@@ -353,6 +367,7 @@ impl s3s::S3 for OysterS3 {
         let account_id = self.account_id(&req).await?;
         let bucket_name = &req.input.bucket;
         let key = &req.input.key;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 delete_object");
 
         if let Some(info) = db::blobs::delete_blob(&self.state.db, bucket_name, key, &account_id)
             .await
@@ -390,6 +405,7 @@ impl s3s::S3 for OysterS3 {
         let max_keys = req.input.max_keys.unwrap_or(1000);
         let start_after = req.input.start_after.as_deref();
         let continuation_token = req.input.continuation_token.as_deref();
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, prefix = %prefix, max_keys, "s3 list_objects_v2");
 
         db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
             .await

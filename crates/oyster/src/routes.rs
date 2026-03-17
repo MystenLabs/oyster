@@ -73,6 +73,7 @@ pub fn build_router(state: AppState) -> Router {
     let s3_fallback = move |req: axum::extract::Request| {
         let svc = s3_service.clone();
         async move {
+            tracing::info!(method = %req.method(), path = %req.uri().path(), "s3 request");
             let req = req.map(s3s::Body::http_body_unsync);
             match svc.call(req).await {
                 Ok(resp) => resp.map(axum::body::Body::new),
