@@ -4,3 +4,5 @@
 *.db-wal
 /blob_store
 PLAN.md
+COMPLETED.md
+/logs
