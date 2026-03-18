@@ -2,9 +2,9 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
-# Oyster + Pearl local testbed — starts both services against a running
-# Walrus local testbed, creates a funded test account, and prints connection
-# details.
+# Oyster + Pearl local testbed — starts Sui, Walrus, Pearl, Oyster, and the
+# extend worker via procman, creates a funded test account, and prints
+# connection details.
 # ---------------------------------------------------------------------------
 
 # Optional TLS (encryption-only, requires a publicly-trusted cert for Oyster to verify):
@@ -17,12 +17,12 @@ PEARL_SERVICE_SECRET="testbed-secret"
 # Deterministic 32-byte master seed for local testbed key derivation (NOT for production use).
 PEARL_MASTER_SEED="deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
 WALRUS_AGGREGATOR_URL="http://127.0.0.1:31415"
-PEARL_TMUX="oyster-testbed-pearl"
-OYSTER_TMUX="oyster-testbed-oyster"
-EXTEND_TMUX="oyster-testbed-extend"
+FIFO="/tmp/oyster-testbed.fifo"
+PIDFILE="/tmp/oyster-testbed.pid"
 SUI_FUND_AMOUNT=1000000000       # 1 SUI
 WAL_FUND_AMOUNT=500000000000     # 500 WAL (in FROST)
 STARTUP_TIMEOUT=60               # seconds
+WALRUS_STARTUP_TIMEOUT=300       # seconds (Walrus deploys contracts + starts nodes)
 
 WALRUS_WORKING_DIR="$HOME/src/walrus/working_dir"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -35,16 +35,15 @@ usage() {
   cat <<EOF
 Usage: $(basename "$0") [OPTIONS]
 
-Start the full Oyster + Pearl stack against a running Walrus local testbed.
+Start the full Sui + Walrus + Pearl + Oyster stack via procman.
 
 Options:
   --walrus-working-dir <path>  Walrus working directory (default: ~/src/walrus/working_dir)
-  --stop                       Kill existing testbed tmux sessions and exit
+  --stop                       Kill existing testbed and exit
   --help                       Show this help message
 
 Prerequisites:
-  - Walrus local testbed running (~/src/walrus/scripts/local-testbed.sh -A)
-  - cargo, sui, grpcurl, tmux, jq, curl in PATH
+  - cargo, sui, walrus, grpcurl, jq, curl, aws, procman, nc in PATH
 EOF
 }
 
@@ -52,7 +51,7 @@ die() { echo "error: $*" >&2; exit 1; }
 
 check_prereqs() {
   local missing=()
-  for cmd in cargo sui walrus grpcurl tmux jq curl aws; do
+  for cmd in cargo sui walrus grpcurl jq curl aws procman nc; do
     if ! command -v "$cmd" &>/dev/null; then
       missing+=("$cmd")
     fi
@@ -72,10 +71,19 @@ kill_port() {
 }
 
 cleanup() {
-  echo "Stopping testbed sessions..."
-  tmux kill-session -t "$PEARL_TMUX" 2>/dev/null && echo "  killed $PEARL_TMUX session" || true
-  tmux kill-session -t "$OYSTER_TMUX" 2>/dev/null && echo "  killed $OYSTER_TMUX session" || true
-  tmux kill-session -t "$EXTEND_TMUX" 2>/dev/null && echo "  killed $EXTEND_TMUX session" || true
+  echo "Stopping testbed..."
+  if [[ -f "$PIDFILE" ]]; then
+    local pid
+    pid="$(cat "$PIDFILE")"
+    if kill -0 "$pid" 2>/dev/null; then
+      kill "$pid" 2>/dev/null && echo "  sent SIGTERM to procman (PID $pid)" || true
+      local i=0
+      while kill -0 "$pid" 2>/dev/null && (( i < 5 )); do
+        sleep 1; i=$((i + 1))
+      done
+    fi
+    rm -f "$PIDFILE"
+  fi
   kill_port "${PEARL_BIND_ADDR##*:}" "pearl"
   kill_port "${OYSTER_BIND_ADDR##*:}" "oyster"
   echo "Done."
@@ -108,6 +116,24 @@ parse_config() {
   echo "  staking_object: $WALRUS_STAKING_OBJECT"
   echo "  exchange_object: $EXCHANGE_OBJECT"
   echo "  sui_rpc_url:    $SUI_RPC_URL"
+}
+
+wait_for_walrus() {
+  local client_config="$WALRUS_WORKING_DIR/client_config.yaml"
+  echo -n "Waiting for Walrus testbed"
+  local elapsed=0
+  while (( elapsed < WALRUS_STARTUP_TIMEOUT )); do
+    if [[ -f "$client_config" ]] \
+      && curl -so /dev/null --connect-timeout 2 "$WALRUS_AGGREGATOR_URL" 2>/dev/null; then
+      echo " ready (${elapsed}s)"
+      return 0
+    fi
+    echo -n "."
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  echo
+  die "Walrus testbed did not become ready within ${WALRUS_STARTUP_TIMEOUT}s"
 }
 
 wait_for_pearl() {
@@ -209,15 +235,7 @@ main() {
 
   check_prereqs
 
-  # Verify Walrus testbed is running (aggregator returns 404 on /, so just check connectivity).
-  echo "Checking Walrus aggregator at $WALRUS_AGGREGATOR_URL..."
-  curl -so /dev/null --connect-timeout 5 "$WALRUS_AGGREGATOR_URL" 2>/dev/null \
-    || die "Walrus aggregator not reachable at $WALRUS_AGGREGATOR_URL — start the testbed first"
-  echo "  aggregator reachable"
-
-  parse_config
-
-  # Kill stale testbed sessions and orphaned processes from previous runs.
+  # Kill stale testbed and orphaned processes from previous runs.
   cleanup
 
   # --- Build ---
@@ -227,16 +245,21 @@ main() {
   # --- Clean stale DBs ---
   rm -f "$REPO_ROOT"/oyster.db*
 
+  # --- Start procman (boots Sui + Walrus from Procfile) ---
+  echo "Starting procman (Sui + Walrus)..."
+  (cd "$REPO_ROOT" && procman serve "$FIFO" &)
+  PROCMAN_PID=$!
+  echo "$PROCMAN_PID" > "$PIDFILE"
+  trap cleanup EXIT
+
+  # --- Wait for Walrus to be ready ---
+  wait_for_walrus
+  parse_config
+
   # --- Start Pearl ---
-  echo "Starting Pearl in tmux session '$PEARL_TMUX'..."
-  tmux new-session -d -s "$PEARL_TMUX" \
-    "cd '$REPO_ROOT' && \
-     PEARL_BIND_ADDR='$PEARL_BIND_ADDR' \
-     PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
-     PEARL_MASTER_SEED='$PEARL_MASTER_SEED' \
-     RUST_LOG=info \
-     cargo run -p pearl; \
-     echo 'Pearl exited. Press Enter to close.'; read"
+  echo "Starting Pearl..."
+  procman start "$FIFO" \
+    "PEARL_BIND_ADDR=$PEARL_BIND_ADDR PEARL_SERVICE_SECRET=$PEARL_SERVICE_SECRET PEARL_MASTER_SEED=$PEARL_MASTER_SEED RUST_LOG=info $REPO_ROOT/target/debug/pearl"
 
   wait_for_pearl
 
@@ -259,21 +282,9 @@ main() {
   echo "  address:    $OPERATOR_ADDRESS"
 
   # --- Start Oyster ---
-  echo "Starting Oyster in tmux session '$OYSTER_TMUX'..."
-  tmux new-session -d -s "$OYSTER_TMUX" \
-    "cd '$REPO_ROOT' && \
-     BIND_ADDR='$OYSTER_BIND_ADDR' \
-     DATABASE_URL='sqlite:oyster.db?mode=rwc' \
-     ENABLE_DEBUG=true \
-     PEARL_GRPC_URL='http://$PEARL_BIND_ADDR' \
-     PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
-     SUI_RPC_URL='$SUI_RPC_URL' \
-     WALRUS_SYSTEM_OBJECT='$WALRUS_SYSTEM_OBJECT' \
-     WALRUS_STAKING_OBJECT='$WALRUS_STAKING_OBJECT' \
-     WALRUS_AGGREGATOR_URL='$WALRUS_AGGREGATOR_URL' \
-     RUST_LOG=info \
-     cargo run -p oyster -- serve; \
-     echo 'Oyster exited. Press Enter to close.'; read"
+  echo "Starting Oyster..."
+  procman start "$FIFO" \
+    "BIND_ADDR=$OYSTER_BIND_ADDR DATABASE_URL=sqlite:oyster.db?mode=rwc ENABLE_DEBUG=true PEARL_GRPC_URL=http://$PEARL_BIND_ADDR PEARL_SERVICE_SECRET=$PEARL_SERVICE_SECRET SUI_RPC_URL=$SUI_RPC_URL WALRUS_SYSTEM_OBJECT=$WALRUS_SYSTEM_OBJECT WALRUS_STAKING_OBJECT=$WALRUS_STAKING_OBJECT WALRUS_AGGREGATOR_URL=$WALRUS_AGGREGATOR_URL RUST_LOG=info $REPO_ROOT/target/debug/oysterd serve"
 
   wait_for_oyster
 
@@ -327,19 +338,9 @@ main() {
   USER_WAL_BALANCE="$(echo "$balances_json" | jq -r '[.result[] | select(.coinType | contains("WAL")) | .totalBalance | tonumber] | add // 0')"
 
   # --- Start Extend worker ---
-  echo "Starting Oyster extend worker in tmux session '$EXTEND_TMUX'..."
-  tmux new-session -d -s "$EXTEND_TMUX" \
-    "cd '$REPO_ROOT' && \
-     DATABASE_URL='sqlite:oyster.db?mode=rwc' \
-     PEARL_GRPC_URL='http://$PEARL_BIND_ADDR' \
-     PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
-     SUI_RPC_URL='$SUI_RPC_URL' \
-     WALRUS_SYSTEM_OBJECT='$WALRUS_SYSTEM_OBJECT' \
-     WALRUS_STAKING_OBJECT='$WALRUS_STAKING_OBJECT' \
-     OYSTER_EXTENSION_METRICS_BIND_ADDR='127.0.0.1:50053' \
-     RUST_LOG=info \
-     cargo run -p oyster -- extend; \
-     echo 'Extend worker exited. Press Enter to close.'; read"
+  echo "Starting Oyster extend worker..."
+  procman start "$FIFO" \
+    "DATABASE_URL=sqlite:oyster.db?mode=rwc PEARL_GRPC_URL=http://$PEARL_BIND_ADDR PEARL_SERVICE_SECRET=$PEARL_SERVICE_SECRET SUI_RPC_URL=$SUI_RPC_URL WALRUS_SYSTEM_OBJECT=$WALRUS_SYSTEM_OBJECT WALRUS_STAKING_OBJECT=$WALRUS_STAKING_OBJECT OYSTER_EXTENSION_METRICS_BIND_ADDR=127.0.0.1:50053 RUST_LOG=info $REPO_ROOT/target/debug/oysterd extend"
 
   # --- Configure AWS CLI profile ---
   local aws_profile="oyster-local-testbed"
@@ -370,14 +371,13 @@ main() {
    aws --profile $aws_profile s3api put-object --bucket my-bucket --key hello.txt --body hello.txt
    aws --profile $aws_profile s3api get-object --bucket my-bucket --key hello.txt out.txt
 
- tmux sessions:
-   Pearl:  tmux attach -t $PEARL_TMUX
-   Oyster: tmux attach -t $OYSTER_TMUX
-   Extend: tmux attach -t $EXTEND_TMUX
-
+ Managed by procman (PID $PROCMAN_PID). Press Ctrl-C to stop all services.
  Stop:  scripts/local-testbed.sh --stop
 ========================================
 EOF
+
+  # Block until procman exits (Ctrl-C triggers cleanup via EXIT trap).
+  wait "$PROCMAN_PID" || true
 }
 
 main "$@"
