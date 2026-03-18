@@ -50,7 +50,7 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    let address = body["wallet"]["address"].as_str().expect("wallet address");
+    let address = body["address"].as_str().expect("wallet address");
     harness.fund_wallet(address).await;
 }
 

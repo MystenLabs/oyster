@@ -53,7 +53,7 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
     )
     .await;
     assert_eq!(status, axum::http::StatusCode::OK);
-    let address = body["wallet"]["address"].as_str().expect("wallet address");
+    let address = body["address"].as_str().expect("wallet address");
     harness.fund_wallet(address).await;
 }
 
@@ -101,7 +101,8 @@ fn cli_e2e_full_lifecycle() {
 
         // Serve on a random port for CLI subprocess calls.
         eprintln!("[cli_e2e] starting HTTP server...");
-        let url = harness.serve_on_random_port().await;
+        let base_url = harness.serve_on_random_port().await;
+        let url = format!("{base_url}/api/v1");
         eprintln!("[cli_e2e] server ready at {url}");
 
         // 1. create-bucket
@@ -272,8 +273,7 @@ fn cli_e2e_full_lifecycle() {
             String::from_utf8_lossy(&output.stderr)
         );
         let wallet: Value = serde_json::from_slice(&output.stdout).expect("parse wallet JSON");
-        assert_eq!(wallet["provisioned"].as_bool(), Some(true));
-        assert!(wallet["wallet"]["address"].as_str().is_some());
+        assert!(wallet["address"].as_str().is_some());
 
         // 10. info
         eprintln!("[cli_e2e] 10/10 info");

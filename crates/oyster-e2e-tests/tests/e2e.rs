@@ -105,7 +105,8 @@ fn e2e_blob_lifecycle() {
 
         // 4. Store a blob.
         let blob_data = b"Hello from the Oyster E2E test!";
-        let store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs"))
+        let blob_key = "test-file.txt";
+        let store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/{blob_key}"))
             .header("authorization", format!("Bearer {api_key}"))
             .header("content-type", "text/plain")
             .body(Body::from(blob_data.to_vec()))
@@ -117,9 +118,9 @@ fn e2e_blob_lifecycle() {
             "store blob failed: {store_body}"
         );
 
-        let object_id = store_body["object_id"].as_str().unwrap().to_string();
+        let key = store_body["key"].as_str().unwrap().to_string();
         let blob_id = store_body["blob_id"].as_str().unwrap().to_string();
-        assert!(!object_id.is_empty(), "object_id should be non-empty");
+        assert!(!key.is_empty(), "key should be non-empty");
         assert!(!blob_id.is_empty(), "blob_id should be non-empty");
 
         // The response should include sui_object_id since we're using DirectWalrusBlobStore.
@@ -129,10 +130,10 @@ fn e2e_blob_lifecycle() {
             "sui_object_id should be present in direct walrus mode"
         );
 
-        // 5. Read the blob back by object_id.
+        // 5. Read the blob back by bucket + key.
         let (status, body) = raw_response(
             app,
-            Request::get(format!("/api/v1/blobs/{object_id}"))
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -163,13 +164,13 @@ fn e2e_blob_lifecycle() {
         assert_eq!(status, axum::http::StatusCode::OK);
         let blobs = list_body["data"].as_array().unwrap();
         assert_eq!(blobs.len(), 1, "should have exactly one blob");
-        assert_eq!(blobs[0]["object_id"].as_str().unwrap(), object_id);
+        assert_eq!(blobs[0]["key"].as_str().unwrap(), key);
 
         // 8. Delete the blob (DB record removed; on-chain blob object deleted via delete_blob PTB).
         let resp = app
             .clone()
             .oneshot(
-                Request::delete(format!("/api/v1/blobs/{object_id}"))
+                Request::delete(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
                     .header("authorization", format!("Bearer {api_key}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -181,7 +182,7 @@ fn e2e_blob_lifecycle() {
         // 9. Verify the blob is gone from Oyster's perspective.
         let (status, _) = raw_response(
             app,
-            Request::get(format!("/api/v1/blobs/{object_id}"))
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -207,20 +208,20 @@ fn e2e_content_dedup() {
 
         let data = b"duplicate content for dedup test";
 
-        // Store the same data twice.
-        let make_store_req = |bucket: &str, key: &str, data: &[u8]| {
-            Request::put(format!("/api/v1/buckets/{bucket}/blobs"))
-                .header("authorization", format!("Bearer {key}"))
+        // Store the same data twice under different keys.
+        let make_store_req = |bucket: &str, blob_key: &str, api_key: &str, data: &[u8]| {
+            Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}"))
+                .header("authorization", format!("Bearer {api_key}"))
                 .header("content-type", "application/octet-stream")
                 .body(Body::from(data.to_vec()))
                 .unwrap()
         };
 
-        let req1 = make_store_req(&bucket_id, &api_key, data);
+        let req1 = make_store_req(&bucket_id, "copy-1", &api_key, data);
         let (s1, b1) = json_response(app, req1).await;
         assert_eq!(s1, axum::http::StatusCode::CREATED);
 
-        let req2 = make_store_req(&bucket_id, &api_key, data);
+        let req2 = make_store_req(&bucket_id, "copy-2", &api_key, data);
         let (s2, b2) = json_response(app, req2).await;
         assert_eq!(s2, axum::http::StatusCode::CREATED);
 
@@ -231,11 +232,11 @@ fn e2e_content_dedup() {
             "same content should produce same blob_id"
         );
 
-        // But different object_ids (different DB records).
+        // But different keys (different DB records).
         assert_ne!(
-            b1["object_id"].as_str().unwrap(),
-            b2["object_id"].as_str().unwrap(),
-            "each store should create a distinct object_id"
+            b1["key"].as_str().unwrap(),
+            b2["key"].as_str().unwrap(),
+            "each store should have a distinct key"
         );
     });
 }
@@ -345,12 +346,12 @@ fn e2e_deterministic_wallet_address() {
 
         // Store a blob, then verify the address is still the same.
         let bucket_id = create_test_bucket(app, &api_key, "determinism-bucket").await;
-        let _store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs"))
+        let store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/det-test.txt"))
             .header("authorization", format!("Bearer {api_key}"))
             .header("content-type", "text/plain")
             .body(Body::from(b"determinism test".to_vec()))
             .unwrap();
-        let (status, _) = json_response(app, _store_req).await;
+        let (status, _) = json_response(app, store_req).await;
         assert_eq!(status, axum::http::StatusCode::CREATED);
 
         let (status, body) = json_response(
@@ -362,7 +363,7 @@ fn e2e_deterministic_wallet_address() {
         )
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
-        let addr_after_store = body["wallet"]["address"].as_str().unwrap();
+        let addr_after_store = body["address"].as_str().unwrap();
         assert_eq!(
             addresses[0], addr_after_store,
             "wallet address should remain stable after storing a blob"

@@ -1,2 +1,2 @@
-RUST_LOG="on,info" sui start --with-faucet --force-regenesis
+RUST_LOG="on,error" sui start --with-faucet --force-regenesis
 ../walrus/scripts/local-testbed.sh -Afn localnet
