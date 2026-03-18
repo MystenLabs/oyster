@@ -1,0 +1,10 @@
+sui:
+  env:
+    RUST_LOG: on,error
+  run: sui start --with-faucet --force-regenesis
+walrus:
+  depends:
+    - job: sui
+      url: http://localhost:9123/
+      code: 200
+  run: ../walrus/scripts/local-testbed.sh -l info,walrus=warn,checkpoint_downloader=off -Afn localnet

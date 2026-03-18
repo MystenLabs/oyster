@@ -18,7 +18,6 @@ PEARL_SERVICE_SECRET="testbed-secret"
 PEARL_MASTER_SEED="deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
 WALRUS_AGGREGATOR_URL="http://127.0.0.1:31415"
 FIFO="/tmp/oyster-testbed.fifo"
-PIDFILE="/tmp/oyster-testbed.pid"
 SUI_FUND_AMOUNT=1000000000       # 1 SUI
 WAL_FUND_AMOUNT=500000000000     # 500 WAL (in FROST)
 STARTUP_TIMEOUT=60               # seconds
@@ -26,6 +25,11 @@ WALRUS_STARTUP_TIMEOUT=300       # seconds (Walrus deploys contracts + starts no
 
 WALRUS_WORKING_DIR="$HOME/src/walrus/working_dir"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+
+if [[ -d "$WALRUS_WORKING_DIR" ]]; then
+  echo "Cleaning existing Walrus working directory at $WALRUS_WORKING_DIR..."
+  rm -rf "$WALRUS_WORKING_DIR"
+fi
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -61,31 +65,15 @@ check_prereqs() {
   fi
 }
 
-kill_port() {
-  local port="$1" label="$2"
-  local pids
-  pids="$(lsof -ti :"$port" 2>/dev/null)" || true
-  if [[ -n "$pids" ]]; then
-    echo "$pids" | xargs kill 2>/dev/null && echo "  killed $label on port $port" || true
-  fi
-}
-
 cleanup() {
   echo "Stopping testbed..."
-  if [[ -f "$PIDFILE" ]]; then
-    local pid
-    pid="$(cat "$PIDFILE")"
-    if kill -0 "$pid" 2>/dev/null; then
-      kill "$pid" 2>/dev/null && echo "  sent SIGTERM to procman (PID $pid)" || true
-      local i=0
-      while kill -0 "$pid" 2>/dev/null && (( i < 5 )); do
-        sleep 1; i=$((i + 1))
-      done
-    fi
-    rm -f "$PIDFILE"
+  procman stop "$FIFO" 2>/dev/null || true
+
+  if [[ -d "$WALRUS_WORKING_DIR" ]]; then
+    echo "removing existing Walrus working directory at $WALRUS_WORKING_DIR..."
+    rm -rf "$WALRUS_WORKING_DIR"
   fi
-  kill_port "${PEARL_BIND_ADDR##*:}" "pearl"
-  kill_port "${OYSTER_BIND_ADDR##*:}" "oyster"
+
   echo "Done."
 }
 
@@ -247,9 +235,8 @@ main() {
 
   # --- Start procman (boots Sui + Walrus from Procfile) ---
   echo "Starting procman (Sui + Walrus)..."
-  (cd "$REPO_ROOT" && procman serve "$FIFO" &)
+  (cd "$REPO_ROOT" && exec procman serve "$FIFO") &
   PROCMAN_PID=$!
-  echo "$PROCMAN_PID" > "$PIDFILE"
   trap cleanup EXIT
 
   # --- Wait for Walrus to be ready ---
@@ -371,7 +358,7 @@ main() {
    aws --profile $aws_profile s3api put-object --bucket my-bucket --key hello.txt --body hello.txt
    aws --profile $aws_profile s3api get-object --bucket my-bucket --key hello.txt out.txt
 
- Managed by procman (PID $PROCMAN_PID). Press Ctrl-C to stop all services.
+ Managed by procman. Press Ctrl-C to stop all services.
  Stop:  scripts/local-testbed.sh --stop
 ========================================
 EOF

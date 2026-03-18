@@ -1,7 +1,13 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
 use serde::Serialize;
 
 use crate::AppState;
+
+static FIRST_READY_CHECK: AtomicBool = AtomicBool::new(true);
+static DB_FAILED: AtomicBool = AtomicBool::new(false);
+static PEARL_FAILED: AtomicBool = AtomicBool::new(false);
 
 /// Response body for the liveness probe.
 #[derive(Serialize, utoipa::ToSchema)]
@@ -41,15 +47,29 @@ pub async fn health() -> Json<HealthResponse> {
     ),
 )]
 pub async fn ready(State(state): State<AppState>) -> impl IntoResponse {
+    if FIRST_READY_CHECK.swap(false, Ordering::Relaxed) {
+        tracing::info!("readiness probe: first dependency check starting");
+    }
+
     let db_ok = sqlx::query_scalar::<_, i32>("SELECT 1")
         .fetch_one(&state.db)
         .await
         .is_ok();
+    if !db_ok && !DB_FAILED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("readiness probe: database is unreachable");
+    } else if db_ok && DB_FAILED.swap(false, Ordering::Relaxed) {
+        tracing::info!("readiness probe: database recovered");
+    }
 
     let pearl_ok = match &state.pearl {
         Some(pearl) => pearl.ping().await,
         None => true,
     };
+    if !pearl_ok && !PEARL_FAILED.swap(true, Ordering::Relaxed) {
+        tracing::warn!("readiness probe: pearl is unreachable");
+    } else if pearl_ok && PEARL_FAILED.swap(false, Ordering::Relaxed) {
+        tracing::info!("readiness probe: pearl recovered");
+    }
 
     let ready = db_ok && pearl_ok;
     let status = if ready {
