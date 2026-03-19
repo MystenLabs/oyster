@@ -1,10 +1,72 @@
 sui:
   env:
-    RUST_LOG: on,error
+    RUST_LOG: "on,error"
   run: sui start --with-faucet --force-regenesis
+
 walrus:
   depends:
-    - job: sui
-      url: http://localhost:9123/
+    - url: http://localhost:9123/
       code: 200
   run: ../walrus/scripts/local-testbed.sh -l info,walrus=warn,checkpoint_downloader=off -Afn localnet
+
+pearl:
+  env:
+    PEARL_BIND_ADDR: "127.0.0.1:50051"
+    PEARL_SERVICE_SECRET: testbed-secret
+    PEARL_MASTER_SEED: "deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
+    RUST_LOG: info
+  run: ./target/debug/pearl
+
+parse-config:
+  once: true
+  run: ./scripts/parse-walrus-config.sh
+
+oyster:
+  depends:
+    - process_exited: parse-config
+    - tcp: "127.0.0.1:50051"
+      timeout_seconds: 120
+    - url: http://127.0.0.1:31415
+      code: 200
+      timeout_seconds: 600
+  env:
+    BIND_ADDR: "127.0.0.1:3000"
+    DATABASE_URL: "sqlite:oyster.db?mode=rwc"
+    ENABLE_DEBUG: "true"
+    PEARL_GRPC_URL: "http://127.0.0.1:50051"
+    PEARL_SERVICE_SECRET: testbed-secret
+    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
+    WALRUS_SYSTEM_OBJECT: "${{ parse-config.WALRUS_SYSTEM_OBJECT }}"
+    WALRUS_STAKING_OBJECT: "${{ parse-config.WALRUS_STAKING_OBJECT }}"
+    WALRUS_AGGREGATOR_URL: "http://127.0.0.1:31415"
+    RUST_LOG: info
+  run: ./target/debug/oysterd serve
+
+setup:
+  once: true
+  depends:
+    - process_exited: parse-config
+    - url: http://127.0.0.1:3000/health
+      code: 200
+      timeout_seconds: 120
+  env:
+    PEARL_BIND_ADDR: "127.0.0.1:50051"
+    PEARL_SERVICE_SECRET: testbed-secret
+    OYSTER_BIND_ADDR: "127.0.0.1:3000"
+    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
+  run: ./scripts/testbed-setup.sh
+
+extend:
+  depends:
+    - process_exited: setup
+    - process_exited: parse-config
+  env:
+    DATABASE_URL: "sqlite:oyster.db?mode=rwc"
+    PEARL_GRPC_URL: "http://127.0.0.1:50051"
+    PEARL_SERVICE_SECRET: testbed-secret
+    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
+    WALRUS_SYSTEM_OBJECT: "${{ parse-config.WALRUS_SYSTEM_OBJECT }}"
+    WALRUS_STAKING_OBJECT: "${{ parse-config.WALRUS_STAKING_OBJECT }}"
+    OYSTER_EXTENSION_METRICS_BIND_ADDR: "127.0.0.1:50053"
+    RUST_LOG: info
+  run: ./target/debug/oysterd extend
