@@ -19,6 +19,12 @@ pearl:
 
 parse-config:
   once: true
+  depends:
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/client_config.yaml
+        format: yaml
+        key: wallet_config
+        timeout_seconds: 600
   run: ./scripts/parse-walrus-config.sh
 
 oyster:
@@ -29,6 +35,16 @@ oyster:
     - url: http://127.0.0.1:31415
       code: 200
       timeout_seconds: 600
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/client_config.yaml
+        format: yaml
+        key: system_object
+        env: WALRUS_SYSTEM_OBJECT
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/client_config.yaml
+        format: yaml
+        key: staking_object
+        env: WALRUS_STAKING_OBJECT
   env:
     BIND_ADDR: "127.0.0.1:3000"
     DATABASE_URL: "sqlite:oyster.db?mode=rwc"
@@ -36,8 +52,6 @@ oyster:
     PEARL_GRPC_URL: "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
     SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
-    WALRUS_SYSTEM_OBJECT: "${{ parse-config.WALRUS_SYSTEM_OBJECT }}"
-    WALRUS_STAKING_OBJECT: "${{ parse-config.WALRUS_STAKING_OBJECT }}"
     WALRUS_AGGREGATOR_URL: "http://127.0.0.1:31415"
     RUST_LOG: info
   run: ./target/debug/oysterd serve
@@ -60,13 +74,21 @@ extend:
   depends:
     - process_exited: setup
     - process_exited: parse-config
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/client_config.yaml
+        format: yaml
+        key: system_object
+        env: WALRUS_SYSTEM_OBJECT
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/client_config.yaml
+        format: yaml
+        key: staking_object
+        env: WALRUS_STAKING_OBJECT
   env:
     DATABASE_URL: "sqlite:oyster.db?mode=rwc"
     PEARL_GRPC_URL: "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
     SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
-    WALRUS_SYSTEM_OBJECT: "${{ parse-config.WALRUS_SYSTEM_OBJECT }}"
-    WALRUS_STAKING_OBJECT: "${{ parse-config.WALRUS_STAKING_OBJECT }}"
     OYSTER_EXTENSION_METRICS_BIND_ADDR: "127.0.0.1:50053"
     RUST_LOG: info
   run: ./target/debug/oysterd extend
