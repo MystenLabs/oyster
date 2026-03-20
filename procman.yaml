@@ -1,24 +1,22 @@
 clean:
   once: true
   run: rm -rf "$WALRUS_WORKING_DIR" && rm -f oyster.db*
-
 build:
   once: true
   run: cargo build -p pearl -p oyster
-
 sui:
   depends:
     - process_exited: clean
   env:
     RUST_LOG: "on,error"
   run: sui start --with-faucet --force-regenesis
-
 walrus:
   depends:
     - url: http://localhost:9123/
       code: 200
+  env:
+    RUST_LOG: info,warn=sui_types
   run: ../walrus/scripts/local-testbed.sh -l info,walrus=warn,checkpoint_downloader=off -Afn localnet
-
 pearl:
   depends:
     - process_exited: build
@@ -28,29 +26,27 @@ pearl:
     PEARL_MASTER_SEED: "deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
     RUST_LOG: info
   run: ./target/debug/pearl
-
 oyster:
   depends:
     - process_exited: build
     - tcp: "127.0.0.1:50051"
       timeout_seconds: 120
-    - url: http://127.0.0.1:31415
-      code: 200
+    - tcp: "127.0.0.1:31415"
       timeout_seconds: 600
     - file_contains:
         path: $WALRUS_WORKING_DIR/client_config.yaml
         format: yaml
-        key: system_object
+        key: $.system_object
         env: WALRUS_SYSTEM_OBJECT
     - file_contains:
         path: $WALRUS_WORKING_DIR/client_config.yaml
         format: yaml
-        key: staking_object
+        key: $.staking_object
         env: WALRUS_STAKING_OBJECT
     - file_contains:
         path: $WALRUS_WORKING_DIR/sui_client.yaml
         format: yaml
-        key: rpc
+        key: $.envs[?(@.alias == 'local')].rpc
         env: SUI_RPC_URL
   env:
     BIND_ADDR: "127.0.0.1:3000"
@@ -61,7 +57,6 @@ oyster:
     WALRUS_AGGREGATOR_URL: "http://127.0.0.1:31415"
     RUST_LOG: info
   run: ./target/debug/oysterd serve
-
 setup:
   once: true
   depends:
@@ -71,31 +66,30 @@ setup:
     - file_contains:
         path: $WALRUS_WORKING_DIR/sui_client.yaml
         format: yaml
-        key: rpc
+        key: $.envs[?(@.alias == 'local')].rpc
         env: SUI_RPC_URL
   env:
     PEARL_BIND_ADDR: "127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
     OYSTER_BIND_ADDR: "127.0.0.1:3000"
   run: ./scripts/testbed-setup.sh
-
 extend:
   depends:
     - process_exited: setup
     - file_contains:
         path: $WALRUS_WORKING_DIR/client_config.yaml
         format: yaml
-        key: system_object
+        key: $.system_object
         env: WALRUS_SYSTEM_OBJECT
     - file_contains:
         path: $WALRUS_WORKING_DIR/client_config.yaml
         format: yaml
-        key: staking_object
+        key: $.staking_object
         env: WALRUS_STAKING_OBJECT
     - file_contains:
         path: $WALRUS_WORKING_DIR/sui_client.yaml
         format: yaml
-        key: rpc
+        key: $.envs[?(@.alias == 'local')].rpc
         env: SUI_RPC_URL
   env:
     DATABASE_URL: "sqlite:oyster.db?mode=rwc"
