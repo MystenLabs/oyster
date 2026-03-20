@@ -17,19 +17,8 @@ pearl:
     RUST_LOG: info
   run: ./target/debug/pearl
 
-parse-config:
-  once: true
-  depends:
-    - file_contains:
-        path: $WALRUS_WORKING_DIR/client_config.yaml
-        format: yaml
-        key: wallet_config
-        timeout_seconds: 600
-  run: ./scripts/parse-walrus-config.sh
-
 oyster:
   depends:
-    - process_exited: parse-config
     - tcp: "127.0.0.1:50051"
       timeout_seconds: 120
     - url: http://127.0.0.1:31415
@@ -45,13 +34,17 @@ oyster:
         format: yaml
         key: staking_object
         env: WALRUS_STAKING_OBJECT
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/sui_client.yaml
+        format: yaml
+        key: rpc
+        env: SUI_RPC_URL
   env:
     BIND_ADDR: "127.0.0.1:3000"
     DATABASE_URL: "sqlite:oyster.db?mode=rwc"
     ENABLE_DEBUG: "true"
     PEARL_GRPC_URL: "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
-    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
     WALRUS_AGGREGATOR_URL: "http://127.0.0.1:31415"
     RUST_LOG: info
   run: ./target/debug/oysterd serve
@@ -59,21 +52,23 @@ oyster:
 setup:
   once: true
   depends:
-    - process_exited: parse-config
     - url: http://127.0.0.1:3000/health
       code: 200
       timeout_seconds: 120
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/sui_client.yaml
+        format: yaml
+        key: rpc
+        env: SUI_RPC_URL
   env:
     PEARL_BIND_ADDR: "127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
     OYSTER_BIND_ADDR: "127.0.0.1:3000"
-    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
   run: ./scripts/testbed-setup.sh
 
 extend:
   depends:
     - process_exited: setup
-    - process_exited: parse-config
     - file_contains:
         path: $WALRUS_WORKING_DIR/client_config.yaml
         format: yaml
@@ -84,11 +79,15 @@ extend:
         format: yaml
         key: staking_object
         env: WALRUS_STAKING_OBJECT
+    - file_contains:
+        path: $WALRUS_WORKING_DIR/sui_client.yaml
+        format: yaml
+        key: rpc
+        env: SUI_RPC_URL
   env:
     DATABASE_URL: "sqlite:oyster.db?mode=rwc"
     PEARL_GRPC_URL: "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
-    SUI_RPC_URL: "${{ parse-config.SUI_RPC_URL }}"
     OYSTER_EXTENSION_METRICS_BIND_ADDR: "127.0.0.1:50053"
     RUST_LOG: info
   run: ./target/debug/oysterd extend
