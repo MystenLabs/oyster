@@ -1,4 +1,14 @@
+clean:
+  once: true
+  run: rm -rf "$WALRUS_WORKING_DIR" && rm -f oyster.db*
+
+build:
+  once: true
+  run: cargo build -p pearl -p oyster
+
 sui:
+  depends:
+    - process_exited: clean
   env:
     RUST_LOG: "on,error"
   run: sui start --with-faucet --force-regenesis
@@ -10,6 +20,8 @@ walrus:
   run: ../walrus/scripts/local-testbed.sh -l info,walrus=warn,checkpoint_downloader=off -Afn localnet
 
 pearl:
+  depends:
+    - process_exited: build
   env:
     PEARL_BIND_ADDR: "127.0.0.1:50051"
     PEARL_SERVICE_SECRET: testbed-secret
@@ -19,6 +31,7 @@ pearl:
 
 oyster:
   depends:
+    - process_exited: build
     - tcp: "127.0.0.1:50051"
       timeout_seconds: 120
     - url: http://127.0.0.1:31415

@@ -143,6 +143,6 @@ cat <<EOF
    aws --profile $aws_profile s3api get-object --bucket my-bucket --key hello.txt out.txt
 
  Managed by procman. Press Ctrl-C to stop all services.
- Stop:  scripts/procman-testbed.sh --stop
+ Stop:  procman stop
 ========================================
 EOF
