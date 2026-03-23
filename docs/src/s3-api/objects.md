@@ -1,8 +1,10 @@
 # Object Operations
 
-All write and delete operations require S3 authentication (SigV4). Read
-operations (GetObject, HeadObject) do not require authentication. See
+All S3 operations require authentication (SigV4), including reads. See
 [S3 Setup](setup.md) for configuration.
+
+> **Note:** This differs from the [JSON API](../json-api/blobs.md), where
+> blob reads are public and unauthenticated.
 
 ## PutObject
 

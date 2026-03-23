@@ -95,11 +95,11 @@ oyster_active_accounts 42
 # TYPE oyster_active_blobs gauge
 oyster_active_blobs 1337
 
-# HELP oyster_blob_store_ops_total Blob store operations
-# TYPE oyster_blob_store_ops_total counter
-oyster_blob_store_ops_total{operation="store",result="success"} 500
-oyster_blob_store_ops_total{operation="read",result="success"} 2000
-oyster_blob_store_ops_total{operation="delete",result="success"} 100
+# HELP oyster_blob_store_operations_total Blob store operations
+# TYPE oyster_blob_store_operations_total counter
+oyster_blob_store_operations_total{operation="store",result="success"} 500
+oyster_blob_store_operations_total{operation="read",result="success"} 2000
+oyster_blob_store_operations_total{operation="delete",result="success"} 100
 ```
 
 **Available metrics:**
@@ -108,7 +108,7 @@ oyster_blob_store_ops_total{operation="delete",result="success"} 100
 |--------|------|-------------|
 | `oyster_active_accounts` | gauge | Total number of accounts |
 | `oyster_active_blobs` | gauge | Total number of stored blobs |
-| `oyster_blob_store_ops_total` | counter | Blob store operations (labels: `operation`, `result`) |
+| `oyster_blob_store_operations_total` | counter | Blob store operations (labels: `operation`, `result`) |
 
 ## OpenAPI Documentation
 

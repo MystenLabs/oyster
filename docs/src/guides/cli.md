@@ -16,14 +16,17 @@ The CLI looks for a config file in this order:
 **Example `client.yaml`:**
 
 ```yaml
-url: "http://localhost:3000"
+url: "http://localhost:3000/api/v1"
 api_key: "your-api-key-here"
 ```
+
+> **Important:** The URL must include the `/api/v1` path. The CLI appends
+> endpoint paths (like `/buckets`) directly to this URL.
 
 You can also pass these as flags or set them for individual commands:
 
 ```bash
-oyster --url http://localhost:3000 --api-key "your-key" list-buckets
+oyster --url http://localhost:3000/api/v1 --api-key "your-key" list-buckets
 ```
 
 ## Global Flags
@@ -131,10 +134,10 @@ oyster create-api-key
 Output:
 
 ```
-Created API key:
-  ID:     a1b2c3d4-e5f6-7890-abcd-ef1234567890
-  Prefix: oysk_a1b
-  Secret: oysk_a1b2c3d4e5f6789...
+API key created:
+  id:      a1b2c3d4-e5f6-7890-abcd-ef1234567890
+  prefix:  a1b2c3d4
+  secret:  a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
 
 Save this secret — it cannot be retrieved again.
 ```
@@ -156,9 +159,9 @@ oyster create-access-key
 Output:
 
 ```
-Created S3 access key:
-  Access Key ID:     OYAK1234567890ABCDEF
-  Secret Access Key: abcdef1234567890abcdef1234567890abcdef12
+Access key created:
+  access_key_id:      OYAK1234567890ABCDEF
+  secret_access_key:  abcdef1234567890abcdef1234567890abcdef12
 
 Save this secret — it cannot be retrieved again.
 ```

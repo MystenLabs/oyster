@@ -15,7 +15,7 @@ Contact your **Oyster administrator** to receive an API key. This is a
 Bearer token that authenticates your requests. It looks something like:
 
 ```
-oysk_a1b2c3d4e5f6...
+a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
 ```
 
 Store it somewhere safe — it cannot be retrieved again after initial
@@ -152,8 +152,8 @@ Response:
 ```json
 {
   "id": "key-uuid-here",
-  "prefix": "oysk_a1b",
-  "secret": "oysk_a1b2c3d4e5f6...",
+  "prefix": "a1b2c3d4",
+  "secret": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
   "created_at": "2025-01-15T10:32:00Z"
 }
 ```

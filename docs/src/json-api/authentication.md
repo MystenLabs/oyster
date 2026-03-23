@@ -41,8 +41,8 @@ curl -s -X POST \
 ```json
 {
   "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-  "prefix": "oysk_a1b",
-  "secret": "oysk_a1b2c3d4e5f6789...",
+  "prefix": "a1b2c3d4",
+  "secret": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
   "created_at": "2025-01-15T10:30:00Z"
 }
 ```
