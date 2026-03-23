@@ -5,15 +5,18 @@ use crate::{AccountId, models::Account};
 /// Insert a new account.
 pub async fn create_account(pool: &super::DbPool) -> Result<Account, sqlx::Error> {
     let id = AccountId::new();
+    let name = id.to_string();
     let row = sqlx::query(&super::sql(
-        "INSERT INTO accounts (id) VALUES (?) RETURNING id, created_at, updated_at",
+        "INSERT INTO accounts (id, name) VALUES (?, ?) RETURNING id, name, created_at, updated_at",
     ))
     .bind(&id)
+    .bind(&name)
     .fetch_one(pool)
     .await?;
 
     Ok(Account {
         id: row.get("id"),
+        name: row.get("name"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -25,7 +28,7 @@ pub async fn get_account(
     id: &AccountId,
 ) -> Result<Option<Account>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT id, created_at, updated_at FROM accounts WHERE id = ?",
+        "SELECT id, name, created_at, updated_at FROM accounts WHERE id = ?",
     ))
     .bind(id)
     .fetch_optional(pool)
@@ -33,6 +36,7 @@ pub async fn get_account(
 
     Ok(row.map(|r| Account {
         id: r.get("id"),
+        name: r.get("name"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }))
@@ -57,7 +61,8 @@ mod tests {
     #[tokio::test]
     async fn create_account_works() {
         let pool = test_pool().await;
-        let _account = create_account(&pool).await.unwrap();
+        let account = create_account(&pool).await.unwrap();
+        assert_eq!(account.name, account.id.to_string());
     }
 
     #[tokio::test]
