@@ -1,8 +1,13 @@
 clean:
   once: true
-  run: rm -rf "$WALRUS_WORKING_DIR" && rm -f oyster.db*
+  run: |
+    set -euo pipefail
+    rm -rf "$WALRUS_WORKING_DIR"
+    rm -f oyster.db*
 build:
   once: true
+  depends:
+    - process_exited: clean
   run: cargo build -p pearl -p oyster
 sui:
   depends:

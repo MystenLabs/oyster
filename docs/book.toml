@@ -1,0 +1,8 @@
+[book]
+title = "Oyster Documentation"
+authors = ["Will Bradley"]
+language = "en"
+src = "src"
+
+[output.html]
+no-section-label = false
