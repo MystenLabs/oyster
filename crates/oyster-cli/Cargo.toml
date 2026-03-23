@@ -3,6 +3,10 @@ name = "oyster-cli"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "oyster_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "oyster"
 path = "src/main.rs"
