@@ -211,7 +211,10 @@ async fn create_test_account(app: &Router) -> (String, String) {
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, StatusCode::CREATED);
     let account_id = body["account_id"].as_str().unwrap().to_string();
-    let secret = body["api_key"]["secret"].as_str().unwrap().to_string();
+    let secret = body["api_key"]["bearer_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (account_id, secret)
 }
 
@@ -608,7 +611,7 @@ async fn api_key_create_and_revoke() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let new_key_id = body["id"].as_str().unwrap().to_string();
-    let new_secret = body["secret"].as_str().unwrap().to_string();
+    let new_secret = body["bearer_token"].as_str().unwrap().to_string();
 
     // New key works
     let (status, _) = json_response(

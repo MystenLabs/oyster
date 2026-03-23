@@ -42,7 +42,7 @@ curl -s -X POST \
 {
   "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
   "prefix": "a1b2c3d4",
-  "secret": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
+  "bearer_token": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
   "created_at": "2025-01-15T10:30:00Z"
 }
 ```
@@ -51,7 +51,7 @@ curl -s -X POST \
 |-------|------|-------------|
 | `id` | string | Unique identifier for the key (used to revoke it) |
 | `prefix` | string | First 8 characters, for identification |
-| `secret` | string | Full API key — **shown only once** |
+| `bearer_token` | string | The Bearer token — **shown only once** |
 | `created_at` | string | ISO 8601 timestamp |
 
 ## Revoke API Key

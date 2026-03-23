@@ -41,10 +41,10 @@ pub struct PaginatedResponse<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ApiKeyWithSecret {
+pub struct ApiKeyWithBearerToken {
     pub id: String,
     pub prefix: String,
-    pub secret: String,
+    pub bearer_token: String,
     pub created_at: String,
 }
 
@@ -269,7 +269,7 @@ impl OysterClient {
 
     // API key operations
 
-    pub async fn create_api_key(&self) -> Result<ApiKeyWithSecret, ApiError> {
+    pub async fn create_api_key(&self) -> Result<ApiKeyWithBearerToken, ApiError> {
         let resp = self
             .http
             .post(format!("{}/account/api-keys", self.base_url))

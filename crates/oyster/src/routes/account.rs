@@ -12,7 +12,7 @@ use crate::{
     models::{
         AccessKey,
         AccessKeyWithSecret,
-        ApiKeyWithSecret,
+        ApiKeyWithBearerToken,
         CreateAccountResponse,
         ErrorResponse,
         WalletResponse,
@@ -25,7 +25,7 @@ use crate::{
     tag = "Account",
     security(("bearer" = [])),
     responses(
-        (status = 201, description = "API key created", body = ApiKeyWithSecret),
+        (status = 201, description = "API key created", body = ApiKeyWithBearerToken),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
     ),
 )]
@@ -33,7 +33,7 @@ use crate::{
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
-) -> Result<(StatusCode, Json<ApiKeyWithSecret>), AppError> {
+) -> Result<(StatusCode, Json<ApiKeyWithBearerToken>), AppError> {
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);

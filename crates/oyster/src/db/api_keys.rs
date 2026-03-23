@@ -3,17 +3,17 @@ use uuid::Uuid;
 
 use crate::{
     AccountId,
-    models::{ApiKey, ApiKeyWithSecret},
+    models::{ApiKey, ApiKeyWithBearerToken},
 };
 
-/// Insert a new API key and return it with the plaintext secret.
+/// Insert a new API key and return it with the plaintext bearer token.
 pub async fn create_api_key(
     pool: &super::DbPool,
     account_id: &AccountId,
     key_hash: &str,
     prefix: &str,
     raw_key: &str,
-) -> Result<ApiKeyWithSecret, sqlx::Error> {
+) -> Result<ApiKeyWithBearerToken, sqlx::Error> {
     let id = Uuid::new_v4().to_string();
     let row = sqlx::query(&super::sql(
         "INSERT INTO api_keys (id, account_id, key_hash, prefix) VALUES (?, ?, ?, ?) RETURNING id, prefix, created_at",
@@ -25,10 +25,10 @@ pub async fn create_api_key(
     .fetch_one(pool)
     .await?;
 
-    Ok(ApiKeyWithSecret {
+    Ok(ApiKeyWithBearerToken {
         id: row.get("id"),
         prefix: row.get("prefix"),
-        secret: raw_key.to_string(),
+        bearer_token: raw_key.to_string(),
         created_at: row.get("created_at"),
     })
 }

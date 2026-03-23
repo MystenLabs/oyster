@@ -291,9 +291,9 @@ async fn cmd_create_api_key(client: &OysterClient, out: &Output) -> Result<(), C
         println!("API key created:");
         println!("  id:      {}", k.id);
         println!("  prefix:  {}", k.prefix);
-        println!("  secret:  {}", k.secret);
+        println!("  bearer_token:  {}", k.bearer_token);
         println!();
-        println!("Save this secret — it cannot be retrieved again.");
+        println!("Save this bearer token — it cannot be retrieved again.");
     });
     Ok(())
 }

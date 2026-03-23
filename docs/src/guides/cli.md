@@ -137,9 +137,9 @@ Output:
 API key created:
   id:      a1b2c3d4-e5f6-7890-abcd-ef1234567890
   prefix:  a1b2c3d4
-  secret:  a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
+  bearer_token:  a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
 
-Save this secret — it cannot be retrieved again.
+Save this bearer token — it cannot be retrieved again.
 ```
 
 ### Revoke an API Key

@@ -51,15 +51,15 @@ pub struct AccessKeyWithSecret {
     pub created_at: String,
 }
 
-/// A newly created API key, including the plaintext secret (shown only once).
+/// A newly created API key, including the Bearer token (shown only once).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct ApiKeyWithSecret {
+pub struct ApiKeyWithBearerToken {
     /// Unique identifier.
     pub id: String,
     /// First 8 characters of the raw key.
     pub prefix: String,
-    /// The plaintext API key secret.
-    pub secret: String,
+    /// The Bearer token (shown only once).
+    pub bearer_token: String,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -165,8 +165,8 @@ pub struct StoreBlobResponse {
 pub struct CreateAccountResponse {
     /// The new account ID.
     pub account_id: AccountId,
-    /// The initial API key (with secret).
-    pub api_key: ApiKeyWithSecret,
+    /// The initial API key (with bearer token).
+    pub api_key: ApiKeyWithBearerToken,
 }
 
 /// Generic error response body.

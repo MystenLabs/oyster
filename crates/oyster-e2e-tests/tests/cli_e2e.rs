@@ -38,7 +38,10 @@ async fn create_test_account(app: &Router) -> (String, String) {
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, axum::http::StatusCode::CREATED);
     let account_id = body["account_id"].as_str().unwrap().to_string();
-    let secret = body["api_key"]["secret"].as_str().unwrap().to_string();
+    let secret = body["api_key"]["bearer_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
     (account_id, secret)
 }
 
@@ -257,7 +260,7 @@ fn cli_e2e_full_lifecycle() {
         let key: Value = serde_json::from_slice(&output.stdout).expect("parse create-api-key JSON");
         assert!(key["id"].as_str().is_some());
         assert!(key["prefix"].as_str().is_some());
-        assert!(key["secret"].as_str().is_some());
+        assert!(key["bearer_token"].as_str().is_some());
 
         // 9. wallet
         eprintln!("[cli_e2e] 9/10 wallet");

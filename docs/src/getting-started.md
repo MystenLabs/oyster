@@ -153,12 +153,12 @@ Response:
 {
   "id": "key-uuid-here",
   "prefix": "a1b2c3d4",
-  "secret": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
+  "bearer_token": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
   "created_at": "2025-01-15T10:32:00Z"
 }
 ```
 
-> **Important:** The `secret` field is only shown once. Save it immediately.
+> **Important:** The `bearer_token` field is only shown once. Save it immediately.
 
 ## Set Up S3 Access Keys
 
