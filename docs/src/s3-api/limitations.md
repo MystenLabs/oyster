@@ -23,7 +23,7 @@ what's different from a full AWS S3 deployment.
 | Bucket Policies | Not supported | |
 | ACLs | Not supported | |
 | CORS | Not supported | |
-| Server-Side Encryption | Not supported | Data secured by Walrus network |
+| Server-Side Encryption | Not supported | Data is stored unencrypted |
 | Object Tagging | Not supported | |
 | Custom Metadata Headers | Not supported | Only Content-Type is stored |
 | Website Hosting | Not supported | |
