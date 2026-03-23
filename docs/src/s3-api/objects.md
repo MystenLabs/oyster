@@ -1,3 +1,268 @@
 # Object Operations
 
-*Coming soon.*
+All write and delete operations require S3 authentication (SigV4). Read
+operations (GetObject, HeadObject) do not require authentication. See
+[S3 Setup](setup.md) for configuration.
+
+## PutObject
+
+Uploads an object to a bucket. If an object with the same key already
+exists, it is replaced.
+
+```bash
+aws --profile oyster s3api put-object \
+  --bucket my-bucket \
+  --key hello.txt \
+  --body hello.txt
+```
+
+**Response:**
+
+```json
+{
+    "ETag": "\"9a0364b9e99bb480dd25e1f0284c8555\""
+}
+```
+
+The ETag is the MD5 digest of the uploaded content.
+
+### Setting Content-Type
+
+```bash
+aws --profile oyster s3api put-object \
+  --bucket my-bucket \
+  --key image.png \
+  --body photo.png \
+  --content-type "image/png"
+```
+
+If `--content-type` is omitted, it defaults to `application/octet-stream`.
+
+### Key Behavior
+
+- **Overwrite:** Uploading to an existing key replaces the object
+- **Expiration:** Objects expire after 30 days by default (automatically
+  renewed by Oyster's extension service)
+- **Content-addressed:** Identical content produces the same blob ID
+  internally, enabling deduplication
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
+
+## GetObject
+
+Downloads an object's contents.
+
+```bash
+aws --profile oyster s3api get-object \
+  --bucket my-bucket \
+  --key hello.txt \
+  downloaded.txt
+```
+
+**Response metadata:**
+
+```json
+{
+    "ContentLength": 14,
+    "ContentType": "text/plain",
+    "ETag": "\"9a0364b9e99bb480dd25e1f0284c8555\"",
+    "LastModified": "2025-01-15T10:31:00Z"
+}
+```
+
+The file contents are written to the output path (`downloaded.txt` in this
+example).
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
+| `NoSuchKey` | Object key doesn't exist |
+
+## HeadObject
+
+Retrieves object metadata without downloading the contents. Useful for
+checking if an object exists or reading its size and content type.
+
+```bash
+aws --profile oyster s3api head-object \
+  --bucket my-bucket \
+  --key hello.txt
+```
+
+**Response:**
+
+```json
+{
+    "ContentLength": 14,
+    "ContentType": "text/plain",
+    "ETag": "\"9a0364b9e99bb480dd25e1f0284c8555\"",
+    "LastModified": "2025-01-15T10:31:00Z"
+}
+```
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
+| `NoSuchKey` | Object key doesn't exist |
+
+## DeleteObject
+
+Deletes an object from a bucket.
+
+```bash
+aws --profile oyster s3api delete-object \
+  --bucket my-bucket \
+  --key hello.txt
+```
+
+Returns no output on success.
+
+This operation is **idempotent** — deleting a key that doesn't exist still
+returns success, matching standard S3 behavior.
+
+Deletion is **reference-counted**: the underlying blob data is only removed
+from storage when no other keys reference the same content.
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
+
+## ListObjectsV2
+
+Lists objects in a bucket with optional filtering and pagination.
+
+### Basic Listing
+
+```bash
+aws --profile oyster s3api list-objects-v2 --bucket my-bucket
+```
+
+**Response:**
+
+```json
+{
+    "Name": "my-bucket",
+    "Contents": [
+        {
+            "Key": "hello.txt",
+            "Size": 14,
+            "ETag": "\"9a0364b9e99bb480...\"",
+            "LastModified": "2025-01-15T10:31:00Z",
+            "StorageClass": "STANDARD"
+        },
+        {
+            "Key": "images/photo.png",
+            "Size": 204800,
+            "ETag": "\"d41d8cd98f00b204...\"",
+            "LastModified": "2025-01-15T11:00:00Z",
+            "StorageClass": "STANDARD"
+        }
+    ],
+    "KeyCount": 2,
+    "MaxKeys": 1000,
+    "IsTruncated": false
+}
+```
+
+### Filtering by Prefix
+
+List only objects under a specific "folder":
+
+```bash
+aws --profile oyster s3api list-objects-v2 \
+  --bucket my-bucket \
+  --prefix "images/"
+```
+
+### Simulating Folders with Delimiter
+
+Use `--delimiter "/"` to group objects into virtual folders:
+
+```bash
+aws --profile oyster s3api list-objects-v2 \
+  --bucket my-bucket \
+  --delimiter "/"
+```
+
+**Response:**
+
+```json
+{
+    "Name": "my-bucket",
+    "Contents": [
+        {
+            "Key": "hello.txt",
+            "Size": 14,
+            "ETag": "\"9a0364b9e99bb480...\"",
+            "LastModified": "2025-01-15T10:31:00Z",
+            "StorageClass": "STANDARD"
+        }
+    ],
+    "CommonPrefixes": [
+        {
+            "Prefix": "images/"
+        }
+    ],
+    "KeyCount": 2,
+    "MaxKeys": 1000,
+    "Delimiter": "/",
+    "IsTruncated": false
+}
+```
+
+Objects directly at the root level appear in `Contents`, while "folders"
+(key prefixes before the delimiter) appear in `CommonPrefixes`.
+
+### Combining Prefix and Delimiter
+
+List the contents of a specific "folder":
+
+```bash
+aws --profile oyster s3api list-objects-v2 \
+  --bucket my-bucket \
+  --prefix "images/" \
+  --delimiter "/"
+```
+
+### Pagination
+
+Limit results and paginate through large listings:
+
+```bash
+# First page
+aws --profile oyster s3api list-objects-v2 \
+  --bucket my-bucket \
+  --max-keys 10
+
+# Next page (using NextContinuationToken from previous response)
+aws --profile oyster s3api list-objects-v2 \
+  --bucket my-bucket \
+  --max-keys 10 \
+  --starting-token "last-key-from-previous-page"
+```
+
+### Supported Parameters
+
+| Parameter | AWS CLI Flag | Description |
+|-----------|--------------|-------------|
+| Prefix | `--prefix` | Filter keys that start with this string |
+| Delimiter | `--delimiter` | Group keys by this separator (e.g., `/`) |
+| MaxKeys | `--max-keys` | Max objects to return (default: 1000) |
+| StartAfter | `--start-after` | Return keys after this value (lexicographic) |
+| ContinuationToken | `--starting-token` | Continue from a previous response |
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
