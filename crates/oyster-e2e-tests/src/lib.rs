@@ -16,11 +16,12 @@ use pearl::{
     auth::check_service_secret,
     grpc::{PearlService, proto::pearl_server::PearlServer},
 };
-use sui_sdk::SuiClientBuilder;
+use sui_sdk::{SuiClientBuilder, rpc_types::SuiTransactionBlockResponseOptions};
 use sui_types::{
     base_types::SuiAddress,
     programmable_transaction_builder::ProgrammableTransactionBuilder,
     transaction::TransactionData,
+    transaction_driver_types::ExecuteTransactionRequestType,
 };
 use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
@@ -345,13 +346,33 @@ async fn fund_with_wal(
     );
 
     let signed = wallet.sign_transaction(&tx_data).await;
-    #[allow(deprecated)]
-    wallet
-        .execute_transaction_may_fail(signed)
+    sui_client
+        .quorum_driver_api()
+        .execute_transaction_block(
+            signed,
+            SuiTransactionBlockResponseOptions::new().with_effects(),
+            Some(ExecuteTransactionRequestType::WaitForEffectsCert),
+        )
         .await
         .expect("execute WAL transfer to operator");
 
-    tracing::info!("funded {recipient} with {amount} WAL");
+    // Poll until the recipient's WAL coins are visible on the fullnode.
+    for _ in 0..100 {
+        let balances = sui_client
+            .coin_read_api()
+            .get_all_balances(recipient)
+            .await
+            .unwrap_or_default();
+        if balances
+            .iter()
+            .any(|b| b.coin_type != "0x2::sui::SUI" && b.total_balance > 0)
+        {
+            tracing::info!("funded {recipient} with {amount} WAL");
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    panic!("WAL coins never became visible on fullnode for {recipient}");
 }
 
 /// Start Pearl's gRPC server in-process on a random port and return a connected PearlConnection.
