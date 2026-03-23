@@ -7,7 +7,6 @@ use sui_sdk::{
 use sui_types::{
     base_types::{ObjectID, SuiAddress},
     transaction::{Transaction, TransactionData},
-    transaction_driver_types::ExecuteTransactionRequestType,
 };
 use walrus_sui::client::{SuiReadClient, contract_config::ContractConfig};
 use walrus_utils::backoff::ExponentialBackoffConfig;
@@ -63,7 +62,7 @@ pub async fn sign_and_submit(
             SuiTransactionBlockResponseOptions::new()
                 .with_effects()
                 .with_object_changes(),
-            Some(ExecuteTransactionRequestType::WaitForEffectsCert),
+            None,
         )
         .await;
 

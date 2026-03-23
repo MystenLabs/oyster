@@ -357,7 +357,9 @@ async fn fund_with_wal(
         .expect("execute WAL transfer to operator");
 
     // Poll until the recipient's WAL coins are visible on the fullnode.
-    for _ in 0..100 {
+    // Poll until the recipient's WAL coins are visible on the fullnode.
+    // Use a generous timeout (60s) since parallel tests share a single Sui fullnode.
+    for _ in 0..300 {
         let balances = sui_client
             .coin_read_api()
             .get_all_balances(recipient)
@@ -370,7 +372,7 @@ async fn fund_with_wal(
             tracing::info!("funded {recipient} with {amount} WAL");
             return;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     panic!("WAL coins never became visible on fullnode for {recipient}");
 }
