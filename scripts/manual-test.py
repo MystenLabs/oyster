@@ -82,14 +82,11 @@ def scenario_1(base, auth):
         fail(f"GET /account/wallet returned {status}")
         return False
     data = json_body(body)
-    if not data.get("provisioned"):
-        fail("wallet not provisioned")
-        return False
-    wallet = data.get("wallet")
-    if not wallet or not wallet.get("address"):
+    address = data.get("address")
+    if not address:
         fail("no wallet address returned")
         return False
-    ok(f"wallet provisioned, address={wallet['address']}")
+    ok(f"wallet address={address}")
     return True
 
 
@@ -106,9 +103,9 @@ def scenario_2(base, auth, ctx):
         fail(f"POST /buckets returned {status} (expected 201)")
         return False
     data = json_body(body)
-    bucket_id = data["id"]
-    ctx["bucket_id"] = bucket_id
-    ok(f"created bucket {bucket_id}")
+    bucket_name = data["name"]
+    ctx["bucket_name"] = bucket_name
+    ok(f"created bucket '{bucket_name}'")
 
     # List buckets
     status, _, body = request("GET", f"{base}/api/v1/buckets", headers=auth)
@@ -117,13 +114,13 @@ def scenario_2(base, auth, ctx):
         passed = False
     else:
         items = json_body(body).get("data", [])
-        if not any(b["id"] == bucket_id for b in items):
+        if not any(b["name"] == bucket_name for b in items):
             fail("new bucket not found in listing")
             passed = False
         else:
             ok("bucket appears in listing")
 
-    # Duplicate name → 409
+    # Duplicate name -> 409
     status, _, _ = request(
         "POST", f"{base}/api/v1/buckets", body={"name": "test-bucket"}, headers=auth
     )
@@ -140,39 +137,39 @@ def scenario_3(base, auth, ctx):
     """Blob Store + Read."""
     heading(3, "Blob Store + Read")
     passed = True
-    bucket_id = ctx["bucket_id"]
+    bucket = ctx["bucket_name"]
+    key = "test-blob.txt"
     payload = b"hello oyster"
 
     # Store blob
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
-        "PUT", f"{base}/api/v1/buckets/{bucket_id}/blobs", body=payload, headers=hdrs
+        "PUT", f"{base}/api/v1/buckets/{bucket}/blobs/{key}", body=payload, headers=hdrs
     )
     if status != 201:
         fail(f"PUT blob returned {status} (expected 201)")
         return False
     data = json_body(body)
-    object_id = data["object_id"]
     blob_id = data["blob_id"]
-    ctx["object_id"] = object_id
+    ctx["key"] = key
     ctx["blob_id"] = blob_id
-    ok(f"stored blob object_id={object_id} blob_id={blob_id}")
+    ok(f"stored blob key={key} blob_id={blob_id}")
 
-    # Read by object_id (no auth)
-    status, _, body = request("GET", f"{base}/api/v1/blobs/{object_id}")
+    # Read by bucket/key (no auth)
+    status, _, body = request("GET", f"{base}/api/v1/buckets/{bucket}/blobs/{key}")
     if status != 200:
-        fail(f"GET /blobs/{{object_id}} returned {status}")
+        fail(f"GET /buckets/{bucket}/blobs/{key} returned {status}")
         passed = False
     elif body != payload:
         fail(f"body mismatch: got {body!r}")
         passed = False
     else:
-        ok("read by object_id matches")
+        ok("read by key matches")
 
     # Read by blob_id (no auth)
     status, _, body = request("GET", f"{base}/api/v1/blobs/by-blob-id/{blob_id}")
     if status != 200:
-        fail(f"GET /blobs/by-blob-id/{{blob_id}} returned {status}")
+        fail(f"GET /blobs/by-blob-id/{blob_id} returned {status}")
         passed = False
     elif body != payload:
         fail(f"body mismatch: got {body!r}")
@@ -187,11 +184,11 @@ def scenario_4(base, auth, ctx):
     """Blob Listing."""
     heading(4, "Blob Listing")
     passed = True
-    bucket_id = ctx["bucket_id"]
+    bucket = ctx["bucket_name"]
 
-    # List — should have 1 blob from scenario 3
+    # List -- should have 1 blob from scenario 3
     status, _, body = request(
-        "GET", f"{base}/api/v1/buckets/{bucket_id}/blobs", headers=auth
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs", headers=auth
     )
     if status != 200:
         fail(f"GET blobs listing returned {status}")
@@ -204,22 +201,23 @@ def scenario_4(base, auth, ctx):
         ok(f"listing shows {len(items)} blob(s)")
 
     # Store a second blob
+    key2 = "second-blob.txt"
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
         "PUT",
-        f"{base}/api/v1/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{key2}",
         body=b"second blob",
         headers=hdrs,
     )
     if status != 201:
         fail(f"PUT second blob returned {status}")
         return False
-    ctx["object_id_2"] = json_body(body)["object_id"]
+    ctx["key_2"] = key2
     ok("stored second blob")
 
-    # List again — should have 2
+    # List again -- should have 2
     status, _, body = request(
-        "GET", f"{base}/api/v1/buckets/{bucket_id}/blobs", headers=auth
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs", headers=auth
     )
     if status != 200:
         fail(f"GET blobs listing returned {status}")
@@ -238,14 +236,15 @@ def scenario_4(base, auth, ctx):
 def scenario_5(base, auth, ctx):
     """Content-Addressed Dedup."""
     heading(5, "Content-Addressed Dedup")
-    bucket_id = ctx["bucket_id"]
+    bucket = ctx["bucket_name"]
     original_blob_id = ctx["blob_id"]
 
-    # Upload identical content as scenario 3
+    # Upload identical content as scenario 3 under a different key
+    dedup_key = "dedup-blob.txt"
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, body = request(
         "PUT",
-        f"{base}/api/v1/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{dedup_key}",
         body=b"hello oyster",
         headers=hdrs,
     )
@@ -253,29 +252,26 @@ def scenario_5(base, auth, ctx):
         fail(f"PUT dedup blob returned {status}")
         return False
     data = json_body(body)
-    new_object_id = data["object_id"]
     new_blob_id = data["blob_id"]
 
     if new_blob_id != original_blob_id:
         fail(f"blob_id differs: {new_blob_id} != {original_blob_id}")
         return False
-    if new_object_id == ctx["object_id"]:
-        fail("object_id should differ for dedup entry")
-        return False
 
-    ctx["object_id_dedup"] = new_object_id
-    ok(f"same blob_id, different object_id={new_object_id}")
+    ctx["dedup_key"] = dedup_key
+    ok(f"same blob_id for different key '{dedup_key}'")
     return True
 
 
 def scenario_6(base, auth, ctx):
     """Blob Metadata Update."""
     heading(6, "Blob Metadata Update")
-    object_id = ctx["object_id"]
+    bucket = ctx["bucket_name"]
+    key = ctx["key"]
 
     status, _, body = request(
         "PATCH",
-        f"{base}/api/v1/blobs/{object_id}/metadata",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{key}/metadata",
         body={"content_type": "text/markdown"},
         headers=auth,
     )
@@ -294,15 +290,18 @@ def scenario_7(base, auth, ctx):
     """Blob Delete."""
     heading(7, "Blob Delete")
     passed = True
-    object_id = ctx["object_id"]
+    bucket = ctx["bucket_name"]
+    key = ctx["key"]
 
-    status, _, _ = request("DELETE", f"{base}/api/v1/blobs/{object_id}", headers=auth)
+    status, _, _ = request(
+        "DELETE", f"{base}/api/v1/buckets/{bucket}/blobs/{key}", headers=auth
+    )
     if status != 204:
         fail(f"DELETE blob returned {status} (expected 204)")
         return False
     ok("blob deleted")
 
-    status, _, _ = request("GET", f"{base}/api/v1/blobs/{object_id}")
+    status, _, _ = request("GET", f"{base}/api/v1/buckets/{bucket}/blobs/{key}")
     if status != 404:
         fail(f"GET deleted blob returned {status} (expected 404)")
         passed = False
@@ -315,13 +314,13 @@ def scenario_7(base, auth, ctx):
 def scenario_8(base, auth, ctx):
     """Bucket Delete (cascade)."""
     heading(8, "Bucket Delete (cascade)")
-    bucket_id = ctx["bucket_id"]
+    bucket = ctx["bucket_name"]
 
     # Store a fresh blob
     hdrs = {**auth, "Content-Type": "text/plain"}
     status, _, _ = request(
         "PUT",
-        f"{base}/api/v1/buckets/{bucket_id}/blobs",
+        f"{base}/api/v1/buckets/{bucket}/blobs/cascade-test.txt",
         body=b"about to be cascaded",
         headers=hdrs,
     )
@@ -331,7 +330,9 @@ def scenario_8(base, auth, ctx):
     ok("stored fresh blob for cascade test")
 
     # Delete bucket
-    status, _, _ = request("DELETE", f"{base}/buckets/{bucket_id}", headers=auth)
+    status, _, _ = request(
+        "DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth
+    )
     if status != 204:
         fail(f"DELETE bucket returned {status} (expected 204)")
         return False
@@ -343,7 +344,7 @@ def scenario_8(base, auth, ctx):
         fail(f"GET /buckets returned {status}")
         return False
     items = json_body(body).get("data", [])
-    if any(b["id"] == bucket_id for b in items):
+    if any(b["name"] == bucket for b in items):
         fail("deleted bucket still appears in listing")
         return False
     ok("bucket no longer in listing")
@@ -361,7 +362,7 @@ def scenario_9(base, auth, ctx):
         fail(f"POST /account/api-keys returned {status}")
         return False
     data = json_body(body)
-    new_key = data["secret"]
+    new_key = data["bearer_token"]
     key_id = data["id"]
     ok(f"created API key id={key_id}")
 
@@ -399,23 +400,28 @@ def scenario_10(base, auth):
     """Error Cases."""
     heading(10, "Error Cases")
     passed = True
-    fake_id = str(uuid.uuid4())
 
     # GET non-existent blob
-    status, _, _ = request("GET", f"{base}/api/v1/blobs/{fake_id}")
+    status, _, _ = request(
+        "GET", f"{base}/api/v1/buckets/nonexistent-bucket/blobs/fake-key"
+    )
     if status != 404:
-        fail(f"GET /blobs/{{random}} returned {status} (expected 404)")
+        fail(f"GET nonexistent blob returned {status} (expected 404)")
         passed = False
     else:
-        ok("GET non-existent blob → 404")
+        ok("GET non-existent blob -> 404")
 
     # DELETE non-existent blob
-    status, _, _ = request("DELETE", f"{base}/api/v1/blobs/{fake_id}", headers=auth)
+    status, _, _ = request(
+        "DELETE",
+        f"{base}/api/v1/buckets/nonexistent-bucket/blobs/fake-key",
+        headers=auth,
+    )
     if status != 404:
-        fail(f"DELETE /blobs/{{random}} returned {status} (expected 404)")
+        fail(f"DELETE nonexistent blob returned {status} (expected 404)")
         passed = False
     else:
-        ok("DELETE non-existent blob → 404")
+        ok("DELETE non-existent blob -> 404")
 
     # No auth header
     status, _, _ = request("GET", f"{base}/api/v1/buckets")
@@ -423,7 +429,7 @@ def scenario_10(base, auth):
         fail(f"GET /buckets without auth returned {status} (expected 401)")
         passed = False
     else:
-        ok("missing auth → 401")
+        ok("missing auth -> 401")
 
     return passed
 
