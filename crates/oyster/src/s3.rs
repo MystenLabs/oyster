@@ -71,6 +71,61 @@ fn etag_from_md5(md5: &str) -> ETag {
     ETag::Strong(md5.to_string())
 }
 
+/// Check conditional headers (If-Match / If-None-Match) against the current ETag.
+///
+/// Returns `Ok(())` if conditions pass, or an appropriate S3 error on failure.
+fn check_conditions(
+    if_match: &Option<IfMatch>,
+    if_none_match: &Option<IfNoneMatch>,
+    current_etag: Option<&str>,
+    is_safe_method: bool,
+) -> S3Result<()> {
+    if let Some(condition) = if_match {
+        match condition {
+            ETagCondition::Any => {
+                if current_etag.is_none() {
+                    return Err(S3Error::new(S3ErrorCode::PreconditionFailed));
+                }
+            }
+            ETagCondition::ETag(etag) => match current_etag {
+                Some(current) => {
+                    if !etag.strong_cmp(&etag_from_md5(current)) {
+                        return Err(S3Error::new(S3ErrorCode::PreconditionFailed));
+                    }
+                }
+                None => {
+                    return Err(S3Error::new(S3ErrorCode::PreconditionFailed));
+                }
+            },
+        }
+    }
+    if let Some(condition) = if_none_match {
+        match condition {
+            ETagCondition::Any => {
+                if current_etag.is_some() {
+                    return if is_safe_method {
+                        Err(S3Error::new(S3ErrorCode::NotModified))
+                    } else {
+                        Err(S3Error::new(S3ErrorCode::PreconditionFailed))
+                    };
+                }
+            }
+            ETagCondition::ETag(etag) => {
+                if let Some(current) = current_etag
+                    && etag.weak_cmp(&etag_from_md5(current))
+                {
+                    return if is_safe_method {
+                        Err(S3Error::new(S3ErrorCode::NotModified))
+                    } else {
+                        Err(S3Error::new(S3ErrorCode::PreconditionFailed))
+                    };
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 impl OysterS3 {
     /// Create a new OysterS3 from an AppState.
     pub fn new(state: AppState) -> Self {
@@ -258,6 +313,16 @@ impl s3s::S3 for OysterS3 {
             .map_err(internal_error)?
             .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchBucket))?;
 
+        let existing = db::blobs::get_blob_by_key(&self.state.db, &bucket_name, &key)
+            .await
+            .map_err(internal_error)?;
+        check_conditions(
+            &req.input.if_match,
+            &req.input.if_none_match,
+            existing.as_ref().map(|m| m.md5.as_str()),
+            false,
+        )?;
+
         let md5_digest = format!("{:x}", md5::compute(&body_bytes));
 
         let result = self
@@ -313,6 +378,13 @@ impl s3s::S3 for OysterS3 {
             .map_err(internal_error)?
             .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchKey))?;
 
+        check_conditions(
+            &req.input.if_match,
+            &req.input.if_none_match,
+            Some(&metadata.md5),
+            true,
+        )?;
+
         let data = self
             .state
             .blob_store
@@ -351,6 +423,13 @@ impl s3s::S3 for OysterS3 {
             .map_err(internal_error)?
             .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchKey))?;
 
+        check_conditions(
+            &req.input.if_match,
+            &req.input.if_none_match,
+            Some(&metadata.md5),
+            true,
+        )?;
+
         Ok(S3Response::new(HeadObjectOutput {
             content_length: Some(metadata.size),
             content_type: Some(metadata.content_type),
@@ -368,6 +447,16 @@ impl s3s::S3 for OysterS3 {
         let bucket_name = &req.input.bucket;
         let key = &req.input.key;
         tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 delete_object");
+
+        let existing = db::blobs::get_blob_by_key(&self.state.db, bucket_name, key)
+            .await
+            .map_err(internal_error)?;
+        check_conditions(
+            &req.input.if_match,
+            &None,
+            existing.as_ref().map(|m| m.md5.as_str()),
+            false,
+        )?;
 
         if let Some(info) = db::blobs::delete_blob(&self.state.db, bucket_name, key, &account_id)
             .await

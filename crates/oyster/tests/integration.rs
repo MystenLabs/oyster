@@ -203,6 +203,18 @@ async fn raw_response(app: &Router, req: Request<Body>) -> (StatusCode, Vec<u8>)
     (status, bytes.to_vec())
 }
 
+/// Helper: send a request and return (StatusCode, headers, raw bytes).
+async fn full_response(
+    app: &Router,
+    req: Request<Body>,
+) -> (StatusCode, axum::http::HeaderMap, Vec<u8>) {
+    let resp = app.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let headers = resp.headers().clone();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, headers, bytes.to_vec())
+}
+
 /// Helper: create an account via the debug endpoint, returns (account_id, api_key_secret).
 async fn create_test_account(app: &Router) -> (String, String) {
     let req = Request::post("/api/v1/debug/create-account")
@@ -1696,4 +1708,416 @@ async fn s3_list_objects_v2_with_delimiter() {
     // No top-level objects (all keys contain the delimiter)
     let contents = resp.output.contents.unwrap();
     assert!(contents.is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// JSON API conditional request tests (If-Match / If-None-Match)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn json_conditional_requests() {
+    let (app, _tmp) = test_app().await;
+    let (_, key) = create_test_account(&app).await;
+    let bucket_name = create_test_bucket(&app, &key, "cond-test").await;
+
+    // Store a blob and extract md5
+    let req = Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "text/plain")
+        .body(Body::from(b"conditional content".to_vec()))
+        .unwrap();
+    let (status, body) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    let md5 = body["md5"].as_str().unwrap().to_string();
+
+    // 1. GET with If-Match: matching → 200, verify ETag header
+    let (status, headers, _body) = full_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("if-match", format!("\"{md5}\""))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let etag = headers.get("etag").unwrap().to_str().unwrap();
+    assert_eq!(etag, format!("\"{md5}\""));
+
+    // 2. GET with If-Match: wrong → 412
+    let (status, _, _) = full_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("if-match", "\"wrong\"")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    // 3. GET with If-None-Match: matching → 304
+    let (status, _, _) = full_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("if-none-match", format!("\"{md5}\""))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_MODIFIED);
+
+    // 4. GET with If-None-Match: wrong → 200
+    let (status, _, _) = full_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("if-none-match", "\"wrong\"")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // 5. PUT with If-None-Match: * on existing key → 412
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .header("if-none-match", "*")
+            .body(Body::from(b"new data".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    // 6. PUT with If-None-Match: * on new key → 201
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/new-key.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .header("if-none-match", "*")
+            .body(Body::from(b"fresh data".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // 7. PUT with If-Match: matching → 201 (overwrite)
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .header("if-match", format!("\"{md5}\""))
+            .body(Body::from(b"overwrite data".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // 8. PUT with If-Match: wrong → 412
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .header("if-match", "\"wrong\"")
+            .body(Body::from(b"should fail".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    // Get the new md5 after overwrite for delete tests
+    let req = Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+        .body(Body::empty())
+        .unwrap();
+    let (_, headers, _) = full_response(&app, req).await;
+    let new_etag = headers.get("etag").unwrap().to_str().unwrap();
+    let new_md5 = new_etag.trim_matches('"');
+
+    // 9. DELETE with If-Match: wrong → 412
+    let (status, _) = json_response(
+        &app,
+        Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("if-match", "\"wrong\"")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+
+    // 10. DELETE with If-Match: matching → 204
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/cond.txt"))
+                .header("authorization", format!("Bearer {key}"))
+                .header("if-match", format!("\"{new_md5}\""))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+}
+
+// ---------------------------------------------------------------------------
+// S3 conditional request tests (If-Match / If-None-Match)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn s3_conditional_requests() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "cond".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // Put an object and capture ETag
+    let body = StreamingBlob::from(s3s::Body::from(b"hello cond".to_vec()));
+    let put_resp = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                body: Some(body),
+                content_type: Some("text/plain".into()),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    let etag = put_resp.output.e_tag.unwrap();
+    let wrong_etag = ETag::Strong("0000000000000000000000000000dead".into());
+
+    // 1. get_object with if_match: matching → OK
+    s3.get_object(s3_req(
+        GetObjectInput {
+            bucket: "cond".into(),
+            key: "obj.txt".into(),
+            if_match: Some(ETagCondition::ETag(etag.clone())),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 2. get_object with if_match: wrong → PreconditionFailed
+    let err = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_match: Some(ETagCondition::ETag(wrong_etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::PreconditionFailed);
+
+    // 3. get_object with if_none_match: matching → NotModified
+    let err = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_none_match: Some(ETagCondition::ETag(etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NotModified);
+
+    // 4. get_object with if_none_match: wrong → OK
+    s3.get_object(s3_req(
+        GetObjectInput {
+            bucket: "cond".into(),
+            key: "obj.txt".into(),
+            if_none_match: Some(ETagCondition::ETag(wrong_etag.clone())),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 5. head_object with if_match: matching → OK
+    s3.head_object(s3_req(
+        HeadObjectInput {
+            bucket: "cond".into(),
+            key: "obj.txt".into(),
+            if_match: Some(ETagCondition::ETag(etag.clone())),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 6. head_object with if_match: wrong → PreconditionFailed
+    let err = s3
+        .head_object(s3_req(
+            HeadObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_match: Some(ETagCondition::ETag(wrong_etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::PreconditionFailed);
+
+    // 7. head_object with if_none_match: matching → NotModified
+    let err = s3
+        .head_object(s3_req(
+            HeadObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_none_match: Some(ETagCondition::ETag(etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NotModified);
+
+    // 8. put_object with if_match: matching → OK (overwrite)
+    let body = StreamingBlob::from(s3s::Body::from(b"overwritten".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "cond".into(),
+            key: "obj.txt".into(),
+            body: Some(body),
+            if_match: Some(ETagCondition::ETag(etag.clone())),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 9. put_object with if_match: wrong → PreconditionFailed
+    let body = StreamingBlob::from(s3s::Body::from(b"should fail".to_vec()));
+    let err = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                body: Some(body),
+                if_match: Some(ETagCondition::ETag(wrong_etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::PreconditionFailed);
+
+    // 10. put_object with if_none_match: * on existing key → PreconditionFailed
+    let body = StreamingBlob::from(s3s::Body::from(b"should fail".to_vec()));
+    let err = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                body: Some(body),
+                if_none_match: Some(ETagCondition::Any),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::PreconditionFailed);
+
+    // 11. put_object with if_none_match: * on new key → OK
+    let body = StreamingBlob::from(s3s::Body::from(b"brand new".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "cond".into(),
+            key: "new-obj.txt".into(),
+            body: Some(body),
+            if_none_match: Some(ETagCondition::Any),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 12. delete_object with if_match: wrong → PreconditionFailed
+    let err = s3
+        .delete_object(s3_req(
+            DeleteObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_match: Some(ETagCondition::ETag(wrong_etag.clone())),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::PreconditionFailed);
+
+    // 13. delete_object with if_match: matching → OK
+    // First get the current etag after overwrite
+    let head = s3
+        .head_object(s3_req(
+            HeadObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    let current_etag = head.output.e_tag.unwrap();
+
+    s3.delete_object(s3_req(
+        DeleteObjectInput {
+            bucket: "cond".into(),
+            key: "obj.txt".into(),
+            if_match: Some(ETagCondition::ETag(current_etag)),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // 14. get_object with if_match on missing key → PreconditionFailed (not NoSuchKey)
+    // After deleting, the key doesn't exist. With if_match, we should get NoSuchKey
+    // because the key lookup happens before the condition check.
+    let err = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "cond".into(),
+                key: "obj.txt".into(),
+                if_match: Some(ETagCondition::Any),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchKey);
 }

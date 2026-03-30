@@ -27,6 +27,12 @@ pub enum AppError {
     /// Request body exceeds size limit (413).
     #[error("payload too large")]
     PayloadTooLarge,
+    /// Precondition failed — conditional header mismatch (412).
+    #[error("precondition failed")]
+    PreconditionFailed,
+    /// Not modified — conditional GET/HEAD matched (304).
+    #[error("not modified")]
+    NotModified,
     /// Unexpected internal error (500).
     #[error("internal error: {0}")]
     Internal(String),
@@ -40,6 +46,10 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        // 304 Not Modified must have no body per HTTP spec.
+        if matches!(self, AppError::NotModified) {
+            return StatusCode::NOT_MODIFIED.into_response();
+        }
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
@@ -48,6 +58,8 @@ impl IntoResponse for AppError {
             AppError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             AppError::NotImplemented => (StatusCode::NOT_IMPLEMENTED, self.to_string()),
             AppError::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
+            AppError::PreconditionFailed => (StatusCode::PRECONDITION_FAILED, self.to_string()),
+            AppError::NotModified => unreachable!(),
             AppError::Internal(e) => {
                 tracing::error!("internal error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())

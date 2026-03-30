@@ -26,6 +26,56 @@ use crate::{
 const MAX_BLOB_SIZE: usize = 1_073_741_824; // 1 GB
 const DEFAULT_DURATION_DAYS: i64 = 30;
 
+/// Check If-Match / If-None-Match headers against the current md5.
+fn check_json_conditions(
+    headers: &HeaderMap,
+    current_md5: Option<&str>,
+    is_safe_method: bool,
+) -> Result<(), AppError> {
+    if let Some(value) = headers.get("if-match") {
+        let value = value
+            .to_str()
+            .map_err(|_| AppError::BadRequest("invalid If-Match header".into()))?;
+        if value == "*" {
+            if current_md5.is_none() {
+                return Err(AppError::PreconditionFailed);
+            }
+        } else {
+            let stripped = value.trim_matches('"');
+            match current_md5 {
+                Some(current) if current == stripped => {}
+                _ => return Err(AppError::PreconditionFailed),
+            }
+        }
+    }
+    if let Some(value) = headers.get("if-none-match") {
+        let value = value
+            .to_str()
+            .map_err(|_| AppError::BadRequest("invalid If-None-Match header".into()))?;
+        if value == "*" {
+            if current_md5.is_some() {
+                return if is_safe_method {
+                    Err(AppError::NotModified)
+                } else {
+                    Err(AppError::PreconditionFailed)
+                };
+            }
+        } else {
+            let stripped = value.trim_matches('"');
+            if let Some(current) = current_md5
+                && current == stripped
+            {
+                return if is_safe_method {
+                    Err(AppError::NotModified)
+                } else {
+                    Err(AppError::PreconditionFailed)
+                };
+            }
+        }
+    }
+    Ok(())
+}
+
 #[utoipa::path(
     put,
     path = "/buckets/{bucket_name}/blobs/{key}",
@@ -50,7 +100,7 @@ pub async fn store_blob(
     Path((bucket_name, key)): Path<(String, String)>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<(StatusCode, Json<StoreBlobResponse>), AppError> {
+) -> Result<Response, AppError> {
     if body.len() > MAX_BLOB_SIZE {
         return Err(AppError::PayloadTooLarge);
     }
@@ -59,6 +109,9 @@ pub async fn store_blob(
     let _bucket = db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    let existing = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key).await?;
+    check_json_conditions(&headers, existing.as_ref().map(|m| m.md5.as_str()), false)?;
     tracing::debug!(
         "bucket {} found for account {}",
         bucket_name,
@@ -114,8 +167,10 @@ pub async fn store_blob(
     )
     .await?;
 
+    let etag = format!("\"{}\"", metadata.md5);
     Ok((
         StatusCode::CREATED,
+        [("etag", etag)],
         Json(StoreBlobResponse {
             key: metadata.key,
             blob_id: metadata.blob_id,
@@ -125,7 +180,8 @@ pub async fn store_blob(
             created_at: metadata.created_at,
             expires_at: metadata.expires_at,
         }),
-    ))
+    )
+        .into_response())
 }
 
 #[utoipa::path(
@@ -194,11 +250,14 @@ pub async fn list_blobs(
 /// Read a blob's content by bucket name and key. No authentication required.
 pub async fn read_blob(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path((bucket_name, key)): Path<(String, String)>,
 ) -> Result<Response, AppError> {
     let metadata = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key)
         .await?
         .ok_or(AppError::NotFound)?;
+
+    check_json_conditions(&headers, Some(&metadata.md5), true)?;
 
     let data = match state.blob_store.read(&BlobId(metadata.blob_id)).await {
         Ok(d) => {
@@ -217,9 +276,13 @@ pub async fn read_blob(
         }
     };
 
+    let etag = format!("\"{}\"", metadata.md5);
     Ok((
         StatusCode::OK,
-        [("content-type", metadata.content_type.as_str())],
+        [
+            ("content-type", metadata.content_type.as_str()),
+            ("etag", etag.as_str()),
+        ],
         data,
     )
         .into_response())
@@ -332,7 +395,11 @@ pub async fn delete_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
     Path((bucket_name, key)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Result<StatusCode, AppError> {
+    let existing = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key).await?;
+    check_json_conditions(&headers, existing.as_ref().map(|m| m.md5.as_str()), false)?;
+
     let info = db::blobs::delete_blob(&state.db, &bucket_name, &key, &auth.account_id)
         .await?
         .ok_or(AppError::NotFound)?;
