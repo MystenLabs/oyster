@@ -4,7 +4,9 @@ use std::{path::PathBuf, sync::Arc};
 
 use clap::{Parser, Subcommand};
 use oyster::{
+    AppId,
     AppState,
+    app_auth,
     blob_store::LocalBlobStore,
     config::Config,
     db,
@@ -35,6 +37,34 @@ enum Command {
     Serve,
     /// Run the blob extension background worker
     Extend,
+    /// Manage apps and JWTs.
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppCommand {
+    /// Create a new app and print its UUID.
+    New {
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        contact_email: String,
+    },
+    /// Generate a 24-hour JWT for an existing app.
+    Jwt {
+        /// The app ID (UUID).
+        app_id: AppId,
+    },
+    /// List all registered apps.
+    List,
+    /// Revoke a JWT by adding its JTI to the blacklist.
+    RevokeJwt {
+        /// The JTI (JWT ID) to revoke.
+        jti: String,
+    },
 }
 
 #[tokio::main]
@@ -47,9 +77,20 @@ async fn main() {
     tracing_subscriber::fmt::init();
 
     let cli = Cli::parse();
+    let jwt_secret = cli
+        .oyster_jwt_secret_file
+        .as_ref()
+        .map(|p| read_secret_file(p.clone()))
+        .or_else(|| std::env::var("OYSTER_JWT_SECRET").ok());
+
+    if let Some(Command::App { command }) = cli.command {
+        handle_app_command(command, jwt_secret).await;
+        return;
+    }
+
     let overrides = oyster::config::SecretOverrides {
         pearl_service_secret: cli.pearl_service_secret_file.map(read_secret_file),
-        oyster_jwt_secret: cli.oyster_jwt_secret_file.map(read_secret_file),
+        oyster_jwt_secret: jwt_secret,
     };
     let config = Config::new(overrides);
 
@@ -73,6 +114,7 @@ async fn main() {
     };
 
     match cli.command.unwrap_or(Command::Serve) {
+        Command::App { .. } => unreachable!("handled above"),
         Command::Serve => {
             tracing::info!("starting oyster server on {}", config.bind_addr);
 
@@ -189,6 +231,53 @@ async fn main() {
                 webhook_client,
             )
             .await;
+        }
+    }
+}
+
+async fn handle_app_command(command: AppCommand, jwt_secret: Option<String>) {
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:oyster.db?mode=rwc".to_string());
+    let pool = db::create_pool(&database_url)
+        .await
+        .expect("failed to create database pool");
+
+    match command {
+        AppCommand::New {
+            name,
+            contact_email,
+        } => {
+            let app = db::apps::create_app(&pool, &name, &contact_email)
+                .await
+                .expect("failed to create app");
+            println!("{}", app.id);
+        }
+        AppCommand::Jwt { app_id } => {
+            let secret = jwt_secret.expect("OYSTER_JWT_SECRET required");
+            let app = db::apps::get_app(&pool, &app_id)
+                .await
+                .expect("failed to query app");
+            let Some(_app) = app else {
+                eprintln!("app not found: {app_id}");
+                std::process::exit(1);
+            };
+            let token = app_auth::sign_jwt(&app_id, &secret).expect("failed to sign JWT");
+            println!("{token}");
+        }
+        AppCommand::List => {
+            let apps = db::apps::list_apps(&pool)
+                .await
+                .expect("failed to list apps");
+            println!("ID\tNAME\tCONTACT_EMAIL");
+            for app in apps {
+                println!("{}\t{}\t{}", app.id, app.name, app.contact_email);
+            }
+        }
+        AppCommand::RevokeJwt { jti } => {
+            let _secret = jwt_secret.expect("OYSTER_JWT_SECRET required");
+            db::jwt_blacklist::blacklist_jti(&pool, &jti, "2099-01-01 00:00:00")
+                .await
+                .expect("failed to blacklist JTI");
         }
     }
 }
