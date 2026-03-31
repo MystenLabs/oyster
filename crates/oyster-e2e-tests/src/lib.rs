@@ -162,6 +162,7 @@ impl OysterTestHarness {
             blob_extend_epochs: 1,
             extension_metrics_bind_addr: "unused".into(),
             fund_manager_webhook_url: None,
+            jwt_secret: Some("e2e-test-jwt-secret".into()),
         };
 
         let state = AppState {

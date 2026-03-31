@@ -21,6 +21,10 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     pearl_service_secret_file: Option<PathBuf>,
 
+    /// Read OYSTER_JWT_SECRET from this file instead of the environment.
+    #[arg(long, value_name = "PATH")]
+    oyster_jwt_secret_file: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -45,6 +49,7 @@ async fn main() {
     let cli = Cli::parse();
     let overrides = oyster::config::SecretOverrides {
         pearl_service_secret: cli.pearl_service_secret_file.map(read_secret_file),
+        oyster_jwt_secret: cli.oyster_jwt_secret_file.map(read_secret_file),
     };
     let config = Config::new(overrides);
 
