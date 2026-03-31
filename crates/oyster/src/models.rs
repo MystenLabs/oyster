@@ -188,6 +188,17 @@ pub struct CreateAccountResponse {
     pub api_key: ApiKeyWithBearerToken,
 }
 
+/// Response from token refresh endpoint (RFC 6749 shape).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct TokenRefreshResponse {
+    /// The new JWT.
+    pub access_token: String,
+    /// Always "Bearer".
+    pub token_type: String,
+    /// Token lifetime in seconds (86400 = 24h).
+    pub expires_in: i64,
+}
+
 /// Generic error response body.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
