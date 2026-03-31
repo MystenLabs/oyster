@@ -45,10 +45,12 @@ All errors return a JSON body with a single `error` field:
 | `200` | Success (GET, PATCH) |
 | `201` | Created (POST, PUT) |
 | `204` | No Content (DELETE) |
+| `304` | Not Modified — `If-None-Match` matched on a GET request |
 | `400` | Bad Request — invalid input or validation failure |
 | `401` | Unauthorized — missing or invalid API key |
 | `404` | Not Found — resource doesn't exist or not owned by your account |
 | `409` | Conflict — resource already exists or limit reached |
+| `412` | Precondition Failed — `If-Match` or `If-None-Match` condition not met |
 | `413` | Payload Too Large — blob exceeds 1 GB |
 | `500` | Internal Server Error |
 | `501` | Not Implemented — endpoint exists but isn't functional yet |

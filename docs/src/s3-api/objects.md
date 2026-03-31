@@ -48,11 +48,31 @@ If `--content-type` is omitted, it defaults to `application/octet-stream`.
 - **Content-addressed:** Identical content produces the same blob ID
   internally, enabling deduplication
 
+### Conditional Headers
+
+PutObject supports `If-Match` and `If-None-Match` headers for safe writes:
+
+- **`If-None-Match: *`** — upload only if the key doesn't already exist
+  (create-only semantics). Returns `412 PreconditionFailed` if the key
+  exists.
+- **`If-Match: "<etag>"`** — overwrite only if the current object's ETag
+  matches. Returns `412 PreconditionFailed` on mismatch.
+
+```bash
+# Create-only: fail if the key already exists
+aws --profile oyster s3api put-object \
+  --bucket my-bucket \
+  --key hello.txt \
+  --body hello.txt \
+  --if-none-match "*"
+```
+
 **Errors:**
 
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
+| `PreconditionFailed` | `If-Match` / `If-None-Match` condition not met |
 
 ## GetObject
 
@@ -79,12 +99,33 @@ aws --profile oyster s3api get-object \
 The file contents are written to the output path (`downloaded.txt` in this
 example).
 
+### Conditional Headers
+
+GetObject supports `If-Match` and `If-None-Match` for cache validation:
+
+- **`If-Match: "<etag>"`** — return the object only if its ETag matches.
+  Returns `412 PreconditionFailed` on mismatch.
+- **`If-None-Match: "<etag>"`** — return the object only if its ETag
+  differs. Returns `304 NotModified` if the ETag matches (useful for
+  cache validation).
+
+```bash
+# Only download if the object has changed
+aws --profile oyster s3api get-object \
+  --bucket my-bucket \
+  --key hello.txt \
+  --if-none-match '"9a0364b9e99bb480dd25e1f0284c8555"' \
+  downloaded.txt
+```
+
 **Errors:**
 
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
 | `NoSuchKey` | Object key doesn't exist |
+| `PreconditionFailed` | `If-Match` condition not met |
+| `NotModified` | `If-None-Match` matched — object unchanged (304) |
 
 ## HeadObject
 
@@ -108,12 +149,18 @@ aws --profile oyster s3api head-object \
 }
 ```
 
+HeadObject supports the same `If-Match` and `If-None-Match` conditional
+headers as [GetObject](#getobject). Returns `412 PreconditionFailed` or
+`304 NotModified` as appropriate.
+
 **Errors:**
 
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
 | `NoSuchKey` | Object key doesn't exist |
+| `PreconditionFailed` | `If-Match` condition not met |
+| `NotModified` | `If-None-Match` matched — object unchanged (304) |
 
 ## DeleteObject
 
@@ -133,11 +180,19 @@ returns success, matching standard S3 behavior.
 Deletion is **reference-counted**: the underlying blob data is only removed
 from storage when no other keys reference the same content.
 
+### Conditional Headers
+
+DeleteObject supports `If-Match` for safe deletion:
+
+- **`If-Match: "<etag>"`** — delete only if the object's ETag matches.
+  Returns `412 PreconditionFailed` on mismatch.
+
 **Errors:**
 
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
+| `PreconditionFailed` | `If-Match` condition not met |
 
 ## ListObjectsV2
 

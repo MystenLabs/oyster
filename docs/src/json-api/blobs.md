@@ -36,6 +36,8 @@ exists at that key, it is replaced.
 | Header | Default | Description |
 |--------|---------|-------------|
 | `Content-Type` | `application/octet-stream` | MIME type stored with the blob |
+| `If-Match` | — | Only overwrite if the existing blob's ETag matches (412 otherwise) |
+| `If-None-Match` | — | Set to `*` to create only if the key doesn't exist (412 otherwise) |
 
 **Request body:** Raw binary data (max **1 GB**)
 
@@ -57,6 +59,28 @@ curl -s -X PUT \
   -H "Content-Type: image/png" \
   --data-binary @photo.png \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/images/photo.png" | jq
+```
+
+**Example — create only (fail if key exists):**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: text/plain" \
+  -H "If-None-Match: *" \
+  --data-binary "Hello, Oyster!" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
+```
+
+**Example — safe overwrite (only if ETag matches):**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: text/plain" \
+  -H 'If-Match: "9a0364b9e99bb480dd25e1f0284c8555"' \
+  --data-binary "Updated content" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
 ```
 
 **Response** (`201 Created`):
@@ -83,12 +107,16 @@ curl -s -X PUT \
 | `created_at` | string | ISO 8601 timestamp |
 | `expires_at` | string or null | ISO 8601 expiration (default: 30 days) |
 
+The response includes an `ETag` header containing the quoted MD5 digest
+(e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`).
+
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
 | `401` | Missing or invalid API key |
 | `404` | Bucket not found |
+| `412` | `If-Match` or `If-None-Match` condition failed |
 | `413` | Payload exceeds 1 GB |
 
 ## Read Blob by Key
@@ -112,15 +140,34 @@ Downloads a blob's contents. **No authentication required.**
 curl -s "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 ```
 
+**Conditional headers:**
+
+| Header | Effect |
+|--------|--------|
+| `If-Match: "<etag>"` | Return the blob only if its ETag matches; otherwise `412` |
+| `If-None-Match: "<etag>"` | Return the blob only if its ETag differs; otherwise `304` |
+
+**Example — cache validation:**
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+  -H 'If-None-Match: "9a0364b9e99bb480dd25e1f0284c8555"' \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
+# Returns 304 if unchanged, 200 with body if changed
+```
+
 **Response** (`200 OK`):
 - **Body:** Raw binary blob data
 - **Content-Type:** The MIME type set during upload
+- **ETag:** Quoted MD5 digest (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`)
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
+| `304` | `If-None-Match` matched — blob has not changed |
 | `404` | Blob not found |
+| `412` | `If-Match` condition failed |
 
 ## Read Blob by Blob ID
 
@@ -282,11 +329,27 @@ when no other keys reference the same content (reference-counted deletion).
 | `bucket_name` | string | Bucket containing the blob |
 | `key` | string | Object key to delete |
 
+**Conditional headers:**
+
+| Header | Effect |
+|--------|--------|
+| `If-Match: "<etag>"` | Delete only if ETag matches; otherwise `412` |
+| `If-None-Match: "<etag>"` | Delete only if ETag differs; otherwise `412` |
+
 **Example:**
 
 ```bash
 curl -s -X DELETE \
   -H "Authorization: Bearer $API_KEY" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
+```
+
+**Example — delete only if ETag matches:**
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: Bearer $API_KEY" \
+  -H 'If-Match: "9a0364b9e99bb480dd25e1f0284c8555"' \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 ```
 
@@ -298,3 +361,4 @@ curl -s -X DELETE \
 |--------|-----------|
 | `401` | Missing or invalid API key |
 | `404` | Blob not found |
+| `412` | `If-Match` or `If-None-Match` condition failed |

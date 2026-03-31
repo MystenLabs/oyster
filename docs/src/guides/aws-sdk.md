@@ -110,6 +110,51 @@ except s3.exceptions.ClientError as e:
         raise
 ```
 
+### Conditional Requests
+
+Use `If-Match` and `If-None-Match` headers for safe writes and cache
+validation:
+
+```python
+# Create-only: fail if the key already exists
+try:
+    s3.put_object(
+        Bucket="my-bucket",
+        Key="config.json",
+        Body=b'{"version": 1}',
+        IfNoneMatch="*",
+    )
+except s3.exceptions.ClientError as e:
+    if e.response["Error"]["Code"] == "PreconditionFailed":
+        print("Key already exists — not overwritten")
+    else:
+        raise
+
+# Safe overwrite: only update if the ETag matches
+response = s3.head_object(Bucket="my-bucket", Key="config.json")
+current_etag = response["ETag"]
+
+s3.put_object(
+    Bucket="my-bucket",
+    Key="config.json",
+    Body=b'{"version": 2}',
+    IfMatch=current_etag,
+)
+
+# Cache validation: skip download if unchanged
+try:
+    s3.get_object(
+        Bucket="my-bucket",
+        Key="config.json",
+        IfNoneMatch=current_etag,
+    )
+except s3.exceptions.ClientError as e:
+    if e.response["Error"]["Code"] == "304":
+        print("Not modified — use cached copy")
+    else:
+        raise
+```
+
 ### Full Workflow
 
 ```python
@@ -273,6 +318,45 @@ try {
     throw err;
   }
 }
+```
+
+### Conditional Requests
+
+Use `IfMatch` and `IfNoneMatch` parameters for safe writes and cache
+validation:
+
+```javascript
+// Create-only: fail if the key already exists
+try {
+  await client.send(
+    new PutObjectCommand({
+      Bucket: "my-bucket",
+      Key: "config.json",
+      Body: JSON.stringify({ version: 1 }),
+      IfNoneMatch: "*",
+    })
+  );
+} catch (err) {
+  if (err.name === "PreconditionFailed") {
+    console.log("Key already exists — not overwritten");
+  } else {
+    throw err;
+  }
+}
+
+// Safe overwrite: only update if the ETag matches
+const head = await client.send(
+  new HeadObjectCommand({ Bucket: "my-bucket", Key: "config.json" })
+);
+
+await client.send(
+  new PutObjectCommand({
+    Bucket: "my-bucket",
+    Key: "config.json",
+    Body: JSON.stringify({ version: 2 }),
+    IfMatch: head.ETag,
+  })
+);
 ```
 
 ### Full Workflow

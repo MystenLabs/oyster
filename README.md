@@ -98,7 +98,8 @@ API, and `oysterd extend` runs the blob extension background worker.
 | `GET` | `/metrics` | No | Prometheus metrics |
 
 Pagination is cursor-based. Pass `?limit=N&cursor=TOKEN` to paginate; the response includes
-`next_cursor` when more pages exist.
+`next_cursor` when more pages exist. Blob endpoints support `If-Match` / `If-None-Match`
+conditional headers for cache validation and safe concurrent writes.
 
 ### Blob store implementations
 

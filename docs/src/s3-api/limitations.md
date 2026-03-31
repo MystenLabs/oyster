@@ -16,6 +16,7 @@ what's different from a full AWS S3 deployment.
 | HeadObject | Supported | |
 | DeleteObject | Supported | |
 | ListObjectsV2 | Supported | Prefix, delimiter, pagination |
+| Conditional Requests | Supported | If-Match, If-None-Match on object operations |
 | Multipart Upload | Not supported | Use single PutObject (max 1 GB) |
 | CopyObject | Not supported | Download and re-upload instead |
 | DeleteObjects (batch) | Not supported | Delete one at a time |
@@ -87,3 +88,12 @@ use any valid region string (e.g., `us-east-1`).
 ETags are always the MD5 digest of the object content, even for large
 objects. There is no multipart ETag format (since multipart upload is not
 supported).
+
+### Conditional Request Headers
+
+`If-Match` and `If-None-Match` headers are supported on PutObject,
+GetObject, HeadObject, and DeleteObject (If-Match only). These enable
+cache validation (`If-None-Match` returns 304 on GET/HEAD) and safe
+concurrent writes (`If-Match` for optimistic locking, `If-None-Match: *`
+for create-only semantics). Time-based conditionals (`If-Modified-Since`,
+`If-Unmodified-Since`) are not supported.
