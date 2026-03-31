@@ -236,7 +236,7 @@ pub async fn get_wallet(
 pub async fn debug_create_account(
     State(state): State<AppState>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let account = db::accounts::create_account(&state.db).await?;
+    let account = db::accounts::create_account(&state.db, &crate::AppId::INTERNAL).await?;
 
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);

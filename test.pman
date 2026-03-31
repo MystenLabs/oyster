@@ -1,0 +1,11 @@
+job fail {
+  once = true
+  run "exit 1"
+}
+
+job next {
+  wait {
+    after @fail
+  }
+  run "echo 'This should not run'"
+}

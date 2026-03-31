@@ -1,13 +1,30 @@
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::AccountId;
+use crate::{AccountId, AppId};
+
+/// An Oyster app — organizational trust boundary for account creation.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct App {
+    /// Unique identifier.
+    pub id: AppId,
+    /// Human-readable app name.
+    pub name: String,
+    /// Contact email for the app owner.
+    pub contact_email: String,
+    /// Whether the app is allowed to issue refresh JWTs.
+    pub allow_refresh_jwt: bool,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
 
 /// An Oyster account.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Account {
     /// Unique identifier.
     pub id: AccountId,
+    /// Owning app ID.
+    pub app_id: AppId,
     /// Human-readable account name.
     pub name: String,
     /// ISO 8601 creation timestamp.

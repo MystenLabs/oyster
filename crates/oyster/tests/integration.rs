@@ -176,7 +176,9 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
 
 /// Helper: create an account directly via DB, returns the raw API key secret.
 async fn create_test_account_via_db(pool: &db::DbPool) -> String {
-    let account = db::accounts::create_account(pool).await.unwrap();
+    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL)
+        .await
+        .unwrap();
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
@@ -1366,7 +1368,9 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool).await.unwrap();
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL)
+        .await
+        .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
         .await
         .unwrap();
