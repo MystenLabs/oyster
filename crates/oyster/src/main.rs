@@ -76,7 +76,12 @@ async fn main() {
         .install_default()
         .expect("failed to install default CryptoProvider");
 
-    tracing_subscriber::fmt::init();
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "info,s3s::ops=warn".parse().unwrap()),
+        )
+        .init();
 
     let cli = Cli::parse();
     let jwt_secret = cli
