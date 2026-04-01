@@ -373,3 +373,71 @@ fn e2e_deterministic_wallet_address() {
         );
     });
 }
+
+/// Helper: create an account via the admin (JWT) endpoint.
+async fn create_test_account_via_admin(app: &Router, jwt: &str) -> (String, String) {
+    let req = Request::post("/api/v1/accounts")
+        .header("authorization", format!("Bearer {jwt}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, body) = json_response(app, req).await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let account_id = body["account_id"].as_str().unwrap().to_string();
+    let api_key = body["api_key"]["bearer_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (account_id, api_key)
+}
+
+/// Admin-created account can store and read blobs end-to-end through real Walrus storage.
+#[test]
+fn e2e_admin_account_blob_lifecycle() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        // 1. Create an app + JWT via the harness.
+        let (_app_id, jwt) = harness.create_app_jwt("admin-e2e-app").await;
+
+        // 2. Create an account via the admin route.
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+
+        // 3. Fund the account's wallet.
+        fund_test_wallet(&harness, app, &api_key).await;
+
+        // 4. Create a bucket.
+        let bucket_id = create_test_bucket(app, &api_key, "admin-e2e-bucket").await;
+
+        // 5. Store a blob.
+        let blob_data = b"Hello from admin-created account!";
+        let blob_key = "admin-test.txt";
+        let store_req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/{blob_key}"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "text/plain")
+            .body(Body::from(blob_data.to_vec()))
+            .unwrap();
+        let (status, store_body) = json_response(app, store_req).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CREATED,
+            "store blob failed: {store_body}"
+        );
+
+        let key = store_body["key"].as_str().unwrap().to_string();
+
+        // 6. Read the blob back.
+        let (status, body) = raw_response(
+            app,
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(body, blob_data, "read blob data should match stored data");
+    });
+}

@@ -2130,3 +2130,470 @@ async fn s3_conditional_requests() {
         .unwrap_err();
     assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchKey);
 }
+
+// ---------------------------------------------------------------------------
+// Admin API (JWT-authenticated) integration tests
+// ---------------------------------------------------------------------------
+
+/// Like `test_app()` but also returns the `DbPool` for direct DB access.
+async fn test_app_with_pool() -> (Router, TempDir, db::DbPool) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        enable_debug_endpoints: true,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        walrus_aggregator_url: None,
+        walrus_default_epochs: 5,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        blob_extend_interval_secs: 3600,
+        blob_extend_lookahead_days: 7,
+        blob_extend_epochs: 5,
+        extension_metrics_bind_addr: "unused".into(),
+        fund_manager_webhook_url: None,
+        jwt_secret: Some("test-jwt-secret".into()),
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: Arc::new(blob_store),
+        pearl: None,
+        config,
+        metrics_handle: None,
+    };
+
+    (routes::build_router(state), tmp, pool)
+}
+
+const TEST_JWT_SECRET: &str = "test-jwt-secret";
+
+/// Create an app in the DB and sign a JWT for it.
+async fn create_test_app_jwt(pool: &db::DbPool) -> (String, String) {
+    let app = db::apps::create_app(pool, "test-app", "test@example.com")
+        .await
+        .unwrap();
+    let jwt = oyster::app_auth::sign_jwt(&app.id, TEST_JWT_SECRET).unwrap();
+    (app.id.to_string(), jwt)
+}
+
+/// Create an account via the admin endpoint, returns (account_id, api_key bearer token).
+async fn create_admin_account(app: &Router, jwt: &str) -> (String, String) {
+    let (status, body) = json_response(
+        app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id = body["account_id"].as_str().unwrap().to_string();
+    let bearer = body["api_key"]["bearer_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (account_id, bearer)
+}
+
+/// Enable refresh JWT for an app via raw SQL.
+async fn enable_refresh_jwt(pool: &db::DbPool, app_id: &str) {
+    sqlx::query("UPDATE apps SET allow_refresh_jwt = 1 WHERE id = ?")
+        .bind(app_id)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn admin_create_account() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(body["account_id"].as_str().is_some());
+    assert!(body["api_key"]["bearer_token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn admin_create_account_unauthorized() {
+    let (app, _tmp) = test_app().await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_create_account_api_key_works() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+    let (_account_id, api_key) = create_admin_account(&app, &jwt).await;
+
+    // The API key from admin account creation should work for normal operations.
+    let bucket_name = create_test_bucket(&app, &api_key, "admin-bucket").await;
+    assert!(!bucket_name.is_empty());
+}
+
+#[tokio::test]
+async fn admin_create_and_revoke_api_key() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
+
+    // Create an API key via admin route.
+    let (status, body) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let key_id = body["id"].as_str().unwrap().to_string();
+
+    // Revoke it.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/accounts/{account_id}/api-keys/{key_id}"))
+                .header("authorization", format!("Bearer {jwt}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Revoking again returns 404.
+    let (status, _) = json_response(
+        &app,
+        Request::delete(format!("/api/v1/accounts/{account_id}/api-keys/{key_id}"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_access_key_crud() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
+
+    // Create an access key.
+    let (status, body) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/access-keys"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let access_key_id = body["access_key_id"].as_str().unwrap().to_string();
+    assert!(body["secret_access_key"].as_str().is_some());
+
+    // List — should have 1.
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/access-keys"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    assert_eq!(keys.len(), 1);
+    assert_eq!(keys[0]["access_key_id"].as_str().unwrap(), access_key_id);
+
+    // Delete.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!(
+                "/api/v1/accounts/{account_id}/access-keys/{access_key_id}"
+            ))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // List — key should show revoked_at (still returned, but inactive).
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/access-keys"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let keys = body.as_array().unwrap();
+    let active: Vec<_> = keys.iter().filter(|k| k["revoked_at"].is_null()).collect();
+    assert_eq!(active.len(), 0);
+}
+
+#[tokio::test]
+async fn admin_access_key_limit() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
+
+    // Create 3 access keys (the maximum).
+    for _ in 0..3 {
+        let (status, _) = json_response(
+            &app,
+            Request::post(format!("/api/v1/accounts/{account_id}/access-keys"))
+                .header("authorization", format!("Bearer {jwt}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // 4th should be rejected with 409.
+    let (status, body) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/access-keys"))
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("limit"));
+}
+
+#[tokio::test]
+async fn admin_cross_app_isolation() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+
+    // Create two different apps.
+    let (_app_a_id, jwt_a) = create_test_app_jwt(&pool).await;
+
+    let app_b = db::apps::create_app(&pool, "app-b", "b@example.com")
+        .await
+        .unwrap();
+    let jwt_b = oyster::app_auth::sign_jwt(&app_b.id, TEST_JWT_SECRET).unwrap();
+
+    // App A creates an account.
+    let (account_id, _api_key) = create_admin_account(&app, &jwt_a).await;
+
+    // App B tries to create an API key for App A's account → 403.
+    let (status, _) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {jwt_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // App B tries to list access keys for App A's account → 403.
+    let (status, _) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/access-keys"))
+            .header("authorization", format!("Bearer {jwt_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_token_refresh() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app_id, jwt) = create_test_app_jwt(&pool).await;
+    enable_refresh_jwt(&pool, &app_id).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["access_token"].as_str().is_some());
+    assert_eq!(body["token_type"].as_str().unwrap(), "Bearer");
+    assert_eq!(body["expires_in"].as_i64().unwrap(), 86400);
+}
+
+#[tokio::test]
+async fn admin_token_refresh_disallowed() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+    // Default: allow_refresh_jwt = false.
+
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_token_refresh_expired_within_grace() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use oyster::app_auth::AppClaims;
+
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let test_app = db::apps::create_app(&pool, "grace-app", "g@example.com")
+        .await
+        .unwrap();
+    enable_refresh_jwt(&pool, &test_app.id.to_string()).await;
+
+    // Forge a JWT expired 1 hour ago (within 48h grace window).
+    let now = jsonwebtoken::get_current_timestamp() as i64;
+    let claims = AppClaims {
+        sub: test_app.id.to_string(),
+        iat: now - 7200,
+        exp: now - 3600,
+        iss: "oyster".into(),
+        jti: uuid::Uuid::new_v4().to_string(),
+    };
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["access_token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn admin_token_refresh_expired_beyond_grace() {
+    use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+    use oyster::app_auth::AppClaims;
+
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let test_app = db::apps::create_app(&pool, "expired-app", "e@example.com")
+        .await
+        .unwrap();
+    enable_refresh_jwt(&pool, &test_app.id.to_string()).await;
+
+    // Forge a JWT expired 49 hours ago (outside the 48h grace window).
+    let now = jsonwebtoken::get_current_timestamp() as i64;
+    let claims = AppClaims {
+        sub: test_app.id.to_string(),
+        iat: now - 200_000,
+        exp: now - (49 * 3600),
+        iss: "oyster".into(),
+        jti: uuid::Uuid::new_v4().to_string(),
+    };
+    let token = encode(
+        &Header::new(Algorithm::HS256),
+        &claims,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_token_refresh_blacklists_old_jti() {
+    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app_id, jwt) = create_test_app_jwt(&pool).await;
+    enable_refresh_jwt(&pool, &app_id).await;
+
+    // Refresh to get a new token.
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let new_jwt = body["access_token"].as_str().unwrap();
+
+    // Old token should be blacklisted — rejected for refresh.
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // Old token should also be rejected for admin operations.
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    // New token should work.
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {new_jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}

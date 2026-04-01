@@ -53,10 +53,13 @@ walrus-utils = { workspace = true, features = ["backoff"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
+jsonwebtoken.workspace = true
 pearl = { workspace = true }
+sqlx.workspace = true
 tempfile = { workspace = true }
 tokio-stream = { workspace = true }
 tower = { workspace = true }
+uuid.workspace = true
 zeroize = { workspace = true }
 
 [lints]

@@ -238,6 +238,17 @@ impl OysterTestHarness {
             .expect("failed to fund address");
     }
 
+    /// Create an app in the database and sign a JWT for it.
+    ///
+    /// Returns `(app_id, jwt)`.
+    pub async fn create_app_jwt(&self, name: &str) -> (String, String) {
+        let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"))
+            .await
+            .expect("create app");
+        let jwt = oyster::app_auth::sign_jwt(&app.id, "e2e-test-jwt-secret").expect("sign jwt");
+        (app.id.to_string(), jwt)
+    }
+
     /// Fund an address with both SUI (for gas) and WAL (for storage).
     ///
     /// This is needed for any wallet that will store blobs on-chain.
