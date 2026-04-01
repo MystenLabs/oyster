@@ -41,21 +41,6 @@ async fn raw_response(app: &Router, req: Request<Body>) -> (axum::http::StatusCo
     (status, bytes.to_vec())
 }
 
-/// Helper: create a test account via the debug endpoint.
-async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/api/v1/debug/create-account")
-        .body(Body::empty())
-        .unwrap();
-    let (status, body) = json_response(app, req).await;
-    assert_eq!(status, axum::http::StatusCode::CREATED);
-    let account_id = body["account_id"].as_str().unwrap().to_string();
-    let secret = body["api_key"]["bearer_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    (account_id, secret)
-}
-
 /// Helper: get the wallet address for an account and fund it with SUI + WAL.
 async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &str) {
     let (status, body) = json_response(
@@ -97,8 +82,9 @@ fn e2e_blob_lifecycle() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        // 1. Create an account (provisions a Pearl wallet automatically).
-        let (_account_id, api_key) = create_test_account(app).await;
+        // 1. Create an account via admin JWT (provisions a Pearl wallet automatically).
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-blob-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // 2. Fund the test account's wallet with SUI (gas) and WAL (storage).
         fund_test_wallet(&harness, app, &api_key).await;
@@ -205,7 +191,8 @@ fn e2e_content_dedup() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_account_id, api_key) = create_test_account(app).await;
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-dedup-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "dedup-bucket").await;
 
@@ -254,8 +241,9 @@ fn e2e_wallet_provisioning() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        // Create account — Pearl is connected so it should provision a wallet.
-        let (_account_id, api_key) = create_test_account(app).await;
+        // Create account via admin JWT — Pearl is connected so it should provision a wallet.
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-wallet-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // Check wallet endpoint.
         let (status, body) = json_response(
@@ -286,7 +274,8 @@ fn reserved_bucket_names_rejected() {
 
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
-        let (_account_id, api_key) = create_test_account(app).await;
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-reserved-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // Hardcoded — must stay in sync with RESERVED_BUCKET_NAMES in validation.rs.
         let reserved = ["health", "ready", "metrics", "api"];
@@ -324,7 +313,8 @@ fn e2e_deterministic_wallet_address() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_account_id, api_key) = create_test_account(app).await;
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-deterministic-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         fund_test_wallet(&harness, app, &api_key).await;
 
         // Fetch wallet twice — should return the same address both times.

@@ -30,19 +30,20 @@ async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusC
     (status, body)
 }
 
-/// Helper: create a test account via the debug endpoint.
-async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/api/v1/debug/create-account")
+/// Helper: create a test account via the admin (JWT) endpoint.
+async fn create_test_account_via_admin(app: &Router, jwt: &str) -> (String, String) {
+    let req = Request::post("/api/v1/accounts")
+        .header("authorization", format!("Bearer {jwt}"))
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, axum::http::StatusCode::CREATED);
     let account_id = body["account_id"].as_str().unwrap().to_string();
-    let secret = body["api_key"]["bearer_token"]
+    let api_key = body["api_key"]["bearer_token"]
         .as_str()
         .unwrap()
         .to_string();
-    (account_id, secret)
+    (account_id, api_key)
 }
 
 /// Helper: get the wallet address for an account and fund it with SUI + WAL.
@@ -96,9 +97,10 @@ fn cli_e2e_full_lifecycle() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        // Create account and fund wallet via in-process helpers.
+        // Create account and fund wallet via admin JWT.
         eprintln!("[cli_e2e] creating test account...");
-        let (_account_id, api_key) = create_test_account(app).await;
+        let (_app_id, jwt) = harness.create_app_jwt("cli-e2e-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         eprintln!("[cli_e2e] funding test wallet...");
         fund_test_wallet(&harness, app, &api_key).await;
 
@@ -109,7 +111,7 @@ fn cli_e2e_full_lifecycle() {
         eprintln!("[cli_e2e] server ready at {url}");
 
         // 1. create-bucket
-        eprintln!("[cli_e2e] 1/10 create-bucket");
+        eprintln!("[cli_e2e] 1/9 create-bucket");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.args(["create-bucket", "cli-test-bucket"]);
@@ -126,7 +128,7 @@ fn cli_e2e_full_lifecycle() {
         assert!(bucket["name"].as_str().is_some());
 
         // 2. list-buckets
-        eprintln!("[cli_e2e] 2/10 list-buckets");
+        eprintln!("[cli_e2e] 2/9 list-buckets");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.arg("list-buckets");
@@ -143,7 +145,7 @@ fn cli_e2e_full_lifecycle() {
         assert!(buckets.iter().any(|b| b["name"] == "cli-test-bucket"));
 
         // 3. store — write test data to a temp file
-        eprintln!("[cli_e2e] 3/10 store");
+        eprintln!("[cli_e2e] 3/9 store");
         let test_data = b"Hello from CLI E2E test!";
         let mut tmp_input = tempfile::NamedTempFile::new().expect("create temp input file");
         tmp_input.write_all(test_data).expect("write temp data");
@@ -175,7 +177,7 @@ fn cli_e2e_full_lifecycle() {
         assert!(stored["md5"].as_str().is_some());
 
         // 4. list-blobs
-        eprintln!("[cli_e2e] 4/10 list-blobs");
+        eprintln!("[cli_e2e] 4/9 list-blobs");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.args(["list-blobs", "--bucket", "cli-test-bucket"]);
@@ -192,7 +194,7 @@ fn cli_e2e_full_lifecycle() {
         assert!(blobs.iter().any(|b| b["key"].as_str() == Some(&blob_key)));
 
         // 5. read — download to a temp file and verify contents
-        eprintln!("[cli_e2e] 5/10 read");
+        eprintln!("[cli_e2e] 5/9 read");
         let tmp_output = tempfile::NamedTempFile::new().expect("create temp output file");
         let output_path = tmp_output.path().to_str().unwrap().to_string();
         let output = run_cli({
@@ -217,7 +219,7 @@ fn cli_e2e_full_lifecycle() {
         assert_eq!(read_data, test_data, "read data should match stored data");
 
         // 6. delete
-        eprintln!("[cli_e2e] 6/10 delete");
+        eprintln!("[cli_e2e] 6/9 delete");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.args(["delete", &blob_key, "--bucket", "cli-test-bucket"]);
@@ -231,7 +233,7 @@ fn cli_e2e_full_lifecycle() {
         );
 
         // 7. delete-bucket
-        eprintln!("[cli_e2e] 7/10 delete-bucket");
+        eprintln!("[cli_e2e] 7/9 delete-bucket");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.args(["delete-bucket", "cli-test-bucket"]);
@@ -244,26 +246,8 @@ fn cli_e2e_full_lifecycle() {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        // 8. create-api-key
-        eprintln!("[cli_e2e] 8/10 create-api-key");
-        let output = run_cli({
-            let mut cmd = cli_cmd(&url, &api_key);
-            cmd.arg("create-api-key");
-            cmd
-        })
-        .await;
-        assert!(
-            output.status.success(),
-            "create-api-key failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let key: Value = serde_json::from_slice(&output.stdout).expect("parse create-api-key JSON");
-        assert!(key["id"].as_str().is_some());
-        assert!(key["prefix"].as_str().is_some());
-        assert!(key["bearer_token"].as_str().is_some());
-
-        // 9. wallet
-        eprintln!("[cli_e2e] 9/10 wallet");
+        // 8. wallet
+        eprintln!("[cli_e2e] 8/9 wallet");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.arg("wallet");
@@ -278,8 +262,8 @@ fn cli_e2e_full_lifecycle() {
         let wallet: Value = serde_json::from_slice(&output.stdout).expect("parse wallet JSON");
         assert!(wallet["address"].as_str().is_some());
 
-        // 10. info
-        eprintln!("[cli_e2e] 10/10 info");
+        // 9. info
+        eprintln!("[cli_e2e] 9/9 info");
         let output = run_cli({
             let mut cmd = cli_cmd(&url, &api_key);
             cmd.arg("info");
@@ -294,6 +278,6 @@ fn cli_e2e_full_lifecycle() {
         let info: Value = serde_json::from_slice(&output.stdout).expect("parse info JSON");
         assert!(info["url"].as_str().is_some());
 
-        eprintln!("[cli_e2e] all 10 steps passed!");
+        eprintln!("[cli_e2e] all 9 steps passed!");
     });
 }

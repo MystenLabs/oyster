@@ -41,28 +41,6 @@ pub struct PaginatedResponse<T> {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct ApiKeyWithBearerToken {
-    pub id: String,
-    pub prefix: String,
-    pub bearer_token: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AccessKey {
-    pub access_key_id: String,
-    pub created_at: String,
-    pub revoked_at: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct AccessKeyWithSecret {
-    pub access_key_id: String,
-    pub secret_access_key: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
 pub struct WalletResponse {
     pub address: String,
 }
@@ -258,68 +236,6 @@ impl OysterClient {
             .http
             .delete(format!(
                 "{}/buckets/{bucket_name}/blobs/{key}",
-                self.base_url
-            ))
-            .header("Authorization", self.auth_header().unwrap_or_default())
-            .send()
-            .await?;
-        self.check_error(resp).await?;
-        Ok(())
-    }
-
-    // API key operations
-
-    pub async fn create_api_key(&self) -> Result<ApiKeyWithBearerToken, ApiError> {
-        let resp = self
-            .http
-            .post(format!("{}/account/api-keys", self.base_url))
-            .header("Authorization", self.auth_header().unwrap_or_default())
-            .send()
-            .await?;
-        let resp = self.check_error(resp).await?;
-        Ok(resp.json().await?)
-    }
-
-    pub async fn revoke_api_key(&self, key_id: &str) -> Result<(), ApiError> {
-        let resp = self
-            .http
-            .delete(format!("{}/account/api-keys/{key_id}", self.base_url))
-            .header("Authorization", self.auth_header().unwrap_or_default())
-            .send()
-            .await?;
-        self.check_error(resp).await?;
-        Ok(())
-    }
-
-    // Access key operations
-
-    pub async fn create_access_key(&self) -> Result<AccessKeyWithSecret, ApiError> {
-        let resp = self
-            .http
-            .post(format!("{}/account/access-keys", self.base_url))
-            .header("Authorization", self.auth_header().unwrap_or_default())
-            .send()
-            .await?;
-        let resp = self.check_error(resp).await?;
-        Ok(resp.json().await?)
-    }
-
-    pub async fn list_access_keys(&self) -> Result<Vec<AccessKey>, ApiError> {
-        let resp = self
-            .http
-            .get(format!("{}/account/access-keys", self.base_url))
-            .header("Authorization", self.auth_header().unwrap_or_default())
-            .send()
-            .await?;
-        let resp = self.check_error(resp).await?;
-        Ok(resp.json().await?)
-    }
-
-    pub async fn delete_access_key(&self, access_key_id: &str) -> Result<(), ApiError> {
-        let resp = self
-            .http
-            .delete(format!(
-                "{}/account/access-keys/{access_key_id}",
                 self.base_url
             ))
             .header("Authorization", self.auth_header().unwrap_or_default())

@@ -148,7 +148,6 @@ impl OysterTestHarness {
             bind_addr: "unused".into(),
             database_url: "sqlite::memory:".into(),
             blob_store_path: std::path::PathBuf::from("/tmp/oyster-e2e-unused"),
-            enable_debug_endpoints: true,
             pearl_grpc_url: Some("in-process".into()),
             pearl_service_secret: PEARL_SECRET.into(),
 

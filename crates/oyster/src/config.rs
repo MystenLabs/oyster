@@ -17,8 +17,6 @@ pub struct Config {
     pub database_url: String,
     /// Filesystem path for the local blob store.
     pub blob_store_path: PathBuf,
-    /// Whether debug-only endpoints are enabled.
-    pub enable_debug_endpoints: bool,
     /// Optional Pearl gRPC endpoint URL.
     pub pearl_grpc_url: Option<String>,
     /// Shared secret for authenticating with Pearl.
@@ -57,9 +55,6 @@ impl Config {
             blob_store_path: std::env::var("BLOB_STORE_PATH")
                 .map(PathBuf::from)
                 .unwrap_or_else(|_| PathBuf::from("blob_store")),
-            enable_debug_endpoints: std::env::var("ENABLE_DEBUG")
-                .map(|v| v == "1" || v == "true")
-                .unwrap_or(false),
             pearl_grpc_url: std::env::var("PEARL_GRPC_URL").ok(),
             pearl_service_secret: overrides
                 .pearl_service_secret

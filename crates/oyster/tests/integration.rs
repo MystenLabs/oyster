@@ -94,8 +94,8 @@ impl BlobStore for SpyBlobStore {
 }
 
 /// Build a fresh app with an in-memory SQLite DB and a temp blob store directory.
-/// Returns `(Router, TempDir)` — hold onto the TempDir so it isn't dropped mid-test.
-async fn test_app() -> (Router, TempDir) {
+/// Returns `(Router, TempDir, DbPool)` — hold onto the TempDir so it isn't dropped mid-test.
+async fn test_app() -> (Router, TempDir, db::DbPool) {
     let tmp = TempDir::new().unwrap();
     let blob_path = tmp.path().join("blobs");
 
@@ -103,7 +103,6 @@ async fn test_app() -> (Router, TempDir) {
         bind_addr: "unused".into(),
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path.clone(),
-        enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
@@ -125,14 +124,14 @@ async fn test_app() -> (Router, TempDir) {
     let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
 
     let state = AppState {
-        db: pool,
+        db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: None,
         config,
         metrics_handle: None,
     };
 
-    (routes::build_router(state), tmp)
+    (routes::build_router(state), tmp, pool)
 }
 
 /// Like `test_app()` but accepts an externally-created blob store and also returns the `DbPool`
@@ -145,7 +144,6 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         bind_addr: "unused".into(),
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path,
-        enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
@@ -174,20 +172,6 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
     };
 
     (routes::build_router(state), tmp, pool)
-}
-
-/// Helper: create an account directly via DB, returns the raw API key secret.
-async fn create_test_account_via_db(pool: &db::DbPool) -> String {
-    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL)
-        .await
-        .unwrap();
-    let raw_key = auth::generate_api_key();
-    let key_hash = auth::hash_api_key(&raw_key);
-    let prefix = auth::key_prefix(&raw_key);
-    db::api_keys::create_api_key(pool, &account.id, &key_hash, &prefix, &raw_key)
-        .await
-        .unwrap();
-    raw_key
 }
 
 /// Helper: send a request and return (StatusCode, body as Value).
@@ -219,19 +203,18 @@ async fn full_response(
     (status, headers, bytes.to_vec())
 }
 
-/// Helper: create an account via the debug endpoint, returns (account_id, api_key_secret).
-async fn create_test_account(app: &Router) -> (String, String) {
-    let req = Request::post("/api/v1/debug/create-account")
-        .body(Body::empty())
+/// Helper: create an account directly via DB, returns (account_id, api_key_secret).
+async fn create_test_account(pool: &db::DbPool) -> (String, String) {
+    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL)
+        .await
         .unwrap();
-    let (status, body) = json_response(app, req).await;
-    assert_eq!(status, StatusCode::CREATED);
-    let account_id = body["account_id"].as_str().unwrap().to_string();
-    let secret = body["api_key"]["bearer_token"]
-        .as_str()
-        .unwrap()
-        .to_string();
-    (account_id, secret)
+    let raw_key = auth::generate_api_key();
+    let key_hash = auth::hash_api_key(&raw_key);
+    let prefix = auth::key_prefix(&raw_key);
+    db::api_keys::create_api_key(pool, &account.id, &key_hash, &prefix, &raw_key)
+        .await
+        .unwrap();
+    (account.id.to_string(), raw_key)
 }
 
 /// Helper: create a bucket, returns the bucket name.
@@ -281,7 +264,7 @@ async fn store_test_blob(
 
 #[tokio::test]
 async fn health_returns_ok() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, _pool) = test_app().await;
     let req = Request::get("/health").body(Body::empty()).unwrap();
     let (status, body) = json_response(&app, req).await;
     assert_eq!(status, StatusCode::OK);
@@ -290,7 +273,7 @@ async fn health_returns_ok() {
 
 #[tokio::test]
 async fn ready_returns_ok_without_pearl() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, _pool) = test_app().await;
     let req = Request::get("/ready").body(Body::empty()).unwrap();
     let (status, body) = json_response(&app, req).await;
     assert_eq!(status, StatusCode::OK);
@@ -299,10 +282,10 @@ async fn ready_returns_ok_without_pearl() {
 
 #[tokio::test]
 async fn full_lifecycle() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, pool) = test_app().await;
 
     // 1. Create account
-    let (_account_id, key) = create_test_account(&app).await;
+    let (_account_id, key) = create_test_account(&pool).await;
 
     // 2. Create bucket
     let bucket_name = create_test_bucket(&app, &key, "my-bucket").await;
@@ -412,8 +395,8 @@ async fn full_lifecycle() {
 
 #[tokio::test]
 async fn stubs_return_501() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
 
     let cases = vec![
         ("PUT", "/api/v1/account/billing"),
@@ -439,11 +422,11 @@ async fn stubs_return_501() {
 
 #[tokio::test]
 async fn auth_required() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, _pool) = test_app().await;
 
     // Endpoints that require auth should reject unauthenticated requests.
     let cases = vec![
-        Request::post("/api/v1/account/api-keys")
+        Request::get("/api/v1/account/wallet")
             .body(Body::empty())
             .unwrap(),
         Request::post("/api/v1/buckets")
@@ -469,8 +452,8 @@ async fn auth_required() {
 
 #[tokio::test]
 async fn duplicate_bucket_name_conflict() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
 
     create_test_bucket(&app, &key, "dup-name").await;
 
@@ -486,9 +469,9 @@ async fn duplicate_bucket_name_conflict() {
 
 #[tokio::test]
 async fn different_accounts_same_bucket_name() {
-    let (app, _tmp) = test_app().await;
-    let (_, key1) = create_test_account(&app).await;
-    let (_, key2) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key1) = create_test_account(&pool).await;
+    let (_, key2) = create_test_account(&pool).await;
 
     create_test_bucket(&app, &key1, "shared-name").await;
 
@@ -504,8 +487,8 @@ async fn different_accounts_same_bucket_name() {
 
 #[tokio::test]
 async fn not_found_cases() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "nf-test").await;
 
     // Read non-existent blob
@@ -559,8 +542,8 @@ async fn not_found_cases() {
 
 #[tokio::test]
 async fn store_blob_to_nonexistent_bucket() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
 
     let req = Request::put("/api/v1/buckets/nonexistent-bucket/blobs/test.txt")
         .header("authorization", format!("Bearer {key}"))
@@ -573,8 +556,8 @@ async fn store_blob_to_nonexistent_bucket() {
 
 #[tokio::test]
 async fn content_addressed_dedup() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "dedup-test").await;
 
     let data = b"identical content";
@@ -612,63 +595,9 @@ async fn content_addressed_dedup() {
 }
 
 #[tokio::test]
-async fn api_key_create_and_revoke() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
-
-    // Create a second API key
-    let (status, body) = json_response(
-        &app,
-        Request::post("/api/v1/account/api-keys")
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let new_key_id = body["id"].as_str().unwrap().to_string();
-    let new_secret = body["bearer_token"].as_str().unwrap().to_string();
-
-    // New key works
-    let (status, _) = json_response(
-        &app,
-        Request::get("/api/v1/buckets")
-            .header("authorization", format!("Bearer {new_secret}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-
-    // Revoke it
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::delete(format!("/api/v1/account/api-keys/{new_key_id}"))
-                .header("authorization", format!("Bearer {key}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    // Revoked key no longer works
-    let (status, _) = json_response(
-        &app,
-        Request::get("/api/v1/buckets")
-            .header("authorization", format!("Bearer {new_secret}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::UNAUTHORIZED);
-}
-
-#[tokio::test]
 async fn bucket_pagination() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
 
     // Create 3 buckets
     for i in 0..3 {
@@ -706,8 +635,8 @@ async fn bucket_pagination() {
 
 #[tokio::test]
 async fn delete_bucket_cascades_blobs() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "cascade-test").await;
 
     let (blob_key, _) = store_test_blob(
@@ -746,9 +675,9 @@ async fn delete_bucket_cascades_blobs() {
 
 #[tokio::test]
 async fn cross_account_isolation() {
-    let (app, _tmp) = test_app().await;
-    let (_, key1) = create_test_account(&app).await;
-    let (_, key2) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key1) = create_test_account(&pool).await;
+    let (_, key2) = create_test_account(&pool).await;
 
     let bucket_name = create_test_bucket(&app, &key1, "private").await;
 
@@ -777,8 +706,8 @@ async fn cross_account_isolation() {
 
 #[tokio::test]
 async fn blob_content_type_preserved() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "ct-test").await;
 
     let (blob_key, _) = store_test_blob(
@@ -813,8 +742,8 @@ async fn blob_content_type_preserved() {
 
 #[tokio::test]
 async fn wallet_returns_503_without_pearl() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
 
     let (status, _body) = json_response(
         &app,
@@ -953,8 +882,8 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
 }
 
 /// Build a fresh app backed by an in-process Pearl server and `LocalBlobStore`.
-/// Returns `(Router, TempDir)` — hold onto the TempDir so it isn't dropped mid-test.
-async fn test_app_with_pearl() -> (Router, TempDir) {
+/// Returns `(Router, TempDir, DbPool)` — hold onto the TempDir so it isn't dropped mid-test.
+async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
     let pearl = start_pearl().await;
     let tmp = TempDir::new().unwrap();
     let blob_path = tmp.path().join("blobs");
@@ -963,7 +892,6 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
         bind_addr: "unused".into(),
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path.clone(),
-        enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
@@ -984,22 +912,22 @@ async fn test_app_with_pearl() -> (Router, TempDir) {
     let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
 
     let state = AppState {
-        db: pool,
+        db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: Some(pearl),
         config,
         metrics_handle: None,
     };
 
-    (routes::build_router(state), tmp)
+    (routes::build_router(state), tmp, pool)
 }
 
 #[tokio::test]
 async fn wallet_with_pearl_returns_address() {
-    let (app, _tmp) = test_app_with_pearl().await;
+    let (app, _tmp, pool) = test_app_with_pearl().await;
 
-    // Create account via debug endpoint — Pearl is connected so it provisions a wallet.
-    let (_account_id, api_key) = create_test_account(&app).await;
+    // Create account — Pearl is connected so it provisions a wallet.
+    let (_account_id, api_key) = create_test_account(&pool).await;
 
     let (status, body) = json_response(
         &app,
@@ -1034,7 +962,7 @@ async fn store_blob_passes_account_id() {
     let spy = Arc::new(SpyBlobStore::new(local));
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
-    let key = create_test_account_via_db(&pool).await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "test-bucket").await;
 
     store_test_blob(&app, &key, &bucket_name, "test.txt", "text/plain", b"data").await;
@@ -1051,8 +979,8 @@ async fn store_blob_distinguishes_accounts() {
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
 
-    let key_a = create_test_account_via_db(&pool).await;
-    let key_b = create_test_account_via_db(&pool).await;
+    let (_, key_a) = create_test_account(&pool).await;
+    let (_, key_b) = create_test_account(&pool).await;
 
     let bucket_a = create_test_bucket(&app, &key_a, "bucket-a").await;
     let bucket_b = create_test_bucket(&app, &key_b, "bucket-b").await;
@@ -1075,7 +1003,7 @@ async fn delete_blob_threads_account_id() {
     let spy = Arc::new(SpyBlobStore::new(local));
 
     let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
-    let key = create_test_account_via_db(&pool).await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "delete-test").await;
 
     let (blob_key, _blob_id) = store_test_blob(
@@ -1114,7 +1042,7 @@ async fn delete_blob_threads_account_id() {
 
 #[tokio::test]
 async fn metrics_endpoint_without_setup_returns_not_found() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, _pool) = test_app().await;
     let req = Request::get("/metrics").body(Body::empty()).unwrap();
     let resp = app.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -1131,7 +1059,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
         bind_addr: "unused".into(),
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path.clone(),
-        enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
         walrus_aggregator_url: None,
@@ -1184,148 +1111,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
 }
 
 // ---------------------------------------------------------------------------
-// Access key CRUD
-// ---------------------------------------------------------------------------
-
-#[tokio::test]
-async fn access_key_crud() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
-
-    // Create an access key
-    let (status, body) = json_response(
-        &app,
-        Request::post("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let access_key_id = body["access_key_id"].as_str().unwrap().to_string();
-    assert!(access_key_id.starts_with("OYAK"));
-    assert_eq!(access_key_id.len(), 20);
-    assert!(body["secret_access_key"].as_str().is_some());
-    assert_eq!(body["secret_access_key"].as_str().unwrap().len(), 40);
-
-    // List — should contain the key
-    let (status, body) = json_response(
-        &app,
-        Request::get("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
-    assert_eq!(keys.len(), 1);
-    assert_eq!(keys[0]["access_key_id"].as_str().unwrap(), access_key_id);
-    // Secret must NOT be in list response
-    assert!(keys[0].get("secret_access_key").is_none());
-
-    // Delete
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::delete(format!("/api/v1/account/access-keys/{access_key_id}"))
-                .header("authorization", format!("Bearer {key}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    // List — key should show revoked_at
-    let (status, body) = json_response(
-        &app,
-        Request::get("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    let keys = body.as_array().unwrap();
-    assert_eq!(keys.len(), 1);
-    assert!(keys[0]["revoked_at"].as_str().is_some());
-}
-
-#[tokio::test]
-async fn access_key_limit() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
-
-    // Create 3 access keys (the maximum)
-    for _ in 0..3 {
-        let (status, _) = json_response(
-            &app,
-            Request::post("/api/v1/account/access-keys")
-                .header("authorization", format!("Bearer {key}"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await;
-        assert_eq!(status, StatusCode::CREATED);
-    }
-
-    // 4th should be rejected with 409
-    let (status, body) = json_response(
-        &app,
-        Request::post("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert!(body["error"].as_str().unwrap().contains("limit"));
-}
-
-#[tokio::test]
-async fn access_key_cross_account_isolation() {
-    let (app, _tmp) = test_app().await;
-    let (_, key_a) = create_test_account(&app).await;
-    let (_, key_b) = create_test_account(&app).await;
-
-    // Account A creates an access key
-    let (status, body) = json_response(
-        &app,
-        Request::post("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key_a}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::CREATED);
-    let access_key_id = body["access_key_id"].as_str().unwrap().to_string();
-
-    // Account B cannot delete account A's access key
-    let (status, _) = json_response(
-        &app,
-        Request::delete(format!("/api/v1/account/access-keys/{access_key_id}"))
-            .header("authorization", format!("Bearer {key_b}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
-
-    // Account B's list should be empty
-    let (status, body) = json_response(
-        &app,
-        Request::get("/api/v1/account/access-keys")
-            .header("authorization", format!("Bearer {key_b}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body.as_array().unwrap().len(), 0);
-}
-
-// ---------------------------------------------------------------------------
 // S3 trait-level integration tests
 // ---------------------------------------------------------------------------
 
@@ -1346,7 +1131,6 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         bind_addr: "unused".into(),
         database_url: "sqlite::memory:".into(),
         blob_store_path: blob_path.clone(),
-        enable_debug_endpoints: true,
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
         walrus_aggregator_url: None,
@@ -1725,8 +1509,8 @@ async fn s3_list_objects_v2_with_delimiter() {
 
 #[tokio::test]
 async fn json_conditional_requests() {
-    let (app, _tmp) = test_app().await;
-    let (_, key) = create_test_account(&app).await;
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
     let bucket_name = create_test_bucket(&app, &key, "cond-test").await;
 
     // Store a blob and extract md5
@@ -2135,45 +1919,6 @@ async fn s3_conditional_requests() {
 // Admin API (JWT-authenticated) integration tests
 // ---------------------------------------------------------------------------
 
-/// Like `test_app()` but also returns the `DbPool` for direct DB access.
-async fn test_app_with_pool() -> (Router, TempDir, db::DbPool) {
-    let tmp = TempDir::new().unwrap();
-    let blob_path = tmp.path().join("blobs");
-
-    let config = Config {
-        bind_addr: "unused".into(),
-        database_url: "sqlite::memory:".into(),
-        blob_store_path: blob_path.clone(),
-        enable_debug_endpoints: true,
-        pearl_grpc_url: None,
-        pearl_service_secret: "test-secret".into(),
-        walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
-        sui_rpc_url: None,
-        walrus_system_object: None,
-        walrus_staking_object: None,
-        blob_extend_interval_secs: 3600,
-        blob_extend_lookahead_days: 7,
-        blob_extend_epochs: 5,
-        extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
-        jwt_secret: Some("test-jwt-secret".into()),
-    };
-
-    let pool = db::create_pool(&config.database_url).await.unwrap();
-    let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
-
-    let state = AppState {
-        db: pool.clone(),
-        blob_store: Arc::new(blob_store),
-        pearl: None,
-        config,
-        metrics_handle: None,
-    };
-
-    (routes::build_router(state), tmp, pool)
-}
-
 const TEST_JWT_SECRET: &str = "test-jwt-secret";
 
 /// Create an app in the DB and sign a JWT for it.
@@ -2215,7 +1960,7 @@ async fn enable_refresh_jwt(pool: &db::DbPool, app_id: &str) {
 
 #[tokio::test]
 async fn admin_create_account() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
 
     let (status, body) = json_response(
@@ -2233,7 +1978,7 @@ async fn admin_create_account() {
 
 #[tokio::test]
 async fn admin_create_account_unauthorized() {
-    let (app, _tmp) = test_app().await;
+    let (app, _tmp, _pool) = test_app().await;
 
     let (status, _) = json_response(
         &app,
@@ -2247,7 +1992,7 @@ async fn admin_create_account_unauthorized() {
 
 #[tokio::test]
 async fn admin_create_account_api_key_works() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
     let (_account_id, api_key) = create_admin_account(&app, &jwt).await;
 
@@ -2258,7 +2003,7 @@ async fn admin_create_account_api_key_works() {
 
 #[tokio::test]
 async fn admin_create_and_revoke_api_key() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
     let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
 
@@ -2301,7 +2046,7 @@ async fn admin_create_and_revoke_api_key() {
 
 #[tokio::test]
 async fn admin_access_key_crud() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
     let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
 
@@ -2364,7 +2109,7 @@ async fn admin_access_key_crud() {
 
 #[tokio::test]
 async fn admin_access_key_limit() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
     let (account_id, _api_key) = create_admin_account(&app, &jwt).await;
 
@@ -2396,7 +2141,7 @@ async fn admin_access_key_limit() {
 
 #[tokio::test]
 async fn admin_cross_app_isolation() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
 
     // Create two different apps.
     let (_app_a_id, jwt_a) = create_test_app_jwt(&pool).await;
@@ -2434,7 +2179,7 @@ async fn admin_cross_app_isolation() {
 
 #[tokio::test]
 async fn admin_token_refresh() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (app_id, jwt) = create_test_app_jwt(&pool).await;
     enable_refresh_jwt(&pool, &app_id).await;
 
@@ -2454,7 +2199,7 @@ async fn admin_token_refresh() {
 
 #[tokio::test]
 async fn admin_token_refresh_disallowed() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (_app_id, jwt) = create_test_app_jwt(&pool).await;
     // Default: allow_refresh_jwt = false.
 
@@ -2474,7 +2219,7 @@ async fn admin_token_refresh_expired_within_grace() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use oyster::app_auth::AppClaims;
 
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let test_app = db::apps::create_app(&pool, "grace-app", "g@example.com")
         .await
         .unwrap();
@@ -2513,7 +2258,7 @@ async fn admin_token_refresh_expired_beyond_grace() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use oyster::app_auth::AppClaims;
 
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let test_app = db::apps::create_app(&pool, "expired-app", "e@example.com")
         .await
         .unwrap();
@@ -2548,7 +2293,7 @@ async fn admin_token_refresh_expired_beyond_grace() {
 
 #[tokio::test]
 async fn admin_token_refresh_blacklists_old_jti() {
-    let (app, _tmp, pool) = test_app_with_pool().await;
+    let (app, _tmp, pool) = test_app().await;
     let (app_id, jwt) = create_test_app_jwt(&pool).await;
     enable_refresh_jwt(&pool, &app_id).await;
 

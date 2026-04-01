@@ -38,7 +38,6 @@ use crate::AppState;
         (name = "Blobs", description = "Blob storage and retrieval"),
         (name = "Health", description = "Health and readiness probes"),
         (name = "Admin", description = "Admin endpoints (JWT-authenticated)"),
-        (name = "Debug", description = "Debug endpoints (development only)"),
     ),
     modifiers(&SecurityAddon, &ServerAddon),
 )]
@@ -102,16 +101,8 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .routes(routes!(admin::admin_delete_access_key))
         .routes(routes!(admin::token_refresh))
-        // Account / API keys
-        .routes(routes!(account::create_api_key))
-        .routes(routes!(account::revoke_api_key))
+        // Account
         .routes(routes!(account::get_wallet))
-        // Access keys
-        .routes(routes!(
-            account::create_access_key,
-            account::list_access_keys
-        ))
-        .routes(routes!(account::delete_access_key))
         // Stubs
         .routes(routes!(account::update_billing))
         .routes(routes!(account::get_report))
@@ -129,15 +120,6 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(blobs::update_blob_metadata))
         .routes(routes!(blobs::read_blob_by_blob_id))
         .split_for_parts();
-
-    let mut api_router = api_router;
-
-    if state.config.enable_debug_endpoints {
-        let (debug_router, _debug_api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
-            .routes(routes!(account::debug_create_account))
-            .split_for_parts();
-        api_router = api_router.merge(debug_router);
-    }
 
     Router::new()
         .nest("/api/v1", api_router)

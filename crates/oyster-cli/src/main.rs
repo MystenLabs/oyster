@@ -86,22 +86,6 @@ enum Command {
         /// Bucket name
         name: String,
     },
-    /// Create a new API key
-    CreateApiKey,
-    /// Revoke an API key
-    RevokeApiKey {
-        /// API key ID to revoke
-        key_id: String,
-    },
-    /// Create a new S3 access key
-    CreateAccessKey,
-    /// List S3 access keys
-    ListAccessKeys,
-    /// Delete an S3 access key
-    DeleteAccessKey {
-        /// Access key ID to delete
-        access_key_id: String,
-    },
     /// Show wallet information
     Wallet,
     /// Show resolved configuration
@@ -285,63 +269,6 @@ async fn cmd_delete_bucket(
     Ok(())
 }
 
-async fn cmd_create_api_key(client: &OysterClient, out: &Output) -> Result<(), CliError> {
-    let key = client.create_api_key().await?;
-    out.print(&key, |k| {
-        println!("API key created:");
-        println!("  id:      {}", k.id);
-        println!("  prefix:  {}", k.prefix);
-        println!("  bearer_token:  {}", k.bearer_token);
-        println!();
-        println!("Save this bearer token — it cannot be retrieved again.");
-    });
-    Ok(())
-}
-
-async fn cmd_revoke_api_key(
-    client: &OysterClient,
-    out: &Output,
-    key_id: &str,
-) -> Result<(), CliError> {
-    client.revoke_api_key(key_id).await?;
-    out.success(&format!("Revoked API key {key_id}"));
-    Ok(())
-}
-
-async fn cmd_create_access_key(client: &OysterClient, out: &Output) -> Result<(), CliError> {
-    let key = client.create_access_key().await?;
-    out.print(&key, |k| {
-        println!("Access key created:");
-        println!("  access_key_id:      {}", k.access_key_id);
-        println!("  secret_access_key:  {}", k.secret_access_key);
-        println!();
-        println!("Save this secret — it cannot be retrieved again.");
-    });
-    Ok(())
-}
-
-async fn cmd_list_access_keys(client: &OysterClient, out: &Output) -> Result<(), CliError> {
-    let keys = client.list_access_keys().await?;
-    out.print(&keys, |keys| {
-        println!("{:<24} {:<20} REVOKED", "ACCESS_KEY_ID", "CREATED");
-        for k in keys {
-            let revoked = k.revoked_at.as_deref().unwrap_or("-");
-            println!("{:<24} {:<20} {}", k.access_key_id, k.created_at, revoked);
-        }
-    });
-    Ok(())
-}
-
-async fn cmd_delete_access_key(
-    client: &OysterClient,
-    out: &Output,
-    access_key_id: &str,
-) -> Result<(), CliError> {
-    client.delete_access_key(access_key_id).await?;
-    out.success(&format!("Deleted access key {access_key_id}"));
-    Ok(())
-}
-
 async fn cmd_wallet(client: &OysterClient, out: &Output) -> Result<(), CliError> {
     let resp = client.get_wallet().await?;
     out.print(&resp, |r| {
@@ -447,16 +374,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                 Command::CreateBucket { ref name } => cmd_create_bucket(&client, out, name).await,
                 Command::ListBuckets { limit } => cmd_list_buckets(&client, out, limit).await,
                 Command::DeleteBucket { ref name } => cmd_delete_bucket(&client, out, name).await,
-                Command::CreateApiKey => cmd_create_api_key(&client, out).await,
-                Command::RevokeApiKey { ref key_id } => {
-                    cmd_revoke_api_key(&client, out, key_id).await
-                }
                 Command::Wallet => cmd_wallet(&client, out).await,
-                Command::CreateAccessKey => cmd_create_access_key(&client, out).await,
-                Command::ListAccessKeys => cmd_list_access_keys(&client, out).await,
-                Command::DeleteAccessKey { ref access_key_id } => {
-                    cmd_delete_access_key(&client, out, access_key_id).await
-                }
                 Command::Read { .. } | Command::Info => unreachable!(),
             }
         }
