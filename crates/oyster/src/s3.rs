@@ -222,30 +222,12 @@ impl s3s::S3 for OysterS3 {
         let bucket_name = &req.input.bucket;
         tracing::info!(account_id = %account_id, bucket_name = %bucket_name, "s3 delete_bucket");
 
-        let deleted_blobs = db::blobs::delete_blobs_in_bucket(&self.state.db, bucket_name)
+        let blob_count = db::blobs::count_blobs_in_bucket(&self.state.db, bucket_name)
             .await
             .map_err(internal_error)?;
-        for info in &deleted_blobs {
-            let count = db::blobs::count_references(&self.state.db, &info.blob_id)
-                .await
-                .map_err(internal_error)?;
-            if count == 0 {
-                let _ = self
-                    .state
-                    .blob_store
-                    .delete(
-                        &BlobId(info.blob_id.clone()),
-                        info.sui_object_id.as_deref(),
-                        &account_id,
-                    )
-                    .await;
-            }
+        if blob_count > 0 {
+            return Err(S3Error::new(S3ErrorCode::BucketNotEmpty));
         }
-
-        tracing::info!(
-            deleted_blobs = deleted_blobs.len(),
-            "s3 delete_bucket cascade-deleted blobs"
-        );
 
         let deleted = db::buckets::delete_bucket(&self.state.db, bucket_name, &account_id)
             .await

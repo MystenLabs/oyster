@@ -632,22 +632,48 @@ async fn bucket_pagination() {
 }
 
 #[tokio::test]
-async fn delete_bucket_cascades_blobs() {
+async fn delete_bucket_rejects_when_not_empty() {
     let (app, _tmp, pool) = test_app().await;
     let (_, key) = create_test_account(&pool).await;
-    let bucket_name = create_test_bucket(&app, &key, "cascade-test").await;
+    let bucket_name = create_test_bucket(&app, &key, "notempty-test").await;
 
     let (blob_key, _) = store_test_blob(
         &app,
         &key,
         &bucket_name,
-        "cascade.bin",
+        "keep.bin",
         "application/octet-stream",
-        b"cascade me",
+        b"keep me",
     )
     .await;
 
-    // Delete the bucket
+    // Deleting a non-empty bucket should return 409 Conflict
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket_name}"))
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::CONFLICT);
+
+    // Delete the blob first
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Now deleting the empty bucket should succeed
     let resp = app
         .clone()
         .oneshot(
@@ -659,16 +685,6 @@ async fn delete_bucket_cascades_blobs() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
-
-    // Blob should be gone
-    let (status, _) = raw_response(
-        &app,
-        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
-            .body(Body::empty())
-            .unwrap(),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

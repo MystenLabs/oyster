@@ -107,30 +107,18 @@ pub async fn list_buckets(
         (status = 204, description = "Bucket deleted"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Bucket not found", body = ErrorResponse),
+        (status = 409, description = "Bucket is not empty", body = ErrorResponse),
     ),
 )]
-/// Delete a bucket and all blobs it contains. Unreferenced blob data is cleaned up from storage.
+/// Delete an empty bucket. Returns 409 Conflict if the bucket still contains blobs.
 pub async fn delete_bucket(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
     Path(bucket_name): Path<String>,
 ) -> Result<StatusCode, AppError> {
-    // First delete all blobs in the bucket
-    let deleted_blobs = db::blobs::delete_blobs_in_bucket(&state.db, &bucket_name).await?;
-
-    // Clean up unreferenced blob data from the store
-    for info in &deleted_blobs {
-        let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
-        if count == 0 {
-            let _ = state
-                .blob_store
-                .delete(
-                    &crate::blob_store::BlobId(info.blob_id.clone()),
-                    info.sui_object_id.as_deref(),
-                    &auth.account_id,
-                )
-                .await;
-        }
+    let blob_count = db::blobs::count_blobs_in_bucket(&state.db, &bucket_name).await?;
+    if blob_count > 0 {
+        return Err(AppError::Conflict("bucket is not empty".to_string()));
     }
 
     let deleted = db::buckets::delete_bucket(&state.db, &bucket_name, &auth.account_id).await?;

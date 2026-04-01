@@ -29,6 +29,19 @@ pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
+/// Count how many blobs exist in a given bucket.
+pub async fn count_blobs_in_bucket(
+    pool: &super::DbPool,
+    bucket_name: &str,
+) -> Result<i64, sqlx::Error> {
+    sqlx::query_scalar(&super::sql(
+        "SELECT COUNT(*) FROM blobs WHERE bucket_name = ?",
+    ))
+    .bind(bucket_name)
+    .fetch_one(pool)
+    .await
+}
+
 /// Insert a new blob metadata row (or overwrite on key conflict) and return it.
 #[allow(clippy::too_many_arguments)]
 pub async fn insert_blob(
@@ -263,28 +276,6 @@ pub async fn update_blob_expires_at(
     .execute(pool)
     .await?;
     Ok(())
-}
-
-/// Delete all blobs in a bucket, returning their IDs for backend cleanup.
-pub async fn delete_blobs_in_bucket(
-    pool: &super::DbPool,
-    bucket_name: &str,
-) -> Result<Vec<DeletedBlobInfo>, sqlx::Error> {
-    // TODO: This does not delete the actual blobs, it just deletes them from the blobs table.
-    // We should also delete the blobs from storage.
-    let rows = sqlx::query(&super::sql(
-        "DELETE FROM blobs WHERE bucket_name = ? RETURNING blob_id, sui_object_id",
-    ))
-    .bind(bucket_name)
-    .fetch_all(pool)
-    .await?;
-    Ok(rows
-        .into_iter()
-        .map(|r| DeletedBlobInfo {
-            blob_id: r.get("blob_id"),
-            sui_object_id: r.get("sui_object_id"),
-        })
-        .collect())
 }
 
 #[cfg(test)]
