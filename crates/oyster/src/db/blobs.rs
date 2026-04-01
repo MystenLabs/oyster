@@ -225,19 +225,22 @@ pub async fn get_expiring_blobs(
     Ok(rows.into_iter().map(row_to_blob).collect())
 }
 
-/// Fetch expiring blobs that have on-chain storage approaching expiry.
+/// Fetch expiring blobs that have on-chain storage approaching expiry,
+/// joining through accounts → apps to include the per-app webhook URL.
 pub async fn get_expiring_blobs_with_accounts(
     pool: &super::DbPool,
     before: &str,
     limit: i64,
 ) -> Result<Vec<ExpiringBlob>, sqlx::Error> {
     sqlx::query_as::<_, ExpiringBlob>(&super::sql(
-        "SELECT account_id, sui_object_id, size, expires_at \
-         FROM blobs \
-         WHERE sui_object_id IS NOT NULL \
-           AND expires_at IS NOT NULL \
-           AND expires_at < ? \
-         ORDER BY expires_at \
+        "SELECT b.account_id, b.sui_object_id, b.size, b.expires_at, a.webhook_url \
+         FROM blobs b \
+         JOIN accounts acc ON b.account_id = acc.id \
+         JOIN apps a ON acc.app_id = a.id \
+         WHERE b.sui_object_id IS NOT NULL \
+           AND b.expires_at IS NOT NULL \
+           AND b.expires_at < ? \
+         ORDER BY b.expires_at \
          LIMIT ?",
     ))
     .bind(before)

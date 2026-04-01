@@ -1,4 +1,4 @@
-//! Outbound webhook client for notifying a fund manager of insufficient funds.
+//! Outbound webhook client for notifying apps of insufficient funds.
 
 use std::{
     sync::Mutex,

@@ -39,8 +39,6 @@ pub struct Config {
     pub blob_extend_epochs: u32,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
-    /// Optional URL to POST a webhook when extension failures indicate insufficient funds.
-    pub fund_manager_webhook_url: Option<String>,
     /// Optional JWT signing secret for app authentication.
     pub jwt_secret: Option<String>,
 }
@@ -84,7 +82,6 @@ impl Config {
                 .unwrap_or(5),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
-            fund_manager_webhook_url: std::env::var("FUND_MANAGER_WEBHOOK_URL").ok(),
             jwt_secret: overrides
                 .oyster_jwt_secret
                 .or_else(|| std::env::var("OYSTER_JWT_SECRET").ok()),

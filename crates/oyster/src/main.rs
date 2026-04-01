@@ -52,6 +52,8 @@ enum AppCommand {
         name: String,
         #[arg(long)]
         contact_email: String,
+        #[arg(long)]
+        webhook_url: Option<String>,
     },
     /// Generate a 24-hour JWT for an existing app.
     Jwt {
@@ -217,10 +219,6 @@ async fn main() {
                 extend_epochs: config.blob_extend_epochs,
             };
 
-            let webhook_client = config
-                .fund_manager_webhook_url
-                .map(oyster::webhook::WebhookClient::new);
-
             oyster::extension_task::run_extension_loop(
                 db,
                 pearl_conn,
@@ -228,7 +226,6 @@ async fn main() {
                 system_object,
                 staking_object,
                 ext_config,
-                webhook_client,
             )
             .await;
         }
@@ -246,8 +243,9 @@ async fn handle_app_command(command: AppCommand, jwt_secret: Option<String>) {
         AppCommand::New {
             name,
             contact_email,
+            webhook_url,
         } => {
-            let app = db::apps::create_app(&pool, &name, &contact_email)
+            let app = db::apps::create_app(&pool, &name, &contact_email, webhook_url.as_deref())
                 .await
                 .expect("failed to create app");
             println!("{}", app.id);

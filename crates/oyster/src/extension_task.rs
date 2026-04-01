@@ -39,7 +39,6 @@ pub async fn run_extension_loop(
     system_object: ObjectID,
     staking_object: ObjectID,
     config: ExtensionConfig,
-    webhook_client: Option<WebhookClient>,
 ) {
     tracing::info!(
         "blob extension task started (interval={}s, lookahead={}d, epochs={})",
@@ -93,6 +92,7 @@ pub async fn run_extension_loop(
         let mut extended = 0u32;
         let mut errors = 0u32;
         let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
+        let mut webhook_clients: HashMap<String, WebhookClient> = HashMap::new();
 
         for blob in &blobs {
             // Resolve sender address (cached per account per cycle).
@@ -139,9 +139,12 @@ pub async fn run_extension_loop(
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_blob").increment(1);
                 errors += 1;
 
-                if let Some(ref wh) = webhook_client
+                if let Some(ref url) = blob.webhook_url
                     && webhook::is_insufficient_funds_error(e.as_ref())
                 {
+                    let wh = webhook_clients
+                        .entry(url.clone())
+                        .or_insert_with(|| WebhookClient::new(url.clone()));
                     wh.notify_insufficient_funds(&InsufficientFundsPayload {
                         account_id: blob.account_id,
                         address: sender_address.to_string(),

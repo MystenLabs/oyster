@@ -60,7 +60,7 @@ If an account doesn't have enough on-chain funds to extend a blob, the
 extension service:
 
 1. Logs the error
-2. Posts a webhook notification (if `FUND_MANAGER_WEBHOOK_URL` is
+2. Posts a webhook notification to the owning app's `webhook_url` (if
    configured) so administrators can top up the account
 3. Continues processing other blobs
 

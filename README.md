@@ -127,9 +127,10 @@ a configurable interval:
 2. For each expiring blob, builds an `extend_blob` PTB, signs via Pearl, and submits to Sui.
 3. Updates the `expires_at` timestamp in the Oyster database.
 
-When extension failures indicate insufficient funds, an optional fund manager webhook
-(`FUND_MANAGER_WEBHOOK_URL`) is notified with the account ID, wallet address, and error details.
-The webhook client uses a circuit breaker to avoid repeated calls to a failing endpoint.
+When extension failures indicate insufficient funds and the blob's owning app has a
+`webhook_url` configured, Oyster notifies that URL with the account ID, wallet address, and
+error details. The webhook client uses a circuit breaker to avoid repeated calls to a failing
+endpoint.
 
 ### Database
 
@@ -164,7 +165,6 @@ files to `/run/secrets/`).
 | `BLOB_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead to look for expiring blobs |
 | `BLOB_EXTEND_EPOCHS` | `5` | Epochs to extend by |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
-| `FUND_MANAGER_WEBHOOK_URL` | -- | Optional webhook URL for insufficient-funds notifications |
 
 | CLI flag | Description |
 |----------|-------------|

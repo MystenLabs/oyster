@@ -116,7 +116,6 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
         jwt_secret: Some("test-jwt-secret".into()),
     };
 
@@ -157,7 +156,6 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
         jwt_secret: Some("test-jwt-secret".into()),
     };
 
@@ -904,7 +902,6 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
         jwt_secret: Some("test-jwt-secret".into()),
     };
 
@@ -1070,7 +1067,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
         jwt_secret: Some("test-jwt-secret".into()),
     };
 
@@ -1142,7 +1138,6 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         blob_extend_lookahead_days: 7,
         blob_extend_epochs: 5,
         extension_metrics_bind_addr: "unused".into(),
-        fund_manager_webhook_url: None,
         jwt_secret: Some("test-jwt-secret".into()),
     };
 
@@ -1923,7 +1918,7 @@ const TEST_JWT_SECRET: &str = "test-jwt-secret";
 
 /// Create an app in the DB and sign a JWT for it.
 async fn create_test_app_jwt(pool: &db::DbPool) -> (String, String) {
-    let app = db::apps::create_app(pool, "test-app", "test@example.com")
+    let app = db::apps::create_app(pool, "test-app", "test@example.com", None)
         .await
         .unwrap();
     let jwt = oyster::app_auth::sign_jwt(&app.id, TEST_JWT_SECRET).unwrap();
@@ -2146,7 +2141,7 @@ async fn admin_cross_app_isolation() {
     // Create two different apps.
     let (_app_a_id, jwt_a) = create_test_app_jwt(&pool).await;
 
-    let app_b = db::apps::create_app(&pool, "app-b", "b@example.com")
+    let app_b = db::apps::create_app(&pool, "app-b", "b@example.com", None)
         .await
         .unwrap();
     let jwt_b = oyster::app_auth::sign_jwt(&app_b.id, TEST_JWT_SECRET).unwrap();
@@ -2220,7 +2215,7 @@ async fn admin_token_refresh_expired_within_grace() {
     use oyster::app_auth::AppClaims;
 
     let (app, _tmp, pool) = test_app().await;
-    let test_app = db::apps::create_app(&pool, "grace-app", "g@example.com")
+    let test_app = db::apps::create_app(&pool, "grace-app", "g@example.com", None)
         .await
         .unwrap();
     enable_refresh_jwt(&pool, &test_app.id.to_string()).await;
@@ -2259,7 +2254,7 @@ async fn admin_token_refresh_expired_beyond_grace() {
     use oyster::app_auth::AppClaims;
 
     let (app, _tmp, pool) = test_app().await;
-    let test_app = db::apps::create_app(&pool, "expired-app", "e@example.com")
+    let test_app = db::apps::create_app(&pool, "expired-app", "e@example.com", None)
         .await
         .unwrap();
     enable_refresh_jwt(&pool, &test_app.id.to_string()).await;

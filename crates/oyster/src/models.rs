@@ -14,6 +14,8 @@ pub struct App {
     pub contact_email: String,
     /// Whether the app is allowed to issue refresh JWTs.
     pub allow_refresh_jwt: bool,
+    /// Optional webhook URL for extension failure notifications.
+    pub webhook_url: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -131,6 +133,8 @@ pub struct ExpiringBlob {
     pub size: i64,
     /// ISO 8601 expiration timestamp.
     pub expires_at: String,
+    /// Optional webhook URL from the owning app.
+    pub webhook_url: Option<String>,
 }
 
 // Request types

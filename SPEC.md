@@ -741,7 +741,7 @@ Walrus.
 | Lookahead window | 7 days | `BLOB_EXTEND_LOOKAHEAD_DAYS` |
 | Extension amount | 5 epochs | `BLOB_EXTEND_EPOCHS` |
 | Metrics bind address | `0.0.0.0:50053` | `OYSTER_EXTENSION_METRICS_BIND_ADDR` |
-| Webhook URL | None (disabled) | `FUND_MANAGER_WEBHOOK_URL` |
+| Webhook URL | Per-app `webhook_url` | `apps.webhook_url` column |
 
 ### 10.2 Execution
 
@@ -760,7 +760,8 @@ Each cycle:
    d. Submit the signed transaction to Sui RPC.
    e. Update `expires_at` in the database to reflect the new lease end.
 3. Record metrics (blobs processed, errors by stage, cycle duration).
-4. If any error indicates insufficient on-chain funds, invoke the fund manager webhook.
+4. If any error indicates insufficient on-chain funds and the blob's owning app has a
+   `webhook_url`, invoke that app's webhook.
 5. Sleep for `check_interval` and repeat.
 
 ### 10.4 Insufficient Funds Webhook
@@ -768,7 +769,7 @@ Each cycle:
 Triggered when a transaction error message contains `"insufficientgas"` or
 `"insufficientcoinbalance"` (case-insensitive).
 
-Payload (`POST` to `FUND_MANAGER_WEBHOOK_URL`):
+Payload (`POST` to the app's `webhook_url`):
 
 ```json
 {
@@ -946,7 +947,6 @@ CLI flags.
 | `BLOB_EXTEND_LOOKAHEAD_DAYS` | u32 | `7` | No | Expiry lookahead window |
 | `BLOB_EXTEND_EPOCHS` | u32 | `5` | No | Epochs to extend per renewal |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | string | `0.0.0.0:50053` | No | Extension metrics port |
-| `FUND_MANAGER_WEBHOOK_URL` | string | (none) | No | Webhook for insufficient funds |
 
 CLI secret flags:
 

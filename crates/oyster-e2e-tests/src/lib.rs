@@ -160,7 +160,6 @@ impl OysterTestHarness {
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,
             extension_metrics_bind_addr: "unused".into(),
-            fund_manager_webhook_url: None,
             jwt_secret: Some("e2e-test-jwt-secret".into()),
         };
 
@@ -241,7 +240,7 @@ impl OysterTestHarness {
     ///
     /// Returns `(app_id, jwt)`.
     pub async fn create_app_jwt(&self, name: &str) -> (String, String) {
-        let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"))
+        let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"), None)
             .await
             .expect("create app");
         let jwt = oyster::app_auth::sign_jwt(&app.id, "e2e-test-jwt-secret").expect("sign jwt");
