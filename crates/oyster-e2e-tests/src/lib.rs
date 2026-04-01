@@ -57,7 +57,7 @@ pub struct OysterTestHarness {
     /// Sui RPC URL for the test cluster.
     rpc_url: String,
     /// The walrus admin client (its temp_dir holds the admin wallet config for funding).
-    walrus_client: WithTempDir<walrus_sdk::client::WalrusNodeClient<SuiContractClient>>,
+    walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
 }
 
 impl OysterTestHarness {
@@ -262,7 +262,7 @@ impl OysterTestHarness {
 /// The admin wallet has WAL from deploying the Walrus contracts during test setup.
 /// We load it from the temp_dir's wallet config, find WAL coins, and send them.
 async fn fund_with_wal(
-    walrus_client: &WithTempDir<walrus_sdk::client::WalrusNodeClient<SuiContractClient>>,
+    walrus_client: &WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
     rpc_url: &str,
     recipient: SuiAddress,
     amount: u64,

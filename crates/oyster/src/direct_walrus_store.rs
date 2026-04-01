@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use sui_sdk::rpc_types::ObjectChange;
 use sui_types::base_types::ObjectID;
 use walrus_core::{encoding::EncodingFactory as _, messages::BlobPersistenceType};
-use walrus_sdk::{client::WalrusNodeClient, config::ClientConfig, uploader::TailHandling};
+use walrus_sdk::{config::ClientConfig, node_client::WalrusNodeClient, uploader::TailHandling};
 use walrus_sui::client::{
     BlobObjectMetadata,
     BlobPersistence,

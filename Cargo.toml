@@ -55,17 +55,17 @@ zeroize = "1.8.2"
 
 # Sui ecosystem — single version across workspace
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "db643fd05a1b1c4cd52de3939766b53e12ce137e" }
-shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
-sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.66.1" }
+shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
+sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
+sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
 
 # Walrus ecosystem — single version across workspace
-walrus-core = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
-walrus-sdk = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
-walrus-service = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
-walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
-walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
-walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.43.1" }
+walrus-core = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+walrus-sdk = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+walrus-service = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
 
 # Internal path deps
 oyster = { path = "crates/oyster" }
