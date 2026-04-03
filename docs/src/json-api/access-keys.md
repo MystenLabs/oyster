@@ -1,7 +1,7 @@
 # S3 Access Keys
 
 S3 access keys let you authenticate with Oyster's
-[S3-compatible API](../s3-api/README.md) using standard AWS Signature
+[S3-compatible API](../s3-api/index.md) using standard AWS Signature
 Version 4. Each access key consists of an **access key ID** (20 characters,
 prefixed with `OYAK`) and a **secret access key** (40 hex characters).
 

@@ -80,8 +80,8 @@ through one are immediately visible in the other.
 
 - **[Getting Started](getting-started.md)** — set up credentials and make
   your first API calls.
-- **[JSON API Reference](json-api/README.md)** — full endpoint documentation.
-- **[S3 API Reference](s3-api/README.md)** — S3-compatible operations and
+- **[JSON API Reference](json-api/index.md)** — full endpoint documentation.
+- **[S3 API Reference](s3-api/index.md)** — S3-compatible operations and
   AWS CLI setup.
-- **[Guides](guides/README.md)** — CLI quick start, SDK examples, and
+- **[Guides](guides/index.md)** — CLI quick start, SDK examples, and
   deeper topics.
