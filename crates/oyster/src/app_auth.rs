@@ -7,6 +7,14 @@ use uuid::Uuid;
 
 use crate::{AppId, AppState, db, error::AppError};
 
+/// Install the jsonwebtoken CryptoProvider for this process.
+///
+/// Must be called before any JWT sign/verify operation when both `aws_lc_rs`
+/// and `rust_crypto` features are active (as happens via transitive deps).
+pub fn install_crypto_provider() {
+    let _ = jsonwebtoken::crypto::aws_lc::DEFAULT_PROVIDER.install_default();
+}
+
 /// JWT token lifetime: 24 hours.
 const JWT_EXPIRY_SECS: i64 = 86400;
 
@@ -158,6 +166,10 @@ mod tests {
 
     const TEST_SECRET: &str = "test-jwt-secret";
 
+    fn init() {
+        install_crypto_provider();
+    }
+
     async fn test_pool() -> db::DbPool {
         db::create_pool("sqlite::memory:").await.unwrap()
     }
@@ -173,6 +185,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_and_verify_roundtrip() {
+        init();
         let pool = test_pool().await;
         let app_id = AppId::new();
         let token = sign_jwt(&app_id, TEST_SECRET).unwrap();
@@ -183,6 +196,7 @@ mod tests {
 
     #[tokio::test]
     async fn expired_jwt_rejected() {
+        init();
         let pool = test_pool().await;
         let claims = AppClaims {
             sub: AppId::new().to_string(),
@@ -198,6 +212,7 @@ mod tests {
 
     #[tokio::test]
     async fn bad_secret_rejected() {
+        init();
         let pool = test_pool().await;
         let app_id = AppId::new();
         let token = sign_jwt(&app_id, TEST_SECRET).unwrap();
@@ -207,6 +222,7 @@ mod tests {
 
     #[tokio::test]
     async fn bad_issuer_rejected() {
+        init();
         let pool = test_pool().await;
         let now = jsonwebtoken::get_current_timestamp() as i64;
         let claims = AppClaims {
@@ -223,6 +239,7 @@ mod tests {
 
     #[tokio::test]
     async fn blacklisted_jti_rejected() {
+        init();
         let pool = test_pool().await;
         let app_id = AppId::new();
         let token = sign_jwt(&app_id, TEST_SECRET).unwrap();
@@ -239,6 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn grace_window_accepts_recently_expired() {
+        init();
         let pool = test_pool().await;
         let now = jsonwebtoken::get_current_timestamp() as i64;
         // Expired 1 hour ago.
@@ -256,6 +274,7 @@ mod tests {
 
     #[tokio::test]
     async fn grace_window_rejects_long_expired() {
+        init();
         let pool = test_pool().await;
         let now = jsonwebtoken::get_current_timestamp() as i64;
         // Expired 49 hours ago — outside the 48h grace window.

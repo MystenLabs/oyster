@@ -65,6 +65,8 @@ impl OysterTestHarness {
     ///
     /// This is expensive (~10-30s) so tests should share a single harness where possible.
     pub async fn start() -> Self {
+        oyster::app_auth::install_crypto_provider();
+
         // 1. Boot the Walrus test cluster with an aggregator.
         eprintln!("[harness] building walrus e2e test cluster...");
         let (sui_cluster, walrus_cluster, walrus_client, system_ctx, aggregator) =

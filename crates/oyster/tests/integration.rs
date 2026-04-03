@@ -1934,6 +1934,7 @@ const TEST_JWT_SECRET: &str = "test-jwt-secret";
 
 /// Create an app in the DB and sign a JWT for it.
 async fn create_test_app_jwt(pool: &db::DbPool) -> (String, String) {
+    oyster::app_auth::install_crypto_provider();
     let app = db::apps::create_app(pool, "test-app", "test@example.com", None)
         .await
         .unwrap();
@@ -2253,6 +2254,7 @@ async fn admin_token_refresh_expired_within_grace() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use oyster::app_auth::AppClaims;
 
+    oyster::app_auth::install_crypto_provider();
     let (app, _tmp, pool) = test_app().await;
     let test_app = db::apps::create_app(&pool, "grace-app", "g@example.com", None)
         .await
@@ -2292,6 +2294,7 @@ async fn admin_token_refresh_expired_beyond_grace() {
     use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
     use oyster::app_auth::AppClaims;
 
+    oyster::app_auth::install_crypto_provider();
     let (app, _tmp, pool) = test_app().await;
     let test_app = db::apps::create_app(&pool, "expired-app", "e@example.com", None)
         .await
