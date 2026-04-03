@@ -11,18 +11,56 @@ you'll have created a bucket, uploaded a blob, and downloaded it back.
 
 ## Obtaining Credentials
 
-Contact your **Oyster administrator** to receive an API key. This is a
-Bearer token that authenticates your requests. It looks something like:
+Oyster uses a two-tier auth model: **operators** manage accounts via JWT,
+and **end users** authenticate data operations with API keys.
 
+### For Operators
+
+The server operator creates an app, generates a JWT, and provisions
+accounts. See the [Admin API docs](json-api/admin.md) for full details.
+
+```bash
+# 1. Create an app (server operator runs this once)
+oysterd app new --name my-app --contact_email admin@example.com
+# 550e8400-e29b-41d4-a716-446655440000
+
+# 2. Generate a JWT for the app (valid 24 hours)
+export JWT=$(oysterd app jwt 550e8400-e29b-41d4-a716-446655440000)
+
+# 3. Create an account using the JWT
+export OYSTER_URL="http://localhost:3000"
+curl -s -X POST \
+  -H "Authorization: Bearer $JWT" \
+  -H "Content-Type: application/json" \
+  -d '{"name": "my-app-user"}' \
+  "$OYSTER_URL/api/v1/accounts" | jq
 ```
-a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
+
+The response includes the account ID and an initial API key:
+
+```json
+{
+  "account_id": "550e8400-e29b-41d4-a716-446655440000",
+  "api_key": {
+    "id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
+    "prefix": "a1b2c3d4",
+    "bearer_token": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+    "created_at": "2025-01-15T10:30:00Z"
+  }
+}
 ```
 
-Store it somewhere safe — it cannot be retrieved again after initial
-creation.
+Save the `account_id` and `bearer_token` — the token is only shown once.
 
-For the rest of this guide, we'll assume your API key is stored in an
-environment variable:
+```bash
+export ACCOUNT_ID="550e8400-e29b-41d4-a716-446655440000"
+export API_KEY="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+```
+
+### For End Users
+
+Your operator will provide you with an API key. Store it in an
+environment variable for the rest of this guide:
 
 ```bash
 export OYSTER_URL="http://localhost:3000"
@@ -137,33 +175,40 @@ curl -s -X DELETE \
 
 Returns HTTP 204 (no content) on success.
 
-## Create Additional API Keys
+## Create Additional API Keys (Operator)
 
-You can generate extra API keys for different applications or teammates:
+Additional API keys are created by the operator via the Admin API using
+JWT authentication. This requires the `$JWT` and `$ACCOUNT_ID` variables
+from the [Obtaining Credentials](#obtaining-credentials) section.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $API_KEY" \
-  "$OYSTER_URL/api/v1/account/api-keys" | jq
+  -H "Authorization: Bearer $JWT" \
+  "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/api-keys" | jq
 ```
 
 Response:
 
 ```json
 {
-  "id": "key-uuid-here",
+  "id": "b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e",
   "prefix": "a1b2c3d4",
-  "bearer_token": "a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890",
+  "bearer_token": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
   "created_at": "2025-01-15T10:32:00Z"
 }
 ```
 
 > **Important:** The `bearer_token` field is only shown once. Save it immediately.
 
-## Set Up S3 Access Keys
+See the [Admin API docs](json-api/admin.md#create-api-key) for full
+details including error handling and key revocation.
 
-To use the AWS CLI or any S3-compatible SDK, create S3 access keys via the
-[Admin API](json-api/admin.md#create-access-key):
+## Set Up S3 Access Keys (Operator)
+
+To use the AWS CLI or any S3-compatible SDK, the operator creates S3 access
+keys via the [Admin API](json-api/admin.md#create-access-key). This
+requires the `$JWT` and `$ACCOUNT_ID` variables from the
+[Obtaining Credentials](#obtaining-credentials) section.
 
 ```bash
 curl -s -X POST \
