@@ -162,12 +162,13 @@ Response:
 
 ## Set Up S3 Access Keys
 
-To use the AWS CLI or any S3-compatible SDK, create S3 access keys:
+To use the AWS CLI or any S3-compatible SDK, create S3 access keys via the
+[Admin API](json-api/admin.md#create-access-key):
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $API_KEY" \
-  "$OYSTER_URL/api/v1/account/access-keys" | jq
+  -H "Authorization: Bearer $JWT" \
+  "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/access-keys" | jq
 ```
 
 Response:

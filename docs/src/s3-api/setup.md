@@ -11,18 +11,20 @@ Oyster's S3-compatible API.
 
 ## Step 1: Create S3 Access Keys
 
-Use the JSON API to create an S3 access key pair:
+Access keys are created through the [Admin API](../json-api/admin.md#create-access-key)
+using JWT authentication:
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $API_KEY" \
-  "$OYSTER_URL/api/v1/account/access-keys" | jq
+  -H "Authorization: Bearer $JWT" \
+  "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/access-keys" | jq
 ```
 
 Save the `access_key_id` and `secret_access_key` from the response — the
 secret is only shown once.
 
-See [S3 Access Keys](../json-api/access-keys.md) for full details.
+See [S3 Access Keys](../json-api/access-keys.md) for more on key format
+and limits.
 
 ## Step 2: Configure the AWS CLI
 

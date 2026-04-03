@@ -156,9 +156,8 @@ curl -s -X DELETE \
 
 ## S3 Access Keys
 
-These endpoints manage S3-compatible access keys through the admin API.
-For self-service access key management using API key auth, see
-[S3 Access Keys](access-keys.md).
+These endpoints manage S3-compatible access keys for accounts. See
+[S3 Access Keys](access-keys.md) for key format details and limits.
 
 ### Create Access Key
 
