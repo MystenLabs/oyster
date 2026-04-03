@@ -64,7 +64,8 @@ oyster list-buckets --limit 10
 oyster delete-bucket my-bucket
 ```
 
-This deletes all blobs in the bucket.
+The bucket must be empty. Delete all blobs first, or the server returns
+an error.
 
 ## Storing and Reading Blobs
 
@@ -123,60 +124,11 @@ images/cat.png image/png       204800  2025-01-15T11:00:00Z
 oyster delete hello.txt --bucket my-bucket
 ```
 
-## API Key Management
+## API Key and Access Key Management
 
-### Create a New API Key
-
-```bash
-oyster create-api-key
-```
-
-Output:
-
-```
-API key created:
-  id:      a1b2c3d4-e5f6-7890-abcd-ef1234567890
-  prefix:  a1b2c3d4
-  bearer_token:  a1b2c3d4e5f67890abcdef1234567890abcdef1234567890abcdef1234567890
-
-Save this bearer token — it cannot be retrieved again.
-```
-
-### Revoke an API Key
-
-```bash
-oyster revoke-api-key a1b2c3d4-e5f6-7890-abcd-ef1234567890
-```
-
-## S3 Access Key Management
-
-### Create an S3 Access Key
-
-```bash
-oyster create-access-key
-```
-
-Output:
-
-```
-Access key created:
-  access_key_id:      OYAK1234567890ABCDEF
-  secret_access_key:  abcdef1234567890abcdef1234567890abcdef12
-
-Save this secret — it cannot be retrieved again.
-```
-
-### List S3 Access Keys
-
-```bash
-oyster list-access-keys
-```
-
-### Delete an S3 Access Key
-
-```bash
-oyster delete-access-key OYAK1234567890ABCDEF
-```
+API keys and S3 access keys are managed by operators through the Admin API,
+not through the CLI. See the [Admin API docs](../json-api/admin.md) for
+details on creating, listing, and revoking keys.
 
 ## Other Commands
 
