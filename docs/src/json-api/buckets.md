@@ -122,9 +122,7 @@ to fetch the next page.
 DELETE /api/v1/buckets/{bucket_name}
 ```
 
-Deletes a bucket and **all blobs inside it**. This action cannot be undone.
-Underlying blob data is removed from storage when no other references
-point to it.
+Deletes a bucket. The bucket must be empty — delete all blobs first.
 
 **Path parameters:**
 
@@ -148,3 +146,4 @@ curl -s -X DELETE \
 |--------|-----------|
 | `401` | Missing or invalid API key |
 | `404` | Bucket not found or not owned by your account |
+| `409` | Bucket is not empty |

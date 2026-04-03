@@ -78,7 +78,7 @@ Returns up to 1000 buckets. No pagination is supported for this operation.
 
 ## DeleteBucket
 
-Deletes a bucket and **all objects inside it**.
+Deletes a bucket. The bucket must be empty first.
 
 ```bash
 aws --profile oyster s3api delete-bucket --bucket my-bucket
@@ -86,13 +86,9 @@ aws --profile oyster s3api delete-bucket --bucket my-bucket
 
 Returns no output on success (HTTP 204).
 
-> **Note:** Unlike AWS S3, Oyster does **not** require the bucket to be
-> empty before deletion. All objects are automatically deleted when the
-> bucket is removed. Underlying blob data is cleaned up when no other
-> references point to it.
-
 **Errors:**
 
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist or not owned by your account |
+| `BucketNotEmpty` | Bucket still contains objects |

@@ -10,7 +10,7 @@ what's different from a full AWS S3 deployment.
 | CreateBucket | Supported | |
 | HeadBucket | Supported | |
 | ListBuckets | Supported | Max 1000, no pagination |
-| DeleteBucket | Supported | Cascades — deletes all objects (unlike AWS S3) |
+| DeleteBucket | Supported | Requires empty bucket (same as AWS S3) |
 | PutObject | Supported | Single-part only |
 | GetObject | Supported | |
 | HeadObject | Supported | |
@@ -36,12 +36,6 @@ what's different from a full AWS S3 deployment.
 | Lifecycle Rules | Not supported | See automatic expiration below |
 
 ## Behavioral Differences
-
-### DeleteBucket Cascades
-
-In AWS S3, you must empty a bucket before deleting it. In Oyster,
-`DeleteBucket` automatically deletes all objects inside the bucket.
-Underlying blob data is cleaned up when no other references exist.
 
 ### Object Expiration
 
