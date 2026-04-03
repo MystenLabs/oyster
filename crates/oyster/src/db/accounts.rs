@@ -3,9 +3,13 @@ use sqlx::Row;
 use crate::{AccountId, AppId, models::Account};
 
 /// Insert a new account belonging to the given app.
-pub async fn create_account(pool: &super::DbPool, app_id: &AppId) -> Result<Account, sqlx::Error> {
+pub async fn create_account(
+    pool: &super::DbPool,
+    app_id: &AppId,
+    name: Option<&str>,
+) -> Result<Account, sqlx::Error> {
     let id = AccountId::new();
-    let name = id.to_string();
+    let name = name.map_or_else(|| id.to_string(), |n| n.to_string());
     let row = sqlx::query(&super::sql(
         "INSERT INTO accounts (id, app_id, name) VALUES (?, ?, ?) RETURNING id, app_id, name, created_at, updated_at",
     ))
@@ -64,15 +68,25 @@ mod tests {
     #[tokio::test]
     async fn create_account_works() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
         assert_eq!(account.name, account.id.to_string());
+        assert_eq!(account.app_id, AppId::INTERNAL);
+    }
+
+    #[tokio::test]
+    async fn create_account_with_name() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, Some("my-account"))
+            .await
+            .unwrap();
+        assert_eq!(account.name, "my-account");
         assert_eq!(account.app_id, AppId::INTERNAL);
     }
 
     #[tokio::test]
     async fn get_account_returns_created() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
         let fetched = get_account(&pool, &account.id).await.unwrap().unwrap();
         assert_eq!(fetched.id, account.id);
         assert_eq!(fetched.app_id, AppId::INTERNAL);

@@ -368,7 +368,8 @@ fn e2e_deterministic_wallet_address() {
 async fn create_test_account_via_admin(app: &Router, jwt: &str) -> (String, String) {
     let req = Request::post("/api/v1/accounts")
         .header("authorization", format!("Bearer {jwt}"))
-        .body(Body::empty())
+        .header("content-type", "application/json")
+        .body(Body::from(r#"{"name": "e2e-test-account"}"#))
         .unwrap();
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, axum::http::StatusCode::CREATED);

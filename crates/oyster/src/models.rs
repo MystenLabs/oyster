@@ -139,6 +139,13 @@ pub struct ExpiringBlob {
 
 // Request types
 
+/// Request body for creating a new account.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateAccountRequest {
+    /// Human-readable account name. Defaults to the account ID if omitted.
+    pub name: Option<String>,
+}
+
 /// Request body for creating a new bucket.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateBucketRequest {

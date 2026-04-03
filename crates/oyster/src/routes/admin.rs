@@ -18,6 +18,7 @@ use crate::{
         AccessKey,
         AccessKeyWithSecret,
         ApiKeyWithBearerToken,
+        CreateAccountRequest,
         CreateAccountResponse,
         ErrorResponse,
         TokenRefreshResponse,
@@ -49,6 +50,7 @@ async fn verify_account_ownership(
     path = "/accounts",
     tag = "Admin",
     security(("bearer" = [])),
+    request_body(content = CreateAccountRequest, content_type = "application/json"),
     responses(
         (status = 201, description = "Account created", body = CreateAccountResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
@@ -58,8 +60,10 @@ async fn verify_account_ownership(
 pub async fn create_account(
     State(state): State<AppState>,
     auth: AuthenticatedApp,
+    body: Option<Json<CreateAccountRequest>>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let account = db::accounts::create_account(&state.db, &auth.app_id).await?;
+    let name = body.and_then(|b| b.0.name);
+    let account = db::accounts::create_account(&state.db, &auth.app_id, name.as_deref()).await?;
 
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);

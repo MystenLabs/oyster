@@ -203,7 +203,7 @@ async fn full_response(
 
 /// Helper: create an account directly via DB, returns (account_id, api_key_secret).
 async fn create_test_account(pool: &db::DbPool) -> (String, String) {
-    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL)
+    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None)
         .await
         .unwrap();
     let raw_key = auth::generate_api_key();
@@ -1168,7 +1168,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL)
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None)
         .await
         .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
@@ -1985,6 +1985,29 @@ async fn admin_create_account() {
     assert_eq!(status, StatusCode::CREATED);
     assert!(body["account_id"].as_str().is_some());
     assert!(body["api_key"]["bearer_token"].as_str().is_some());
+}
+
+#[tokio::test]
+async fn admin_create_account_with_name() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, jwt) = create_test_app_jwt(&pool).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {jwt}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name": "custom"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id: AccountId = body["account_id"].as_str().unwrap().parse().unwrap();
+    let account = db::accounts::get_account(&pool, &account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.name, "custom");
 }
 
 #[tokio::test]
