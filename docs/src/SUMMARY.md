@@ -4,6 +4,7 @@
 - [Getting Started](getting-started.md)
 - [JSON API Reference](json-api/README.md)
   - [Authentication](json-api/authentication.md)
+  - [Admin](json-api/admin.md)
   - [Buckets](json-api/buckets.md)
   - [Blobs](json-api/blobs.md)
   - [S3 Access Keys](json-api/access-keys.md)
