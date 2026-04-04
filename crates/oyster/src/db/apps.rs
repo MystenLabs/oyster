@@ -5,10 +5,11 @@ use crate::{AppId, models::App};
 /// Decode `allow_refresh_jwt` from the database row.
 ///
 /// SQLite stores booleans as integers (0/1) while PostgreSQL uses native booleans.
-/// The `sqlx::Any` driver exposes SQLite integers as `BIGINT`, which cannot be
-/// decoded directly into Rust's `bool`. We read as `i32` and convert.
+/// The `sqlx::Any` driver cannot decode both with a single type, so we try `bool`
+/// first (PostgreSQL) and fall back to `i32` (SQLite).
 fn decode_allow_refresh_jwt(row: &sqlx::any::AnyRow) -> bool {
-    row.get::<i32, _>("allow_refresh_jwt") != 0
+    row.try_get::<bool, _>("allow_refresh_jwt")
+        .unwrap_or_else(|_| row.get::<i32, _>("allow_refresh_jwt") != 0)
 }
 
 /// Insert a new app.
