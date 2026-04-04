@@ -253,13 +253,13 @@ aws --profile oyster s3api get-object \
   --bucket my-s3-bucket --key hello.txt downloaded.txt
 ```
 
-For the full S3 API reference, see **[S3 API Reference](s3-api/index.md)**.
+For the full S3 API reference, see **[S3 API Reference](s3-api/README.md)**.
 
 ## What's Next
 
-- **[JSON API Reference](json-api/index.md)** — detailed documentation of
+- **[JSON API Reference](json-api/README.md)** — detailed documentation of
   every endpoint.
-- **[S3 API Reference](s3-api/index.md)** — complete S3-compatible
+- **[S3 API Reference](s3-api/README.md)** — complete S3-compatible
   operations and setup.
-- **[Guides](guides/index.md)** — CLI quick start, SDK examples, and
+- **[Guides](guides/README.md)** — CLI quick start, SDK examples, and
   advanced topics.
