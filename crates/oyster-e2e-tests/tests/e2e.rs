@@ -2,27 +2,9 @@
 
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
-use oyster_e2e_tests::OysterTestHarness;
+use oyster_e2e_tests::{OysterTestHarness, run_e2e};
 use serde_json::Value;
 use tower::ServiceExt;
-
-/// Run an async test body on a tokio runtime with 32MB worker thread stacks.
-///
-/// The walrus encoding pipeline is deeply recursive and overflows the default 2MB stack.
-/// `cargo test` runs each `#[test]` on a thread with the default 2MB stack, so we must
-/// ensure the heavy work runs on a runtime worker thread (which has the enlarged stack)
-/// rather than on the test thread via `block_on`.
-fn run_e2e<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
-    let rt = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .thread_stack_size(32 * 1024 * 1024)
-        .build()
-        .expect("build tokio runtime");
-    rt.block_on(async {
-        // Spawn onto a worker thread with the enlarged stack.
-        tokio::spawn(f).await.expect("e2e test panicked");
-    });
-}
 
 /// Helper: send a request and return (status, body as JSON Value).
 async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusCode, Value) {

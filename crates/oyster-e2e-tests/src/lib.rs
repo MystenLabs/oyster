@@ -1,6 +1,37 @@
 //! End-to-end test harness for Oyster, spinning up Sui, Walrus, Pearl, and Oyster in-process.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
+
+/// Global mutex that serialises all E2E tests.
+///
+/// The Walrus `E2eTestSetupBuilder` reuses a `OnceLock`-based singleton Sui
+/// cluster, so concurrent tests compete for the same faucet wallet and hit
+/// object-version conflicts.  Holding this lock inside [`run_e2e`] ensures
+/// only one test touches the cluster at a time, regardless of
+/// `--test-threads`.
+static E2E_LOCK: Mutex<()> = Mutex::new(());
+
+/// Run an async E2E test body on a tokio runtime with 32 MiB worker stacks.
+///
+/// The walrus encoding pipeline is deeply recursive and overflows the default
+/// 2 MiB stack, so we build a dedicated runtime with enlarged worker threads.
+/// A global mutex ([`E2E_LOCK`]) serialises execution so parallel test threads
+/// don't race on the shared Sui cluster.
+pub fn run_e2e<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
+    let _guard = E2E_LOCK.lock().expect("e2e lock poisoned");
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(32 * 1024 * 1024)
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(async {
+        // Spawn onto a worker thread with the enlarged stack.
+        tokio::spawn(f).await.expect("e2e test panicked");
+    });
+}
 
 use axum::Router;
 use oyster::{
