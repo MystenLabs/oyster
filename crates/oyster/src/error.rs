@@ -72,10 +72,18 @@ impl IntoResponse for AppError {
                 tracing::error!("database error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
             }
-            AppError::BlobStore(e) => {
-                tracing::error!("blob store error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
-            }
+            AppError::BlobStore(e) => match e {
+                crate::blob_store::BlobStoreError::InsufficientBalance(_) => {
+                    (StatusCode::PAYMENT_REQUIRED, self.to_string())
+                }
+                crate::blob_store::BlobStoreError::NotFound(_) => {
+                    (StatusCode::NOT_FOUND, self.to_string())
+                }
+                _ => {
+                    tracing::error!("blob store error: {e}");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+                }
+            },
         };
         (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
     }
