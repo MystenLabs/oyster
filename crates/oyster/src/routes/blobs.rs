@@ -196,6 +196,7 @@ pub async fn store_blob(
     responses(
         (status = 200, description = "List of blobs", body = PaginatedResponse<BlobMetadata>),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Bucket not found", body = ErrorResponse),
     ),
 )]
 /// List all blobs in a bucket, with cursor-based pagination.
@@ -205,7 +206,11 @@ pub async fn list_blobs(
     Path(bucket_name): Path<String>,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<BlobMetadata>>, AppError> {
-    let limit = pagination::clamp_limit(params.limit);
+    db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let limit = pagination::clamp_limit(params.limit)?;
     let cursor_data = params
         .cursor
         .as_deref()
@@ -282,6 +287,7 @@ pub async fn read_blob(
         [
             ("content-type", metadata.content_type.as_str()),
             ("etag", etag.as_str()),
+            ("x-content-type-options", "nosniff"),
         ],
         data,
     )
@@ -303,11 +309,6 @@ pub async fn read_blob_by_blob_id(
     State(state): State<AppState>,
     Path(blob_id): Path<String>,
 ) -> Result<Response, AppError> {
-    let exists = state.blob_store.exists(&BlobId(blob_id.clone())).await?;
-    if !exists {
-        return Err(AppError::NotFound);
-    }
-
     let data = match state.blob_store.read(&BlobId(blob_id)).await {
         Ok(d) => {
             metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
@@ -327,7 +328,10 @@ pub async fn read_blob_by_blob_id(
 
     Ok((
         StatusCode::OK,
-        [("content-type", "application/octet-stream")],
+        [
+            ("content-type", "application/octet-stream"),
+            ("x-content-type-options", "nosniff"),
+        ],
         data,
     )
         .into_response())

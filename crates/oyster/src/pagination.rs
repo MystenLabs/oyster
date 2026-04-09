@@ -35,7 +35,11 @@ pub fn encode_cursor(created_at: &str, id: &str) -> String {
     URL_SAFE_NO_PAD.encode(raw.as_bytes())
 }
 
-/// Clamp an optional page size to `[1, 100]`, defaulting to 20.
-pub fn clamp_limit(limit: Option<i64>) -> i64 {
-    limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
+/// Validate and clamp an optional page size, defaulting to 20. Returns 400 if limit <= 0.
+pub fn clamp_limit(limit: Option<i64>) -> Result<i64, AppError> {
+    let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+    if limit <= 0 {
+        return Err(AppError::BadRequest("limit must be positive".into()));
+    }
+    Ok(limit.min(MAX_PAGE_SIZE))
 }

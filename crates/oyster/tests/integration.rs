@@ -466,6 +466,67 @@ async fn duplicate_bucket_name_conflict() {
 }
 
 #[tokio::test]
+async fn read_blob_by_nonexistent_blob_id() {
+    let (app, _tmp, _pool) = test_app().await;
+    let req = Request::get("/api/v1/blobs/by-blob-id/does-not-exist")
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn list_blobs_nonexistent_bucket() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let req = Request::get("/api/v1/buckets/no-such-bucket/blobs")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn pagination_limit_zero_returns_400() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    create_test_bucket(&app, &key, "pag-test").await;
+    let req = Request::get("/api/v1/buckets/pag-test/blobs?limit=0")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn pagination_limit_negative_returns_400() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let req = Request::get("/api/v1/buckets?limit=-1")
+        .header("authorization", format!("Bearer {key}"))
+        .body(Body::empty())
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn read_blob_includes_nosniff_header() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    create_test_bucket(&app, &key, "sniff-test").await;
+    store_test_blob(&app, &key, "sniff-test", "doc.txt", "text/plain", b"hello").await;
+    let req = Request::get("/api/v1/buckets/sniff-test/blobs/doc.txt")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = full_response(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+}
+
+#[tokio::test]
 async fn different_accounts_same_bucket_name() {
     let (app, _tmp, pool) = test_app().await;
     let (_, key1) = create_test_account(&pool).await;

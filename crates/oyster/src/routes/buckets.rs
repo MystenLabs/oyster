@@ -38,13 +38,15 @@ pub async fn create_bucket(
     let bucket = db::buckets::create_bucket(&state.db, &auth.account_id, &body.name)
         .await
         .map_err(|e| {
-            if let sqlx::Error::Database(ref db_err) = e
-                && db_err.message().contains("UNIQUE constraint failed")
-            {
-                return AppError::Conflict(format!(
-                    "bucket with name '{}' already exists",
-                    body.name
-                ));
+            if let sqlx::Error::Database(ref db_err) = e {
+                let is_unique_violation = db_err.code().is_some_and(|c| c == "23505")
+                    || db_err.message().contains("UNIQUE constraint failed");
+                if is_unique_violation {
+                    return AppError::Conflict(format!(
+                        "bucket with name '{}' already exists",
+                        body.name
+                    ));
+                }
             }
             AppError::Database(e)
         })?;
@@ -69,7 +71,7 @@ pub async fn list_buckets(
     auth: AuthenticatedAccount,
     Query(params): Query<PaginationParams>,
 ) -> Result<Json<PaginatedResponse<Bucket>>, AppError> {
-    let limit = pagination::clamp_limit(params.limit);
+    let limit = pagination::clamp_limit(params.limit)?;
     let cursor_data = params
         .cursor
         .as_deref()
