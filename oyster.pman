@@ -14,8 +14,10 @@ env {
 
 
 job clean {
+  env WORKING_DIR = walrus::args.working_dir
   run """
-    rm -rf "$WALRUS_WORKING_DIR"
+    echo "rm -rf $WORKING_DIR"
+    rm -rf "$WORKING_DIR"
     rm -f oyster.db*
   """
 }
@@ -43,12 +45,8 @@ service pearl {
 service oyster {
   wait {
     after @build
-    connect "127.0.0.1:50051" {
-      timeout = 120s
-    }
-    connect "127.0.0.1:31415" {
-      timeout = 10m
-    }
+    connect "127.0.0.1:50051"
+    connect "127.0.0.1:31415"
     contains "${{ args.working_dir }}/client_config.yaml" {
       format = "yaml"
       key = "$.system_object"
@@ -84,7 +82,6 @@ job setup {
   wait {
     http "http://127.0.0.1:3000/health" {
       status = 200
-      timeout = 120s
     }
     contains "${{ args.working_dir }}/sui_client.yaml" {
       format = "yaml"
