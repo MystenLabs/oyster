@@ -78,28 +78,40 @@ API, and `oysterd extend` runs the blob extension background worker.
 
 ### API
 
+**Admin routes** (JWT-authenticated, for managing accounts and credentials):
+
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/api/v1/debug/create-account` | No | Create account + first API key (dev only) |
-| `POST` | `/api/v1/account/api-keys` | Yes | Generate new API key |
-| `DELETE` | `/api/v1/account/api-keys/{key_id}` | Yes | Revoke API key |
-| `GET` | `/api/v1/account/wallet` | Yes | Get Pearl wallet address |
-| `POST` | `/api/v1/buckets` | Yes | Create bucket |
-| `GET` | `/api/v1/buckets` | Yes | List buckets (paginated) |
-| `DELETE` | `/api/v1/buckets/{bucket_id}` | Yes | Delete bucket (cascades blobs) |
-| `PUT` | `/api/v1/buckets/{bucket_id}/blobs` | Yes | Upload blob |
-| `GET` | `/api/v1/buckets/{bucket_id}/blobs` | Yes | List blobs in bucket (paginated) |
-| `GET` | `/api/v1/blobs/{object_id}` | No | Read blob by object ID |
+| `POST` | `/api/v1/accounts` | JWT | Create account |
+| `POST` | `/api/v1/accounts/{account_id}/api-keys` | JWT | Generate API key for account |
+| `DELETE` | `/api/v1/accounts/{account_id}/api-keys/{key_id}` | JWT | Revoke API key |
+| `POST` | `/api/v1/accounts/{account_id}/access-keys` | JWT | Create S3 access key |
+| `GET` | `/api/v1/accounts/{account_id}/access-keys` | JWT | List S3 access keys |
+| `DELETE` | `/api/v1/accounts/{account_id}/access-keys/{access_key_id}` | JWT | Revoke S3 access key |
+| `POST` | `/api/v1/apps/token-refresh` | JWT | Refresh a JWT token |
+
+**Data routes** (API key-authenticated):
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/api/v1/account/wallet` | API Key | Get Pearl wallet address |
+| `POST` | `/api/v1/buckets` | API Key | Create bucket |
+| `GET` | `/api/v1/buckets` | API Key | List buckets (paginated) |
+| `DELETE` | `/api/v1/buckets/{bucket_name}` | API Key | Delete empty bucket (409 if non-empty) |
+| `PUT` | `/api/v1/buckets/{bucket_name}/blobs/{key}` | API Key | Upload blob |
+| `GET` | `/api/v1/buckets/{bucket_name}/blobs` | API Key | List blobs in bucket (paginated) |
+| `GET` | `/api/v1/buckets/{bucket_name}/blobs/{key}` | No | Read blob by bucket and key |
 | `GET` | `/api/v1/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
-| `PATCH` | `/api/v1/blobs/{object_id}/metadata` | Yes | Update content type |
-| `DELETE` | `/api/v1/blobs/{object_id}` | Yes | Delete blob |
+| `PATCH` | `/api/v1/buckets/{bucket_name}/blobs/{key}/metadata` | API Key | Update content type |
+| `DELETE` | `/api/v1/buckets/{bucket_name}/blobs/{key}` | API Key | Delete blob |
 | `GET` | `/health` | No | Liveness probe |
 | `GET` | `/ready` | No | Readiness probe (checks DB and Pearl connectivity) |
 | `GET` | `/metrics` | No | Prometheus metrics |
 
-Pagination is cursor-based. Pass `?limit=N&cursor=TOKEN` to paginate; the response includes
-`next_cursor` when more pages exist. Blob endpoints support `If-Match` / `If-None-Match`
-conditional headers for cache validation and safe concurrent writes.
+Admin JWTs are issued via the `oysterd app` CLI commands (see below). Pagination is cursor-based
+-- pass `?limit=N&cursor=TOKEN` to paginate; the response includes `next_cursor` when more pages
+exist. Blob endpoints support `If-Match` / `If-None-Match` conditional headers for cache
+validation and safe concurrent writes.
 
 ### Blob store implementations
 
@@ -165,10 +177,12 @@ files to `/run/secrets/`).
 | `BLOB_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead to look for expiring blobs |
 | `BLOB_EXTEND_EPOCHS` | `5` | Epochs to extend by |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
+| `OYSTER_JWT_SECRET` | -- | Secret for signing/verifying admin JWTs (**required**) |
 
 | CLI flag | Description |
 |----------|-------------|
 | `--pearl-service-secret-file PATH` | Read `PEARL_SERVICE_SECRET` from a file |
+| `--oyster-jwt-secret-file PATH` | Read `OYSTER_JWT_SECRET` from a file |
 
 ---
 
@@ -276,23 +290,39 @@ cargo run -p pearl
 # Terminal 2: start Oyster
 PEARL_GRPC_URL=http://127.0.0.1:50051 \
 PEARL_SERVICE_SECRET=<shared-secret> \
+OYSTER_JWT_SECRET=<jwt-signing-secret> \
 cargo run -p oyster  # runs `oysterd serve` by default
 
-# Terminal 3: use the API
-curl -X POST http://localhost:3000/api/v1/debug/create-account
-# Returns { "account_id": "...", "api_key": { "secret": "..." } }
+# Terminal 3: create an app, get a JWT, then use the admin API
+OYSTER_JWT_SECRET=<jwt-signing-secret> \
+  cargo run -p oyster -- app new --name dev --contact-email dev@example.com
+# Prints: <app_id>
 
+OYSTER_JWT_SECRET=<jwt-signing-secret> \
+  cargo run -p oyster -- app jwt <app_id>
+# Prints: <jwt>
+
+# Create an account and API key via the admin API
+curl -X POST http://localhost:3000/api/v1/accounts \
+  -H "Authorization: Bearer <jwt>"
+# Returns { "account_id": "...", ... }
+
+curl -X POST http://localhost:3000/api/v1/accounts/<account_id>/api-keys \
+  -H "Authorization: Bearer <jwt>"
+# Returns { "bearer_token": "...", ... }
+
+# Use the API key for data operations
 curl -X POST http://localhost:3000/api/v1/buckets \
   -H "Authorization: Bearer <api_key>" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-bucket"}'
 
-curl -X PUT http://localhost:3000/api/v1/buckets/<bucket_id>/blobs \
+curl -X PUT http://localhost:3000/api/v1/buckets/my-bucket/blobs/hello.txt \
   -H "Authorization: Bearer <api_key>" \
   -H "Content-Type: text/plain" \
   -d 'hello world'
 
-curl http://localhost:3000/api/v1/blobs/<object_id>
+curl http://localhost:3000/api/v1/buckets/my-bucket/blobs/hello.txt
 ```
 
 To run the extension worker separately:
