@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Manual smoke-test script for the Oyster local testbed.
 
-Run after starting the local testbed (./scripts/local-testbed.sh).
+Run after starting the local testbed (procman oyster.procman -- --walrus_dir ../walrus).
 Exercises core CRUD flows end-to-end against the live local stack.
 
 Usage:
