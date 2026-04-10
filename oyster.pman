@@ -9,10 +9,6 @@ arg walrus_dir {
   type = string
 }
 
-config {
-  logs = "working_dir/logs"
-}
-
 env {
   RUST_LOG = "info,warn=sui_types"
 }
