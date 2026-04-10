@@ -2,6 +2,7 @@
 
 use std::{path::PathBuf, sync::Arc};
 
+use axum::http::{HeaderName, HeaderValue};
 use clap::{Parser, Subcommand};
 use oyster::{
     AppId,
@@ -14,7 +15,9 @@ use oyster::{
     pearl_client::PearlConnection,
     routes,
 };
-use tower_http::{cors::CorsLayer, trace::TraceLayer};
+use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer, trace::TraceLayer};
+
+const X_OYSTER_VERSION: HeaderName = HeaderName::from_static("x-oyster-version");
 
 #[derive(Parser)]
 #[command(name = "oysterd", about = "Oyster object storage service")]
@@ -182,6 +185,10 @@ async fn main() {
             let app = routes::build_router(state)
                 .layer(axum::middleware::from_fn(
                     oyster::middleware::track_http_metrics,
+                ))
+                .layer(SetResponseHeaderLayer::if_not_present(
+                    X_OYSTER_VERSION,
+                    HeaderValue::from_static(env!("CARGO_PKG_VERSION")),
                 ))
                 .layer(CorsLayer::permissive())
                 .layer(TraceLayer::new_for_http());
