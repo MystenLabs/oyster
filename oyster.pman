@@ -1,11 +1,16 @@
-import "${args.walrus_dir}/walrus.pman"
+import "${args.walrus_dir}/walrus.pman" { working_dir = args.working_dir }
+
+arg working_dir {
+  type = string
+  default = module.dir + "/working_dir"
+}
 
 arg walrus_dir {
   type = string
 }
 
 config {
-  logs = "working_dir"
+  logs = "working_dir/logs"
 }
 
 env {
@@ -14,7 +19,7 @@ env {
 
 
 job clean {
-  env WORKING_DIR = walrus::args.working_dir
+  env WORKING_DIR = args.working_dir
   run """
     echo "rm -rf $WORKING_DIR"
     rm -rf "$WORKING_DIR"
@@ -45,19 +50,19 @@ service pearl {
 service oyster {
   wait {
     after @build
+    after @walrus::deploy
     connect "127.0.0.1:50051"
-    connect "127.0.0.1:31415"
-    contains "${{ args.working_dir }}/client_config.yaml" {
+    contains "${ args.working_dir }/client_config.yaml" {
       format = "yaml"
       key = "$.system_object"
       var = walrus_system_object
     }
-    contains "${{ args.working_dir }}/client_config.yaml" {
+    contains "${ args.working_dir }/client_config.yaml" {
       format = "yaml"
       key = "$.staking_object"
       var = walrus_staking_object
     }
-    contains "${{ args.working_dir }}/sui_client.yaml" {
+    contains "${ args.working_dir }/sui_client.yaml" {
       format = "yaml"
       key = "$.envs[?(@.alias == 'local')].rpc"
       var = sui_rpc_url
@@ -66,7 +71,7 @@ service oyster {
   env {
     BIND_ADDR = "127.0.0.1:3000"
     DATABASE_URL = "sqlite:oyster.db?mode=rwc"
-    ENABLE_DEBUG = "true"
+    OYSTER_JWT_SECRET = "testbed-jwt-secret"
     PEARL_GRPC_URL = "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET = "testbed-secret"
     WALRUS_AGGREGATOR_URL = "http://127.0.0.1:31415"
@@ -83,7 +88,7 @@ job setup {
     http "http://127.0.0.1:3000/health" {
       status = 200
     }
-    contains "${{ args.working_dir }}/sui_client.yaml" {
+    contains "${ args.working_dir }/sui_client.yaml" {
       format = "yaml"
       key = "$.envs[?(@.alias == 'local')].rpc"
       var = sui_rpc_url
@@ -93,6 +98,9 @@ job setup {
     PEARL_BIND_ADDR = "127.0.0.1:50051"
     PEARL_SERVICE_SECRET = "testbed-secret"
     OYSTER_BIND_ADDR = "127.0.0.1:3000"
+    OYSTER_JWT_SECRET = "testbed-jwt-secret"
+    DATABASE_URL = "sqlite:oyster.db?mode=rwc"
+    WALRUS_WORKING_DIR = args.working_dir
     SUI_RPC_URL = sui_rpc_url
   }
   run "./scripts/testbed-setup.sh"
@@ -101,17 +109,17 @@ job setup {
 service extend {
   wait {
     after @setup
-    contains "${{ args.working_dir }}/client_config.yaml" {
+    contains "${ args.working_dir }/client_config.yaml" {
       format = "yaml"
       key = "$.system_object"
       var = walrus_system_object
     }
-    contains "${{ args.working_dir }}/client_config.yaml" {
+    contains "${ args.working_dir }/client_config.yaml" {
       format = "yaml"
       key = "$.staking_object"
       var = walrus_staking_object
     }
-    contains "${{ args.working_dir }}/sui_client.yaml" {
+    contains "${ args.working_dir }/sui_client.yaml" {
       format = "yaml"
       key = "$.envs[?(@.alias == 'local')].rpc"
       var = sui_rpc_url

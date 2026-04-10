@@ -68,11 +68,21 @@ OPERATOR_ADDRESS="$(echo "$operator_json" | jq -r '.address')"
 echo "  account_id: $OPERATOR_ACCOUNT_ID"
 echo "  address:    $OPERATOR_ADDRESS"
 
+# --- Sign admin JWT ---
+INTERNAL_APP_ID="00000000-0000-0000-0000-000000000000"
+echo "Signing admin JWT for internal app ($INTERNAL_APP_ID)..."
+ADMIN_JWT="$(./target/debug/oysterd app jwt "$INTERNAL_APP_ID")"
+echo "  JWT obtained (${#ADMIN_JWT} chars)"
+
 # --- Create test user ---
 echo "Creating test user account..."
-user_json="$(curl -sf -X POST "http://$OYSTER_BIND_ADDR/api/v1/debug/create-account")"
+user_json="$(
+  curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+    -H "Content-Type: application/json" \
+    "http://$OYSTER_BIND_ADDR/api/v1/accounts"
+)"
 USER_ACCOUNT_ID="$(echo "$user_json" | jq -r '.account_id')"
-USER_API_SECRET="$(echo "$user_json" | jq -r '.api_key.secret')"
+USER_API_SECRET="$(echo "$user_json" | jq -r '.api_key.bearer_token')"
 echo "  account_id: $USER_ACCOUNT_ID"
 
 # --- Get user wallet address ---
@@ -87,8 +97,8 @@ echo "  wallet: $USER_WALLET"
 # --- Create S3 access key ---
 echo "Creating S3 access key..."
 access_key_json="$(
-  curl -sf -X POST -H "Authorization: Bearer $USER_API_SECRET" \
-    "http://$OYSTER_BIND_ADDR/api/v1/account/access-keys"
+  curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+    "http://$OYSTER_BIND_ADDR/api/v1/accounts/$USER_ACCOUNT_ID/access-keys"
 )"
 S3_ACCESS_KEY="$(echo "$access_key_json" | jq -r '.access_key_id')"
 S3_SECRET_KEY="$(echo "$access_key_json" | jq -r '.secret_access_key')"
