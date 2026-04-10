@@ -1,4 +1,7 @@
-import "${args.walrus_dir}/walrus.pman" { working_dir = args.working_dir }
+import "${args.walrus_dir}/walrus.pman" {
+  working_dir = args.working_dir
+  aggregator = true
+}
 
 arg working_dir {
   type = string
@@ -10,7 +13,7 @@ arg walrus_dir {
 }
 
 env {
-  RUST_LOG = "info,warn=sui_types"
+  RUST_LOG = "info,sui_types=warn"
 }
 
 
