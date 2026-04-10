@@ -10,7 +10,7 @@ Usage:
 
 import json
 import sys
-import uuid
+import time
 import urllib.error
 import urllib.request
 
@@ -95,9 +95,11 @@ def scenario_2(base, auth, ctx):
     heading(2, "Bucket CRUD")
     passed = True
 
+    bucket_name = f"test-bucket-{int(time.time())}"
+
     # Create bucket
     status, _, body = request(
-        "POST", f"{base}/api/v1/buckets", body={"name": "test-bucket"}, headers=auth
+        "POST", f"{base}/api/v1/buckets", body={"name": bucket_name}, headers=auth
     )
     if status != 201:
         fail(f"POST /buckets returned {status} (expected 201)")
@@ -122,7 +124,7 @@ def scenario_2(base, auth, ctx):
 
     # Duplicate name -> 409
     status, _, _ = request(
-        "POST", f"{base}/api/v1/buckets", body={"name": "test-bucket"}, headers=auth
+        "POST", f"{base}/api/v1/buckets", body={"name": bucket_name}, headers=auth
     )
     if status != 409:
         fail(f"duplicate POST /buckets returned {status} (expected 409)")
@@ -312,24 +314,38 @@ def scenario_7(base, auth, ctx):
 
 
 def scenario_8(base, auth, ctx):
-    """Bucket Delete (cascade)."""
-    heading(8, "Bucket Delete (cascade)")
+    """Bucket Delete (drain then delete)."""
+    heading(8, "Bucket Delete (drain then delete)")
     bucket = ctx["bucket_name"]
 
-    # Store a fresh blob
-    hdrs = {**auth, "Content-Type": "text/plain"}
+    # The DELETE /buckets/{name} endpoint does NOT cascade — it returns 409 if
+    # the bucket is non-empty. Verify that, then drain the bucket and retry.
     status, _, _ = request(
-        "PUT",
-        f"{base}/api/v1/buckets/{bucket}/blobs/cascade-test.txt",
-        body=b"about to be cascaded",
-        headers=hdrs,
+        "DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth
     )
-    if status != 201:
-        fail(f"PUT fresh blob returned {status}")
+    if status != 409:
+        fail(f"DELETE non-empty bucket returned {status} (expected 409)")
         return False
-    ok("stored fresh blob for cascade test")
+    ok("non-empty bucket correctly rejected (409)")
 
-    # Delete bucket
+    # Drain: list and delete every remaining blob.
+    status, _, body = request(
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs", headers=auth
+    )
+    if status != 200:
+        fail(f"GET blobs listing returned {status}")
+        return False
+    for blob in json_body(body).get("data", []):
+        key = blob["key"]
+        status, _, _ = request(
+            "DELETE", f"{base}/api/v1/buckets/{bucket}/blobs/{key}", headers=auth
+        )
+        if status != 204:
+            fail(f"DELETE blob {key} returned {status} (expected 204)")
+            return False
+    ok("drained remaining blobs from bucket")
+
+    # Delete bucket (now empty)
     status, _, _ = request(
         "DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth
     )
@@ -352,48 +368,14 @@ def scenario_8(base, auth, ctx):
 
 
 def scenario_9(base, auth, ctx):
-    """API Key Management."""
-    heading(9, "API Key Management")
-    passed = True
-
-    # Create new key
-    status, _, body = request("POST", f"{base}/api/v1/account/api-keys", headers=auth)
-    if status != 201:
-        fail(f"POST /account/api-keys returned {status}")
-        return False
-    data = json_body(body)
-    new_key = data["bearer_token"]
-    key_id = data["id"]
-    ok(f"created API key id={key_id}")
-
-    # Use new key
-    new_auth = {"Authorization": f"Bearer {new_key}"}
-    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
-    if status != 200:
-        fail(f"GET /buckets with new key returned {status}")
-        passed = False
-    else:
-        ok("new key works for GET /buckets")
-
-    # Revoke key
-    status, _, _ = request(
-        "DELETE", f"{base}/api/v1/account/api-keys/{key_id}", headers=auth
+    """API Key Management (skipped — now JWT-only)."""
+    heading(9, "API Key Management (skipped)")
+    info(
+        "API key create/revoke moved to admin routes "
+        "(POST/DELETE /api/v1/accounts/{account_id}/api-keys) which require "
+        "an app JWT. Re-enable once the script has a --jwt bootstrap flow."
     )
-    if status != 204:
-        fail(f"DELETE api-key returned {status} (expected 204)")
-        passed = False
-    else:
-        ok("API key revoked")
-
-    # Use revoked key
-    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
-    if status != 401:
-        fail(f"revoked key returned {status} (expected 401)")
-        passed = False
-    else:
-        ok("revoked key correctly rejected (401)")
-
-    return passed
+    return True
 
 
 def scenario_10(base, auth):
@@ -463,7 +445,7 @@ def main():
         ("Content-Addressed Dedup", lambda: scenario_5(base, auth, ctx)),
         ("Blob Metadata Update", lambda: scenario_6(base, auth, ctx)),
         ("Blob Delete", lambda: scenario_7(base, auth, ctx)),
-        ("Bucket Delete (cascade)", lambda: scenario_8(base, auth, ctx)),
+        ("Bucket Delete (drain then delete)", lambda: scenario_8(base, auth, ctx)),
         ("API Key Management", lambda: scenario_9(base, auth, ctx)),
         ("Error Cases", lambda: scenario_10(base, auth)),
     ]
