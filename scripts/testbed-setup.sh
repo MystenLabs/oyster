@@ -78,7 +78,6 @@ echo "  JWT obtained (${#ADMIN_JWT} chars)"
 echo "Creating test user account..."
 user_json="$(
   curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
-    -H "Content-Type: application/json" \
     "http://$OYSTER_BIND_ADDR/api/v1/accounts"
 )"
 USER_ACCOUNT_ID="$(echo "$user_json" | jq -r '.account_id')"
