@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.2.2] - 2026-04-10
+
+### Added
+- Every HTTP response now carries an `X-Oyster-Version` header exposing the running server's crate version, so clients can identify which Oyster build they are talking to
+
 ## [0.2.1] - 2026-04-10
 
 ### Fixed
