@@ -8,7 +8,9 @@ Usage:
     python3 scripts/manual-test.py
 """
 
+import base64
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -392,6 +394,34 @@ def scenario_10(base, auth):
         passed = False
     else:
         ok("GET non-existent blob -> 404")
+
+    # GET malformed blob_id — aggregator can't decode it as a Walrus BlobId, so
+    # it returns 400. Oyster should propagate that status so the caller can tell
+    # "malformed ID" apart from "well-formed but missing".
+    status, _, _ = request(
+        "GET", f"{base}/api/v1/blobs/by-blob-id/FAKE_BLOB_ID_DOES_NOT_EXIST"
+    )
+    if status != 400:
+        fail(f"GET malformed blob_id returned {status} (expected 400)")
+        passed = False
+    else:
+        ok("GET malformed blob_id -> 400")
+
+    # GET well-formed but nonexistent blob_id — Walrus aggregator returns 404
+    # for a valid-but-unknown BlobId, which Oyster passes through.
+    random_blob_id = (
+        base64.urlsafe_b64encode(os.urandom(32)).rstrip(b"=").decode()
+    )
+    status, _, _ = request(
+        "GET", f"{base}/api/v1/blobs/by-blob-id/{random_blob_id}"
+    )
+    if status != 404:
+        fail(
+            f"GET well-formed nonexistent blob_id returned {status} (expected 404)"
+        )
+        passed = False
+    else:
+        ok("GET well-formed nonexistent blob_id -> 404")
 
     # DELETE non-existent blob
     status, _, _ = request(

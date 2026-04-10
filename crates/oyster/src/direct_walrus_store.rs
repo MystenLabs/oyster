@@ -229,15 +229,16 @@ impl BlobStore for DirectWalrusBlobStore {
                 .await
                 .map_err(|e| BlobStoreError::Http(e.to_string()))?;
 
-            if resp.status() == reqwest::StatusCode::NOT_FOUND {
-                return Err(BlobStoreError::NotFound(url));
-            }
-
-            if !resp.status().is_success() {
-                return Err(BlobStoreError::Http(format!(
-                    "aggregator returned {}",
-                    resp.status()
-                )));
+            let status = resp.status();
+            if !status.is_success() {
+                if status == reqwest::StatusCode::NOT_FOUND {
+                    return Err(BlobStoreError::NotFound(url));
+                }
+                let body = resp.text().await.unwrap_or_default();
+                return Err(BlobStoreError::Upstream {
+                    status: status.as_u16(),
+                    message: body,
+                });
             }
 
             resp.bytes()
@@ -303,9 +304,10 @@ impl BlobStore for DirectWalrusBlobStore {
             match resp.status() {
                 reqwest::StatusCode::OK => Ok(true),
                 reqwest::StatusCode::NOT_FOUND => Ok(false),
-                status => Err(BlobStoreError::Http(format!(
-                    "aggregator returned {status}"
-                ))),
+                status => Err(BlobStoreError::Upstream {
+                    status: status.as_u16(),
+                    message: String::new(),
+                }),
             }
         })
     }

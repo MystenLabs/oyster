@@ -42,6 +42,16 @@ pub enum BlobStoreError {
     /// An HTTP or network error occurred.
     #[error("http error: {0}")]
     Http(String),
+    /// The upstream blob store (Walrus aggregator) returned a non-success HTTP
+    /// status other than 404. Carries the original status so the HTTP layer can
+    /// decide whether to pass it through (4xx) or mask it as 502 (5xx).
+    #[error("upstream blob store returned {status}: {message}")]
+    Upstream {
+        /// Original HTTP status code returned by the upstream.
+        status: u16,
+        /// Response body (or empty when the request had no body, e.g. HEAD).
+        message: String,
+    },
     /// The account has insufficient on-chain balance to complete the operation.
     #[error("insufficient balance: {0}")]
     InsufficientBalance(String),

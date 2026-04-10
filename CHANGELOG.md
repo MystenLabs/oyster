@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1] - 2026-04-10
+
+### Fixed
+- Upstream Walrus aggregator failures on blob GET/HEAD now map to HTTP 502 Bad Gateway (previously 500 Internal Server Error), and upstream 4xx responses other than 404 are passed through with their original status code instead of being masked as 500
+- `oysterd` and `pearl` now write tracing output to stderr instead of stdout, so stdout can be used cleanly by callers and process supervisors
+- Local testbed now starts the Walrus aggregator daemon and uses correct `RUST_LOG` syntax, so blob reads work out of the box
+- `scripts/manual-test.py` repaired against the current API surface: uses the JWT-authenticated admin API for account setup, drops the `Content-Type` header on empty-body account creation, and exercises both malformed and well-formed-but-missing blob IDs
+
+### Changed
+- Default `RUST_LOG` filter silences the noisy `s3s::ops` module
+- Removed obsolete `procman.yaml`; `oyster.pman` is now the sole procman configuration for local dev
+
 ## [0.2.0] - 2026-04-08
 
 ### Breaking Changes

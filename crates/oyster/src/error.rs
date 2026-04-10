@@ -79,6 +79,24 @@ impl IntoResponse for AppError {
                 crate::blob_store::BlobStoreError::NotFound(_) => {
                     (StatusCode::NOT_FOUND, self.to_string())
                 }
+                crate::blob_store::BlobStoreError::Upstream { status, message } => {
+                    let code = StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY);
+                    if code.is_client_error() {
+                        tracing::debug!(
+                            upstream_status = status,
+                            upstream_body = %message,
+                            "upstream blob store client error",
+                        );
+                        (code, format!("upstream blob store: {message}"))
+                    } else {
+                        tracing::error!(
+                            upstream_status = status,
+                            upstream_body = %message,
+                            "upstream blob store error",
+                        );
+                        (StatusCode::BAD_GATEWAY, "upstream blob store error".into())
+                    }
+                }
                 _ => {
                     tracing::error!("blob store error: {e}");
                     (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())

@@ -53,6 +53,34 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             tracing::error!(error = %msg, "blob store HTTP error");
             S3Error::with_message(S3ErrorCode::InternalError, msg.clone())
         }
+        BlobStoreError::Upstream {
+            status,
+            ref message,
+        } => {
+            let code =
+                hyper::StatusCode::from_u16(status).unwrap_or(hyper::StatusCode::BAD_GATEWAY);
+            let mut err = if code.is_client_error() {
+                tracing::debug!(
+                    upstream_status = status,
+                    upstream_body = %message,
+                    "upstream blob store client error",
+                );
+                S3Error::with_message(S3ErrorCode::InvalidRequest, message.clone())
+            } else {
+                tracing::error!(
+                    upstream_status = status,
+                    upstream_body = %message,
+                    "upstream blob store error",
+                );
+                S3Error::with_message(S3ErrorCode::InternalError, "upstream blob store error")
+            };
+            err.set_status_code(if code.is_client_error() {
+                code
+            } else {
+                hyper::StatusCode::BAD_GATEWAY
+            });
+            err
+        }
     }
 }
 
