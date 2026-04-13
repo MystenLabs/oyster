@@ -1,7 +1,6 @@
 ---
 name: issue-jwt
 description: Steps to issue a new JWT for an app account
-disable-model-invocation: true
 allowed-tools: ""
 ---
 
