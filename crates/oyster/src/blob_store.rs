@@ -42,6 +42,10 @@ pub enum BlobStoreError {
     /// An HTTP or network error occurred.
     #[error("http error: {0}")]
     Http(String),
+    /// The upstream blob store was unreachable before returning a status
+    /// (connection refused, DNS failure, request timeout). Surfaces as 502.
+    #[error("upstream blob store unreachable: {0}")]
+    Unreachable(String),
     /// The upstream blob store (Walrus aggregator) returned a non-success HTTP
     /// status other than 404. Carries the original status so the HTTP layer can
     /// decide whether to pass it through (4xx) or mask it as 502 (5xx).

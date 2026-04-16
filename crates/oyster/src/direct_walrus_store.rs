@@ -18,6 +18,17 @@ use crate::{
     sui_transaction,
 };
 
+/// Map a `reqwest::Error` to a `BlobStoreError`. Connect/timeout errors
+/// (no HTTP status was ever returned) become `Unreachable`, which the error
+/// layer surfaces as HTTP 502. Everything else becomes a generic `Http`.
+fn map_reqwest_err(e: reqwest::Error) -> BlobStoreError {
+    if e.is_connect() || e.is_timeout() {
+        BlobStoreError::Unreachable(e.to_string())
+    } else {
+        BlobStoreError::Http(e.to_string())
+    }
+}
+
 /// Check whether an error message indicates insufficient on-chain balance.
 fn is_insufficient_balance(msg: &str) -> bool {
     let lower = msg.to_lowercase();
@@ -227,7 +238,7 @@ impl BlobStore for DirectWalrusBlobStore {
                 .get(&url)
                 .send()
                 .await
-                .map_err(|e| BlobStoreError::Http(e.to_string()))?;
+                .map_err(map_reqwest_err)?;
 
             let status = resp.status();
             if !status.is_success() {
@@ -244,7 +255,7 @@ impl BlobStore for DirectWalrusBlobStore {
             resp.bytes()
                 .await
                 .map(|b| b.to_vec())
-                .map_err(|e| BlobStoreError::Http(e.to_string()))
+                .map_err(map_reqwest_err)
         })
     }
 
@@ -299,7 +310,7 @@ impl BlobStore for DirectWalrusBlobStore {
                 .head(&url)
                 .send()
                 .await
-                .map_err(|e| BlobStoreError::Http(e.to_string()))?;
+                .map_err(map_reqwest_err)?;
 
             match resp.status() {
                 reqwest::StatusCode::OK => Ok(true),
