@@ -48,13 +48,26 @@ All errors return a JSON body with a single `error` field:
 | `304` | Not Modified — `If-None-Match` matched on a GET request |
 | `400` | Bad Request — invalid input or validation failure |
 | `401` | Unauthorized — missing or invalid API key |
+| `402` | Payment Required — insufficient on-chain balance for the requested operation |
 | `404` | Not Found — resource doesn't exist or not owned by your account |
 | `409` | Conflict — resource already exists or limit reached |
 | `412` | Precondition Failed — `If-Match` or `If-None-Match` condition not met |
 | `413` | Payload Too Large — blob exceeds 1 GB |
-| `500` | Internal Server Error |
+| `500` | Internal Server Error — unexpected error |
 | `501` | Not Implemented — endpoint exists but isn't functional yet |
+| `502` | Bad Gateway — upstream storage service unreachable or returned a server-side error |
 | `503` | Service Unavailable — a dependent service is unreachable |
+
+## Response Headers
+
+Oyster sets these headers on responses (in addition to the usual
+`Content-Type` / `Content-Length`):
+
+| Header | Where it appears | Description |
+|--------|------------------|-------------|
+| `X-Oyster-Version` | Every response | The running Oyster server's crate version |
+| `ETag` | Blob store, read, list, and duplicate responses | Quoted MD5 digest of the blob (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`) |
+| `X-Content-Type-Options` | Blob read responses | Always `nosniff` — prevents browsers from MIME-sniffing |
 
 ## Pagination
 

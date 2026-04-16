@@ -160,6 +160,7 @@ curl -s -o /dev/null -w "%{http_code}" \
 - **Body:** Raw binary blob data
 - **Content-Type:** The MIME type set during upload
 - **ETag:** Quoted MD5 digest (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`)
+- **X-Content-Type-Options:** `nosniff` — prevents browsers from MIME-sniffing
 
 **Errors:**
 
@@ -194,12 +195,79 @@ curl -s "$OYSTER_URL/api/v1/blobs/by-blob-id/2cf24dba5fb0a30e..."
 **Response** (`200 OK`):
 - **Body:** Raw binary blob data
 - **Content-Type:** `application/octet-stream`
+- **X-Content-Type-Options:** `nosniff` — prevents browsers from MIME-sniffing
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
 | `404` | Blob ID not found |
+
+## Duplicate Blob
+
+```
+POST /api/v1/buckets/{bucket_name}/blobs/{key}/duplicate
+```
+
+Reifies a second `(bucket, key)` reference to an already-stored blob without
+re-uploading its bytes. The resulting blob shares the source's `blob_id`,
+`size`, and `md5`, but receives a fresh `sui_object_id`, `created_at`, and
+`expires_at`. For on-chain backends, the caller pays `reserve_space`,
+`register_blob`, and `certify_blob` fees but no sliver bandwidth.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `bucket_name` | string | Source bucket |
+| `key` | string | Source object key |
+
+**Auth:** Bearer token. The caller must own **both** the source bucket and
+the destination bucket.
+
+**Request headers:**
+
+| Header | Default | Description |
+|--------|---------|-------------|
+| `If-Match` | — | Only overwrite the destination if its existing ETag matches (412 otherwise) |
+| `If-None-Match` | — | Set to `*` to create only if the destination doesn't exist (412 otherwise) |
+
+**Request body** (`DuplicateBlobRequest`):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `destination_bucket` | string | yes | Target bucket (may equal the source bucket) |
+| `destination_key` | string | yes | Target object key (must differ from source when bucket is the same) |
+| `content_type` | string | no | MIME type for the new row. Defaults to the source's `content_type` |
+
+**Example:**
+
+```bash
+curl -s -X POST \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "destination_bucket": "backup-bucket",
+    "destination_key": "archive/photo.png"
+  }' \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/images/photo.png/duplicate" | jq
+```
+
+**Response** (`201 Created`): Same shape as the [Store Blob](#store-blob)
+response. The `blob_id` matches the source; `sui_object_id`, `created_at`,
+and `expires_at` are fresh. The response includes an `ETag` header with the
+quoted MD5 (identical to the source's ETag).
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Malformed body, or source and destination are the same `(bucket, key)` |
+| `401` | Missing or invalid API key |
+| `402` | Insufficient on-chain balance for the requested operation |
+| `404` | Source blob not found, destination bucket not found, or either not owned by your account |
+| `412` | `If-Match` or `If-None-Match` condition failed on the destination |
+| `501` | Blob-store backend does not support duplication |
 
 ## List Blobs
 

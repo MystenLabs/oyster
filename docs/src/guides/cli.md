@@ -104,6 +104,22 @@ oyster read hello.txt --bucket my-bucket -o downloaded.txt
 
 > **Note:** Reading blobs does not require an API key — reads are public.
 
+### Duplicate a Blob
+
+```bash
+oyster duplicate photo.png \
+  --bucket my-bucket \
+  --to-bucket backup-bucket \
+  --to-key archive/photo.png
+```
+
+This creates a second `(bucket, key)` reference to the same underlying blob
+without re-uploading any bytes. It calls `POST /buckets/{bucket}/blobs/{key}/duplicate`.
+On-chain backends still pay blob-registration fees but no sliver bandwidth.
+
+Override the content type with `--content-type <MIME>`; otherwise the source's
+content type is copied to the new row.
+
 ### List Blobs
 
 ```bash

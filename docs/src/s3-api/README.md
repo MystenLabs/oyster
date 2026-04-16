@@ -13,6 +13,9 @@ is routed to the S3-compatible handler.
 This means you point your S3 client at the same `$OYSTER_URL` — no separate
 port or endpoint is needed.
 
+All responses include the `X-Oyster-Version` header identifying the server
+version.
+
 ## Supported Operations
 
 | Category | Operations |
