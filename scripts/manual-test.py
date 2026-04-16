@@ -5,12 +5,23 @@ Run after starting the local testbed (procman oyster.procman -- --walrus_dir ../
 Exercises core CRUD flows end-to-end against the live local stack.
 
 Usage:
+    # Non-interactive (recommended): scrapes the bearer token from setup.log
+    # and bootstraps additional accounts via the JWT for isolation coverage.
+    python3 scripts/manual-test.py --jwt "$(./target/debug/oysterd app jwt \\
+        00000000-0000-0000-0000-000000000000)"
+
+    # Single-account mode with an explicit pre-funded bearer token.
+    python3 scripts/manual-test.py --bearer-token $BEARER
+
+    # Interactive (legacy): prompts for URL and API key.
     python3 scripts/manual-test.py
 """
 
+import argparse
 import base64
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -369,15 +380,155 @@ def scenario_8(base, auth, ctx):
     return True
 
 
-def scenario_9(base, auth, ctx):
-    """API Key Management (skipped — now JWT-only)."""
-    heading(9, "API Key Management (skipped)")
-    info(
-        "API key create/revoke moved to admin routes "
-        "(POST/DELETE /api/v1/accounts/{account_id}/api-keys) which require "
-        "an app JWT. Re-enable once the script has a --jwt bootstrap flow."
+def scenario_9(base, auth, ctx, admin):
+    """API Key Management (JWT-bootstrapped admin flow)."""
+    heading("9", "API Key Management")
+    if not admin or not admin.get("jwt") or not admin.get("account_id"):
+        info(
+            "no --jwt / account_id bootstrap available — skipping. "
+            "Re-run with --jwt to exercise admin api-key create/revoke."
+        )
+        return True
+
+    jwt = admin["jwt"]
+    account_id = admin["account_id"]
+    admin_auth = {"Authorization": f"Bearer {jwt}"}
+
+    # Mint a fresh API key via the admin route.
+    status, _, body = request(
+        "POST",
+        f"{base}/api/v1/accounts/{account_id}/api-keys",
+        body={},
+        headers=admin_auth,
     )
+    if status != 201:
+        fail(f"POST admin api-keys returned {status} (expected 201)")
+        return False
+    data = json_body(body)
+    key_id = data["id"]
+    new_token = data["bearer_token"]
+    ok(f"minted API key id={key_id}")
+
+    # Confirm the new key authenticates.
+    new_auth = {"Authorization": f"Bearer {new_token}"}
+    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
+    if status != 200:
+        fail(f"GET /buckets with new key returned {status} (expected 200)")
+        return False
+    ok("new key authenticates (GET /buckets -> 200)")
+
+    # Revoke the key.
+    status, _, _ = request(
+        "DELETE",
+        f"{base}/api/v1/accounts/{account_id}/api-keys/{key_id}",
+        headers=admin_auth,
+    )
+    if status != 204:
+        fail(f"DELETE admin api-key returned {status} (expected 204)")
+        return False
+    ok("revoked API key")
+
+    # The revoked key must fail auth.
+    status, _, _ = request("GET", f"{base}/api/v1/buckets", headers=new_auth)
+    if status != 401:
+        fail(f"GET /buckets with revoked key returned {status} (expected 401)")
+        return False
+    ok("revoked key correctly rejected (401)")
     return True
+
+
+def scenario_isolation(base, auth_a, admin):
+    """Multi-account isolation: account B can't read/write account A's bucket."""
+    heading("isolation", "Multi-account Isolation")
+    if not admin or not admin.get("jwt"):
+        info(
+            "no --jwt available — skipping isolation scenario. "
+            "Re-run with --jwt to bootstrap a second account from the admin JWT."
+        )
+        return True
+
+    jwt = admin["jwt"]
+    admin_auth = {"Authorization": f"Bearer {jwt}"}
+
+    # Bootstrap account B (fresh, unfunded — read-only role in this scenario).
+    status, _, body = request(
+        "POST", f"{base}/api/v1/accounts", body={}, headers=admin_auth
+    )
+    if status != 201:
+        fail(f"POST /accounts (B) returned {status} (expected 201)")
+        return False
+    data = json_body(body)
+    b_token = data["api_key"]["bearer_token"]
+    auth_b = {"Authorization": f"Bearer {b_token}"}
+    ok(f"bootstrapped account B id={data['account_id']}")
+
+    # Account A creates a bucket and stores a blob. auth_a is the pre-funded
+    # testbed account so the on-chain PUT succeeds.
+    bucket = f"iso-{int(time.time())}"
+    status, _, _ = request(
+        "POST", f"{base}/api/v1/buckets", body={"name": bucket}, headers=auth_a
+    )
+    if status != 201:
+        fail(f"account A create bucket returned {status} (expected 201)")
+        return False
+
+    blob_key = "secret.txt"
+    hdrs = {**auth_a, "Content-Type": "text/plain"}
+    status, _, _ = request(
+        "PUT",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{blob_key}",
+        body=b"account A's secret",
+        headers=hdrs,
+    )
+    if status != 201:
+        fail(f"account A PUT blob returned {status} (expected 201)")
+        return False
+    ok(f"account A provisioned bucket '{bucket}' with blob '{blob_key}'")
+
+    passed = True
+
+    # B listing A's blobs must 404.
+    status, _, _ = request(
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs", headers=auth_b
+    )
+    if status != 404:
+        fail(f"B GET A's bucket blobs returned {status} (expected 404)")
+        passed = False
+    else:
+        ok("B can't list A's blobs (404)")
+
+    # B DELETE blob must 404.
+    status, _, _ = request(
+        "DELETE",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{blob_key}",
+        headers=auth_b,
+    )
+    if status != 404:
+        fail(f"B DELETE A's blob returned {status} (expected 404)")
+        passed = False
+    else:
+        ok("B can't delete A's blob (404)")
+
+    # B DELETE bucket must 404 (not 403/500).
+    status, _, _ = request(
+        "DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth_b
+    )
+    if status != 404:
+        fail(f"B DELETE A's bucket returned {status} (expected 404)")
+        passed = False
+    else:
+        ok("B can't delete A's bucket (404)")
+
+    # Cleanup: A drains and deletes the bucket.
+    status, _, _ = request(
+        "DELETE",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{blob_key}",
+        headers=auth_a,
+    )
+    if status == 204:
+        request("DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth_a)
+
+    return passed
 
 
 def scenario_10(base, auth):
@@ -443,6 +594,21 @@ def scenario_10(base, auth):
     else:
         ok("missing auth -> 401")
 
+    # Bogus /api/v1/... path should 404 cleanly, not fall through to the S3
+    # handler (which would choke on the Bearer header and return a confusing 400).
+    status, _, body = request(
+        "GET",
+        f"{base}/api/v1/definitely-not-a-real-route",
+        headers=auth,
+    )
+    if status != 404:
+        fail(
+            f"GET unmatched /api/v1 route returned {status} (expected 404)"
+        )
+        passed = False
+    else:
+        ok("unmatched /api/v1 path -> 404")
+
     return passed
 
 
@@ -451,20 +617,114 @@ def scenario_10(base, auth):
 # ---------------------------------------------------------------------------
 
 
-def main():
-    print(f"{BOLD}Oyster Manual Smoke Test{RESET}\n")
+SETUP_LOG_BEARER_RE = re.compile(r"^\s*Bearer Token:\s*(\S+)\s*$")
 
-    base = input("Oyster URL [http://127.0.0.1:3000]: ").strip()
-    if not base:
-        base = "http://127.0.0.1:3000"
-    base = base.rstrip("/")
 
+def scrape_bearer_from_setup_log(path):
+    """Return the last 'Bearer Token: <val>' from setup.log, or None."""
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except OSError:
+        return None
+    last = None
+    for line in content.splitlines():
+        m = SETUP_LOG_BEARER_RE.match(line)
+        if m:
+            last = m.group(1)
+    return last
+
+
+def bootstrap_account(base, jwt):
+    """Create a new account via the admin API. Returns (account_id, bearer_token)."""
+    admin_auth = {"Authorization": f"Bearer {jwt}"}
+    status, _, body = request(
+        "POST", f"{base}/api/v1/accounts", body={}, headers=admin_auth
+    )
+    if status != 201:
+        raise SystemExit(
+            f"bootstrap POST /accounts failed: {status} {body!r}"
+        )
+    data = json_body(body)
+    return data["account_id"], data["api_key"]["bearer_token"]
+
+
+def resolve_auth(args):
+    """Pick the primary bearer token and (optionally) a JWT bootstrap handle.
+
+    Returns (base_url, primary_auth_headers, admin_dict).
+    admin_dict = {'jwt': <str>, 'account_id': <str>} when JWT bootstrap is in
+    effect; None otherwise.
+    """
+    base = args.url.rstrip("/")
+
+    if args.bearer_token:
+        return base, {"Authorization": f"Bearer {args.bearer_token}"}, None
+
+    if args.jwt:
+        # Prefer the pre-funded testbed bearer for PUT-heavy scenarios, fall
+        # back to a freshly-bootstrapped account if no setup.log is present
+        # (reads will pass but PUTs will fail against an unfunded wallet).
+        primary_token = scrape_bearer_from_setup_log(args.setup_log)
+        if primary_token:
+            print(f"  using pre-funded bearer scraped from {args.setup_log}")
+        else:
+            account_id, primary_token = bootstrap_account(base, args.jwt)
+            print(
+                f"  no setup.log bearer found; bootstrapped account "
+                f"{account_id} (PUT scenarios may fail against unfunded wallet)"
+            )
+
+        # Also resolve an account_id we own for scenario 9. If we can bootstrap
+        # a fresh account, use its ID (so api-key mint/revoke doesn't touch the
+        # pre-funded testbed account).
+        admin_account_id, _ = bootstrap_account(base, args.jwt)
+        return (
+            base,
+            {"Authorization": f"Bearer {primary_token}"},
+            {"jwt": args.jwt, "account_id": admin_account_id},
+        )
+
+    # Interactive fallback.
+    interactive_base = input(f"Oyster URL [{base}]: ").strip() or base
     api_key = input("API key: ").strip()
     if not api_key:
         print("API key is required.")
         sys.exit(1)
+    return interactive_base.rstrip("/"), {"Authorization": f"Bearer {api_key}"}, None
 
-    auth = {"Authorization": f"Bearer {api_key}"}
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Manual smoke-test for the Oyster local testbed."
+    )
+    p.add_argument("--url", default="http://127.0.0.1:3000", help="Oyster base URL")
+    auth_group = p.add_mutually_exclusive_group()
+    auth_group.add_argument(
+        "--bearer-token", help="API bearer token (skips JWT bootstrap)"
+    )
+    auth_group.add_argument(
+        "--jwt",
+        help="Admin JWT for bootstrapping accounts via POST /api/v1/accounts",
+    )
+    p.add_argument(
+        "--setup-log",
+        default="logs/procman/setup.log",
+        help="Path to testbed setup.log to scrape the pre-funded bearer token",
+    )
+    p.add_argument(
+        "--non-interactive",
+        action="store_true",
+        help="Fail instead of prompting on missing auth; also suppresses the "
+        "between-scenarios Press-Enter prompt on failure.",
+    )
+    return p.parse_args()
+
+
+def main():
+    args = parse_args()
+    print(f"{BOLD}Oyster Manual Smoke Test{RESET}\n")
+    base, auth, admin = resolve_auth(args)
     ctx = {}  # shared state between scenarios
 
     scenarios = [
@@ -476,10 +736,12 @@ def main():
         ("Blob Metadata Update", lambda: scenario_6(base, auth, ctx)),
         ("Blob Delete", lambda: scenario_7(base, auth, ctx)),
         ("Bucket Delete (drain then delete)", lambda: scenario_8(base, auth, ctx)),
-        ("API Key Management", lambda: scenario_9(base, auth, ctx)),
+        ("API Key Management", lambda: scenario_9(base, auth, ctx, admin)),
+        ("Multi-account Isolation", lambda: scenario_isolation(base, auth, admin)),
         ("Error Cases", lambda: scenario_10(base, auth)),
     ]
 
+    non_interactive = args.non_interactive or args.bearer_token or args.jwt
     results = []
     for i, (name, fn) in enumerate(scenarios):
         try:
@@ -489,9 +751,8 @@ def main():
             passed = False
         results.append((name, passed))
 
-        if not passed:
-            if i < len(scenarios) - 1:
-                input("\nPress Enter to continue (or Ctrl-C to abort)...")
+        if not passed and not non_interactive and i < len(scenarios) - 1:
+            input("\nPress Enter to continue (or Ctrl-C to abort)...")
 
     # Summary
     print(f"\n{BOLD}=== Summary ==={RESET}")
