@@ -231,6 +231,35 @@ impl OysterClient {
         Ok((bytes, content_type))
     }
 
+    pub async fn duplicate_blob(
+        &self,
+        source_bucket: &str,
+        source_key: &str,
+        destination_bucket: &str,
+        destination_key: &str,
+        content_type: Option<&str>,
+    ) -> Result<StoreBlobResponse, ApiError> {
+        let mut body = serde_json::json!({
+            "destination_bucket": destination_bucket,
+            "destination_key": destination_key,
+        });
+        if let Some(ct) = content_type {
+            body["content_type"] = serde_json::Value::String(ct.to_string());
+        }
+        let resp = self
+            .http
+            .post(format!(
+                "{}/buckets/{source_bucket}/blobs/{source_key}/duplicate",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .json(&body)
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
     pub async fn delete_blob(&self, bucket_name: &str, key: &str) -> Result<(), ApiError> {
         let resp = self
             .http

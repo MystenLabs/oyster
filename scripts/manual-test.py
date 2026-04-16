@@ -37,8 +37,8 @@ def info(msg):
     print(f"  {YELLOW}INFO{RESET} {msg}")
 
 
-def heading(n, title):
-    print(f"\n{BOLD}=== Scenario {n}: {title} ==={RESET}")
+def heading(label, title):
+    print(f"\n{BOLD}=== Scenario {label}: {title} ==={RESET}")
 
 
 def request(method, url, body=None, headers=None, expected_status=200):
@@ -78,7 +78,7 @@ def json_body(raw):
 
 def scenario_1(base, auth):
     """Account & Wallet Info."""
-    heading(1, "Account & Wallet Info")
+    heading("1", "Account & Wallet Info")
     status, _, body = request("GET", f"{base}/api/v1/account/wallet", headers=auth)
     if status != 200:
         fail(f"GET /account/wallet returned {status}")
@@ -94,7 +94,7 @@ def scenario_1(base, auth):
 
 def scenario_2(base, auth, ctx):
     """Bucket CRUD."""
-    heading(2, "Bucket CRUD")
+    heading("2", "Bucket CRUD")
     passed = True
 
     bucket_name = f"test-bucket-{int(time.time())}"
@@ -139,7 +139,7 @@ def scenario_2(base, auth, ctx):
 
 def scenario_3(base, auth, ctx):
     """Blob Store + Read."""
-    heading(3, "Blob Store + Read")
+    heading("3", "Blob Store + Read")
     passed = True
     bucket = ctx["bucket_name"]
     key = "test-blob.txt"
@@ -186,7 +186,7 @@ def scenario_3(base, auth, ctx):
 
 def scenario_4(base, auth, ctx):
     """Blob Listing."""
-    heading(4, "Blob Listing")
+    heading("4", "Blob Listing")
     passed = True
     bucket = ctx["bucket_name"]
 
@@ -239,7 +239,7 @@ def scenario_4(base, auth, ctx):
 
 def scenario_5(base, auth, ctx):
     """Content-Addressed Dedup."""
-    heading(5, "Content-Addressed Dedup")
+    heading("5", "Content-Addressed Dedup")
     bucket = ctx["bucket_name"]
     original_blob_id = ctx["blob_id"]
 
@@ -267,9 +267,61 @@ def scenario_5(base, auth, ctx):
     return True
 
 
+def scenario_duplicate(base, auth, ctx):
+    """Blob Duplicate (Phase B: may 501 until Phase C lands)."""
+    heading("5b", "Blob Duplicate")
+    bucket = ctx["bucket_name"]
+    src_key = ctx["key"]  # from scenario 3
+    dst_key = "dup-of-first.txt"
+
+    body = {"destination_bucket": bucket, "destination_key": dst_key}
+    hdrs = {**auth, "Content-Type": "application/json"}
+    status, _, resp_body = request(
+        "POST",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{src_key}/duplicate",
+        body=body,
+        headers=hdrs,
+    )
+    if status == 501:
+        info("backend returned 501 — Walrus duplicate not yet implemented (Phase C)")
+        return True
+    if status != 201:
+        fail(f"POST duplicate returned {status} (expected 201)")
+        return False
+    data = json_body(resp_body)
+    if data.get("blob_id") != ctx.get("blob_id"):
+        fail(f"duplicate blob_id mismatch: {data.get('blob_id')} vs {ctx.get('blob_id')}")
+        return False
+    ok(f"duplicate created at '{dst_key}' with same blob_id")
+
+    # GET the duplicate; bytes should match the original.
+    status, _, body_bytes = request(
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs/{dst_key}"
+    )
+    if status != 200 or body_bytes != b"hello oyster":
+        fail(f"GET duplicate mismatch: status={status}, len={len(body_bytes)}")
+        return False
+    ok("GET duplicate returns original bytes")
+
+    # Self-duplicate must 400.
+    status, _, _ = request(
+        "POST",
+        f"{base}/api/v1/buckets/{bucket}/blobs/{src_key}/duplicate",
+        body={"destination_bucket": bucket, "destination_key": src_key},
+        headers=hdrs,
+    )
+    if status != 400:
+        fail(f"self-duplicate returned {status} (expected 400)")
+        return False
+    ok("self-duplicate correctly rejected (400)")
+
+    ctx["dup_key"] = dst_key
+    return True
+
+
 def scenario_6(base, auth, ctx):
     """Blob Metadata Update."""
-    heading(6, "Blob Metadata Update")
+    heading("6", "Blob Metadata Update")
     bucket = ctx["bucket_name"]
     key = ctx["key"]
 
@@ -292,7 +344,7 @@ def scenario_6(base, auth, ctx):
 
 def scenario_7(base, auth, ctx):
     """Blob Delete."""
-    heading(7, "Blob Delete")
+    heading("7", "Blob Delete")
     passed = True
     bucket = ctx["bucket_name"]
     key = ctx["key"]
@@ -317,7 +369,7 @@ def scenario_7(base, auth, ctx):
 
 def scenario_8(base, auth, ctx):
     """Bucket Delete (drain then delete)."""
-    heading(8, "Bucket Delete (drain then delete)")
+    heading("8", "Bucket Delete (drain then delete)")
     bucket = ctx["bucket_name"]
 
     # The DELETE /buckets/{name} endpoint does NOT cascade — it returns 409 if
@@ -371,7 +423,7 @@ def scenario_8(base, auth, ctx):
 
 def scenario_9(base, auth, ctx):
     """API Key Management (skipped — now JWT-only)."""
-    heading(9, "API Key Management (skipped)")
+    heading("9", "API Key Management (skipped)")
     info(
         "API key create/revoke moved to admin routes "
         "(POST/DELETE /api/v1/accounts/{account_id}/api-keys) which require "
@@ -382,7 +434,7 @@ def scenario_9(base, auth, ctx):
 
 def scenario_10(base, auth):
     """Error Cases."""
-    heading(10, "Error Cases")
+    heading("10", "Error Cases")
     passed = True
 
     # GET non-existent blob
@@ -473,6 +525,7 @@ def main():
         ("Blob Store + Read", lambda: scenario_3(base, auth, ctx)),
         ("Blob Listing", lambda: scenario_4(base, auth, ctx)),
         ("Content-Addressed Dedup", lambda: scenario_5(base, auth, ctx)),
+        ("Blob Duplicate", lambda: scenario_duplicate(base, auth, ctx)),
         ("Blob Metadata Update", lambda: scenario_6(base, auth, ctx)),
         ("Blob Delete", lambda: scenario_7(base, auth, ctx)),
         ("Bucket Delete (drain then delete)", lambda: scenario_8(base, auth, ctx)),

@@ -160,6 +160,19 @@ pub struct UpdateBlobMetadataRequest {
     pub content_type: Option<String>,
 }
 
+/// Request body for duplicating an existing blob into a new bucket+key without
+/// re-uploading the bytes.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct DuplicateBlobRequest {
+    /// Destination bucket (may equal the source bucket).
+    pub destination_bucket: String,
+    /// Destination key.
+    pub destination_key: String,
+    /// Override content type. If omitted, the source row's content_type is copied.
+    #[serde(default)]
+    pub content_type: Option<String>,
+}
+
 // Response types
 
 /// A paginated list response.

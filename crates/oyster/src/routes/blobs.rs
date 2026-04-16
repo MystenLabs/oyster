@@ -15,6 +15,7 @@ use crate::{
     error::AppError,
     models::{
         BlobMetadata,
+        DuplicateBlobRequest,
         ErrorResponse,
         PaginatedResponse,
         PaginationParams,
@@ -422,6 +423,137 @@ pub async fn update_blob_metadata(
     .ok_or(AppError::NotFound)?;
 
     Ok(Json(metadata))
+}
+
+#[utoipa::path(
+    post,
+    path = "/buckets/{bucket_name}/blobs/{key}/duplicate",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Source bucket name"),
+        ("key" = String, Path, description = "Source object key"),
+    ),
+    request_body = DuplicateBlobRequest,
+    responses(
+        (status = 201, description = "Blob duplicated", body = StoreBlobResponse),
+        (status = 400, description = "Bad request (e.g. self-duplicate)", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 402, description = "Insufficient on-chain balance", body = ErrorResponse),
+        (status = 404, description = "Source blob or destination bucket not found", body = ErrorResponse),
+        (status = 412, description = "Precondition failed", body = ErrorResponse),
+        (status = 501, description = "Backend does not support duplication", body = ErrorResponse),
+    ),
+)]
+/// Reify a second reference to an existing blob (new `(bucket, key)` row,
+/// same `blob_id`) without re-uploading the bytes. For on-chain backends this
+/// creates a new Sui `Blob` object pointing at the same Walrus `blob_id`, so
+/// the caller pays on-chain registration fees but no sliver bandwidth.
+pub async fn duplicate_blob(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key)): Path<(String, String)>,
+    headers: HeaderMap,
+    Json(body): Json<DuplicateBlobRequest>,
+) -> Result<Response, AppError> {
+    if bucket_name == body.destination_bucket && key == body.destination_key {
+        return Err(AppError::BadRequest(
+            "source and destination must differ".into(),
+        ));
+    }
+
+    db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    let source = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    if body.destination_bucket != bucket_name {
+        db::buckets::get_bucket(&state.db, &body.destination_bucket, &auth.account_id)
+            .await?
+            .ok_or(AppError::NotFound)?;
+    }
+
+    let existing =
+        db::blobs::get_blob_by_key(&state.db, &body.destination_bucket, &body.destination_key)
+            .await?;
+    check_json_conditions(&headers, existing.as_ref().map(|m| m.md5.as_str()), false)?;
+
+    let content_type = body
+        .content_type
+        .as_deref()
+        .unwrap_or(source.content_type.as_str());
+
+    let result = match state
+        .blob_store
+        .duplicate(
+            &BlobId(source.blob_id.clone()),
+            source.sui_object_id.as_deref(),
+            &auth.account_id,
+        )
+        .await
+    {
+        Ok(r) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "duplicate", "result" => "ok"
+            )
+            .increment(1);
+            r
+        }
+        Err(e) => {
+            metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                "operation" => "duplicate", "result" => "error"
+            )
+            .increment(1);
+            return Err(e.into());
+        }
+    };
+
+    let expires_at = chrono::Utc::now()
+        .checked_add_days(chrono::Days::new(DEFAULT_DURATION_DAYS as u64))
+        .expect("valid date")
+        .format("%Y-%m-%d %H:%M:%S")
+        .to_string();
+
+    let metadata = db::blobs::insert_blob(
+        &state.db,
+        &body.destination_key,
+        result.blob_id.as_str(),
+        &body.destination_bucket,
+        &auth.account_id,
+        content_type,
+        source.size,
+        &source.md5,
+        &expires_at,
+        result.sui_object_id.as_deref(),
+    )
+    .await?;
+
+    reclaim_if_orphaned(
+        &state,
+        existing.as_ref(),
+        &auth.account_id,
+        result.blob_id.as_str(),
+    )
+    .await;
+
+    let etag = format!("\"{}\"", metadata.md5);
+    Ok((
+        StatusCode::CREATED,
+        [("etag", etag)],
+        Json(StoreBlobResponse {
+            key: metadata.key,
+            blob_id: metadata.blob_id,
+            size: metadata.size,
+            md5: metadata.md5,
+            sui_object_id: metadata.sui_object_id,
+            created_at: metadata.created_at,
+            expires_at: metadata.expires_at,
+        }),
+    )
+        .into_response())
 }
 
 #[utoipa::path(

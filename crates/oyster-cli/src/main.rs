@@ -61,6 +61,23 @@ enum Command {
         #[arg(long)]
         bucket: String,
     },
+    /// Duplicate a blob to a new (bucket, key) without re-uploading bytes
+    Duplicate {
+        /// Source object key
+        key: String,
+        /// Source bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Destination bucket name
+        #[arg(long)]
+        to_bucket: String,
+        /// Destination object key
+        #[arg(long)]
+        to_key: String,
+        /// Override content type (defaults to source's)
+        #[arg(long)]
+        content_type: Option<String>,
+    },
     /// List blobs in a bucket
     ListBlobs {
         /// Bucket name
@@ -200,6 +217,34 @@ async fn cmd_delete(
 ) -> Result<(), CliError> {
     client.delete_blob(bucket, key).await?;
     out.success(&format!("Deleted blob {bucket}/{key}"));
+    Ok(())
+}
+
+async fn cmd_duplicate(
+    client: &OysterClient,
+    out: &Output,
+    src_bucket: &str,
+    src_key: &str,
+    dst_bucket: &str,
+    dst_key: &str,
+    content_type: Option<&str>,
+) -> Result<(), CliError> {
+    let resp = client
+        .duplicate_blob(src_bucket, src_key, dst_bucket, dst_key, content_type)
+        .await?;
+    out.print(&resp, |r| {
+        println!("Duplicated blob:");
+        println!("  key:            {}", r.key);
+        println!("  blob_id:        {}", r.blob_id);
+        println!("  size:           {} bytes", r.size);
+        println!("  md5:            {}", r.md5);
+        if let Some(ref sui) = r.sui_object_id {
+            println!("  sui_object_id:  {sui}");
+        }
+        if let Some(ref exp) = r.expires_at {
+            println!("  expires_at:     {exp}");
+        }
+    });
     Ok(())
 }
 
@@ -368,6 +413,24 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                     ref key,
                     ref bucket,
                 } => cmd_delete(&client, out, bucket, key).await,
+                Command::Duplicate {
+                    ref key,
+                    ref bucket,
+                    ref to_bucket,
+                    ref to_key,
+                    ref content_type,
+                } => {
+                    cmd_duplicate(
+                        &client,
+                        out,
+                        bucket,
+                        key,
+                        to_bucket,
+                        to_key,
+                        content_type.as_deref(),
+                    )
+                    .await
+                }
                 Command::ListBlobs { ref bucket, limit } => {
                     cmd_list_blobs(&client, out, bucket, limit).await
                 }

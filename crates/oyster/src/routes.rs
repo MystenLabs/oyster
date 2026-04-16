@@ -118,6 +118,7 @@ pub fn build_router(state: AppState) -> Router {
             blobs::delete_blob
         ))
         .routes(routes!(blobs::update_blob_metadata))
+        .routes(routes!(blobs::duplicate_blob))
         .routes(routes!(blobs::read_blob_by_blob_id))
         .split_for_parts();
 

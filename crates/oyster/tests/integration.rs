@@ -31,6 +31,7 @@ use tower::ServiceExt;
 // ---------------------------------------------------------------------------
 
 type DeleteCall = (String, Option<String>, AccountId);
+type DuplicateCall = (String, Option<String>, AccountId);
 
 struct SpyBlobStore {
     inner: LocalBlobStore,
@@ -38,6 +39,8 @@ struct SpyBlobStore {
     calls: Mutex<Vec<AccountId>>,
     /// Each `delete()` call appends (blob_id, sui_object_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
+    /// Each `duplicate()` call appends (blob_id, source_sui_object_id, account_id) here.
+    duplicate_calls: Mutex<Vec<DuplicateCall>>,
 }
 
 impl SpyBlobStore {
@@ -46,6 +49,7 @@ impl SpyBlobStore {
             inner,
             calls: Mutex::new(Vec::new()),
             delete_calls: Mutex::new(Vec::new()),
+            duplicate_calls: Mutex::new(Vec::new()),
         }
     }
 
@@ -55,6 +59,10 @@ impl SpyBlobStore {
 
     fn recorded_delete_calls(&self) -> Vec<DeleteCall> {
         self.delete_calls.lock().unwrap().clone()
+    }
+
+    fn recorded_duplicate_calls(&self) -> Vec<DuplicateCall> {
+        self.duplicate_calls.lock().unwrap().clone()
     }
 }
 
@@ -98,6 +106,11 @@ impl BlobStore for SpyBlobStore {
         source_sui_object_id: Option<&str>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        self.duplicate_calls.lock().unwrap().push((
+            blob_id.0.clone(),
+            source_sui_object_id.map(|s| s.to_string()),
+            *account_id,
+        ));
         self.inner
             .duplicate(blob_id, source_sui_object_id, account_id)
     }
@@ -775,6 +788,379 @@ async fn overwrite_with_outstanding_references_does_not_reclaim() {
     assert_ne!(blob_id_shared, blob_id_new);
 
     assert!(spy.recorded_delete_calls().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-blob tests
+// ---------------------------------------------------------------------------
+
+async fn duplicate_test_blob(
+    app: &Router,
+    api_key: &str,
+    src_bucket: &str,
+    src_key: &str,
+    dst_bucket: &str,
+    dst_key: &str,
+    content_type: Option<&str>,
+) -> (StatusCode, Value) {
+    let mut body = serde_json::json!({
+        "destination_bucket": dst_bucket,
+        "destination_key": dst_key,
+    });
+    if let Some(ct) = content_type {
+        body["content_type"] = serde_json::Value::String(ct.to_string());
+    }
+    let req = Request::post(format!(
+        "/api/v1/buckets/{src_bucket}/blobs/{src_key}/duplicate"
+    ))
+    .header("authorization", format!("Bearer {api_key}"))
+    .header("content-type", "application/json")
+    .body(Body::from(body.to_string()))
+    .unwrap();
+    json_response(app, req).await
+}
+
+#[tokio::test]
+async fn duplicate_blob_creates_new_row_without_re_upload() {
+    let tmp = TempDir::new().unwrap();
+    let inner = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(inner));
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "dup-bucket").await;
+
+    let data = b"hello duplicate";
+    let (src_key, src_blob_id) =
+        store_test_blob(&app, &key, &bucket_name, "src.txt", "text/plain", data).await;
+    let store_calls_before = spy.recorded_calls().len();
+
+    let (status, body) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        &bucket_name,
+        "dst.txt",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["blob_id"].as_str().unwrap(), src_blob_id);
+    assert_eq!(body["size"].as_i64().unwrap(), data.len() as i64);
+    let src_md5 = format!("{:x}", md5::compute(data));
+    assert_eq!(body["md5"].as_str().unwrap(), src_md5);
+
+    let dup_calls = spy.recorded_duplicate_calls();
+    assert_eq!(dup_calls.len(), 1);
+    assert_eq!(dup_calls[0].0, src_blob_id);
+    assert_eq!(spy.recorded_calls().len(), store_calls_before);
+
+    let (status, get_body) = raw_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/dst.txt"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(get_body, data);
+}
+
+#[tokio::test]
+async fn duplicate_blob_copies_content_type_when_omitted() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "ct-bucket").await;
+
+    let (src_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "doc.pdf",
+        "application/pdf",
+        b"%PDF-1.7",
+    )
+    .await;
+
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        &bucket_name,
+        "doc-copy.pdf",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/doc-copy.pdf"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers().get("content-type").unwrap(),
+        "application/pdf"
+    );
+}
+
+#[tokio::test]
+async fn duplicate_blob_override_content_type() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "ct-override-bucket").await;
+
+    let (src_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "note.txt",
+        "text/plain",
+        b"# Heading",
+    )
+    .await;
+
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        &bucket_name,
+        "note.md",
+        Some("text/markdown"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/note.md"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers().get("content-type").unwrap(), "text/markdown");
+}
+
+#[tokio::test]
+async fn duplicate_blob_self_returns_400() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "self-dup-bucket").await;
+
+    let (src_key, _) =
+        store_test_blob(&app, &key, &bucket_name, "same.txt", "text/plain", b"same").await;
+
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        &bucket_name,
+        &src_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn duplicate_blob_source_not_found_returns_404() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "missing-src-bucket").await;
+
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "no-such-key",
+        &bucket_name,
+        "dst.txt",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn duplicate_blob_destination_bucket_not_found_returns_404() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "src-only-bucket").await;
+
+    let (src_key, _) =
+        store_test_blob(&app, &key, &bucket_name, "src.txt", "text/plain", b"hi").await;
+
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        "no-such-bucket",
+        "dst.txt",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn duplicate_blob_other_account_source_returns_404() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key_a) = create_test_account(&pool).await;
+    let (_, key_b) = create_test_account(&pool).await;
+    let bucket_a = create_test_bucket(&app, &key_a, "a-bucket").await;
+    let bucket_b = create_test_bucket(&app, &key_b, "b-bucket").await;
+
+    let (src_key, _) = store_test_blob(
+        &app,
+        &key_a,
+        &bucket_a,
+        "secret.txt",
+        "text/plain",
+        b"secret",
+    )
+    .await;
+
+    // Account B tries to duplicate A's blob from A's bucket — must 404
+    // because B does not own bucket_a.
+    let (status, _) = duplicate_test_blob(
+        &app,
+        &key_b,
+        &bucket_a,
+        &src_key,
+        &bucket_b,
+        "leaked.txt",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn duplicate_blob_across_buckets() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_a = create_test_bucket(&app, &key, "src-bucket").await;
+    let bucket_b = create_test_bucket(&app, &key, "dst-bucket").await;
+
+    let data = b"cross-bucket";
+    let (src_key, src_blob_id) =
+        store_test_blob(&app, &key, &bucket_a, "x.txt", "text/plain", data).await;
+
+    let (status, body) =
+        duplicate_test_blob(&app, &key, &bucket_a, &src_key, &bucket_b, "x.txt", None).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["blob_id"].as_str().unwrap(), src_blob_id);
+
+    let (status, bytes) = raw_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_b}/blobs/x.txt"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(bytes, data);
+}
+
+#[tokio::test]
+async fn duplicate_blob_if_none_match_star_conflict_returns_412() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "ifnm-bucket").await;
+
+    let (src_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "src.txt",
+        "text/plain",
+        b"src-bytes",
+    )
+    .await;
+    let (dst_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "dst.txt",
+        "text/plain",
+        b"dst-bytes",
+    )
+    .await;
+
+    let body = serde_json::json!({
+        "destination_bucket": bucket_name,
+        "destination_key": dst_key,
+    });
+    let req = Request::post(format!(
+        "/api/v1/buckets/{bucket_name}/blobs/{src_key}/duplicate"
+    ))
+    .header("authorization", format!("Bearer {key}"))
+    .header("content-type", "application/json")
+    .header("if-none-match", "*")
+    .body(Body::from(body.to_string()))
+    .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::PRECONDITION_FAILED);
+}
+
+#[tokio::test]
+async fn duplicate_blob_overwrite_reclaims_old_sui_object() {
+    let tmp = TempDir::new().unwrap();
+    let inner = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(inner));
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "dup-overwrite-bucket").await;
+
+    let (src_key, src_blob_id) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "src.txt",
+        "text/plain",
+        b"new-content",
+    )
+    .await;
+    let (dst_key, dst_blob_id) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "dst.txt",
+        "text/plain",
+        b"old-content",
+    )
+    .await;
+    assert_ne!(src_blob_id, dst_blob_id);
+    assert!(spy.recorded_delete_calls().is_empty());
+
+    let (status, body) = duplicate_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        &src_key,
+        &bucket_name,
+        &dst_key,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(body["blob_id"].as_str().unwrap(), src_blob_id);
+
+    let deletes = spy.recorded_delete_calls();
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].0, dst_blob_id);
 }
 
 #[tokio::test]
