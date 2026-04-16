@@ -102,9 +102,17 @@ pub async fn verify_jwt_with_grace(
         &DecodingKey::from_secret(secret.as_bytes()),
         &validation,
     )
-    .map_err(|_| AppError::Unauthorized)?;
+    .map_err(|e| {
+        tracing::warn!(error = %e, grace_seconds, "token refresh: JWT decode failed");
+        AppError::Unauthorized
+    })?;
 
     if db::jwt_blacklist::is_blacklisted(pool, &data.claims.jti).await? {
+        tracing::warn!(
+            jti = %data.claims.jti,
+            sub = %data.claims.sub,
+            "token refresh: rejected blacklisted JTI"
+        );
         return Err(AppError::Unauthorized);
     }
 

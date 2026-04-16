@@ -2440,3 +2440,128 @@ async fn admin_token_refresh_blacklists_old_jti() {
     .await;
     assert_eq!(status, StatusCode::CREATED);
 }
+
+/// Reproduce chain-refresh bug: refresh a token obtained from a previous
+/// refresh, after it has expired (but within the 48h grace window).
+///
+/// This matches the bug report: user refreshes token A → gets token B,
+/// waits ~24h for token B to expire, then tries to refresh token B.
+#[tokio::test]
+async fn admin_token_refresh_chain_expired() {
+    use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, encode};
+    use oyster::app_auth::AppClaims;
+
+    oyster::app_auth::install_crypto_provider();
+    let (app, _tmp, pool) = test_app().await;
+    let test_app = db::apps::create_app(&pool, "chain-app", "chain@example.com", None)
+        .await
+        .unwrap();
+    enable_refresh_jwt(&pool, &test_app.id.to_string()).await;
+
+    // Step 1: Forge token A (expired 1h ago, within grace) and refresh it.
+    let now = jsonwebtoken::get_current_timestamp() as i64;
+    let claims_a = AppClaims {
+        sub: test_app.id.to_string(),
+        iat: now - 90000, // issued 25h ago
+        exp: now - 3600,  // expired 1h ago
+        iss: "oyster".into(),
+        jti: uuid::Uuid::new_v4().to_string(),
+    };
+    let token_a = encode(
+        &Header::new(Algorithm::HS256),
+        &claims_a,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {token_a}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let token_b = body["access_token"].as_str().unwrap().to_string();
+
+    // Step 2: Decode token B to get its JTI and sub.
+    let mut validation = Validation::new(Algorithm::HS256);
+    validation.validate_exp = false;
+    validation.validate_aud = false;
+    validation.set_required_spec_claims(&["sub", "jti"]);
+    let token_b_data = decode::<AppClaims>(
+        &token_b,
+        &DecodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+        &validation,
+    )
+    .expect("should decode token B");
+
+    // Step 3: Forge a version of token B that looks like it expired 1h ago
+    // (simulating 24h passing). Same JTI and sub as the real token B.
+    let claims_b_expired = AppClaims {
+        sub: token_b_data.claims.sub,
+        iat: now - 90000, // issued 25h ago
+        exp: now - 3600,  // expired 1h ago
+        iss: "oyster".into(),
+        jti: token_b_data.claims.jti,
+    };
+    let token_b_expired = encode(
+        &Header::new(Algorithm::HS256),
+        &claims_b_expired,
+        &EncodingKey::from_secret(TEST_JWT_SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    // Step 4: Refresh the expired token B — this is John's scenario.
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {token_b_expired}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "chain refresh of expired token B should succeed, got: {body}"
+    );
+    assert!(body["access_token"].as_str().is_some());
+}
+
+/// Chain refresh with a still-valid token should also work.
+#[tokio::test]
+async fn admin_token_refresh_chain_fresh() {
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, jwt) = create_test_app_jwt(&pool).await;
+    enable_refresh_jwt(&pool, &app_id).await;
+
+    // Refresh #1: token A → token B
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {jwt}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let token_b = body["access_token"].as_str().unwrap().to_string();
+
+    // Refresh #2: token B → token C (immediate chain refresh)
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/apps/token-refresh")
+            .header("authorization", format!("Bearer {token_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "chain refresh of fresh token B should succeed, got: {body}"
+    );
+    assert!(body["access_token"].as_str().is_some());
+}

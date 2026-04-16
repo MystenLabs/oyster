@@ -254,28 +254,48 @@ pub async fn token_refresh(
         .headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| {
+            tracing::warn!("token refresh: missing or non-ASCII authorization header");
+            AppError::Unauthorized
+        })?;
 
-    let token = auth_header
-        .strip_prefix("Bearer ")
-        .ok_or(AppError::Unauthorized)?;
+    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
+        tracing::warn!("token refresh: authorization header missing 'Bearer ' prefix");
+        AppError::Unauthorized
+    })?;
 
-    let secret = state
-        .config
-        .jwt_secret
-        .as_deref()
-        .ok_or(AppError::Unauthorized)?;
+    let secret = state.config.jwt_secret.as_deref().ok_or_else(|| {
+        tracing::error!("token refresh: OYSTER_JWT_SECRET is not configured");
+        AppError::Unauthorized
+    })?;
 
     let claims =
         app_auth::verify_jwt_with_grace(token, secret, &state.db, JWT_GRACE_SECS as u64).await?;
 
-    let app_id: AppId = claims.sub.parse().map_err(|_| AppError::Unauthorized)?;
+    let now = jsonwebtoken::get_current_timestamp() as i64;
+    let expired_ago = now - claims.exp;
+    tracing::info!(
+        app_id = %claims.sub,
+        jti = %claims.jti,
+        exp = claims.exp,
+        expired_ago_secs = expired_ago,
+        "token refresh: JWT verified"
+    );
+
+    let app_id: AppId = claims.sub.parse().map_err(|_| {
+        tracing::warn!(sub = %claims.sub, "token refresh: invalid app_id in sub claim");
+        AppError::Unauthorized
+    })?;
 
     let app = db::apps::get_app(&state.db, &app_id)
         .await?
-        .ok_or(AppError::Unauthorized)?;
+        .ok_or_else(|| {
+            tracing::warn!(%app_id, "token refresh: app not found");
+            AppError::Unauthorized
+        })?;
 
     if !app.allow_refresh_jwt {
+        tracing::warn!(%app_id, "token refresh: refresh not allowed for app");
         return Err(AppError::Forbidden(
             "token refresh is not allowed for this app".into(),
         ));
@@ -290,6 +310,12 @@ pub async fn token_refresh(
 
     let access_token =
         app_auth::sign_jwt(&app_id, secret).map_err(|e| AppError::Internal(e.to_string()))?;
+
+    tracing::info!(
+        %app_id,
+        old_jti = %claims.jti,
+        "token refresh: issued new token, old JTI blacklisted"
+    );
 
     Ok(Json(TokenRefreshResponse {
         access_token,
