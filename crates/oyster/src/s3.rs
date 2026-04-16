@@ -90,6 +90,15 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             err.set_status_code(hyper::StatusCode::NOT_IMPLEMENTED);
             err
         }
+        BlobStoreError::Unreachable(ref msg) => {
+            tracing::error!(error = %msg, "upstream blob store unreachable");
+            let mut err = S3Error::with_message(
+                S3ErrorCode::InternalError,
+                "upstream blob store unreachable",
+            );
+            err.set_status_code(hyper::StatusCode::BAD_GATEWAY);
+            err
+        }
     }
 }
 

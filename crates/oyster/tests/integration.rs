@@ -3075,3 +3075,36 @@ async fn admin_token_refresh_chain_fresh() {
     );
     assert!(body["access_token"].as_str().is_some());
 }
+
+/// Unreachable blob-store errors (connect/timeout to the Walrus aggregator)
+/// surface as 502 Bad Gateway, not 500 Internal Server Error.
+#[tokio::test]
+async fn blob_store_unreachable_maps_to_502() {
+    use axum::response::IntoResponse;
+    use oyster::error::AppError;
+
+    let err: AppError = BlobStoreError::Unreachable("connection refused".into()).into();
+    let resp = err.into_response();
+    assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+}
+
+/// Unmatched `/api/v1/...` paths return a clean 404 instead of falling through
+/// to the S3 handler (which would choke on the Bearer Authorization header and
+/// return a confusing 400).
+#[tokio::test]
+async fn unmatched_api_v1_path_returns_404() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_account_id, key) = create_test_account(&pool).await;
+
+    let req = Request::post("/api/v1/account/api-keys")
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/json")
+        .body(Body::from("{}"))
+        .unwrap();
+    let (status, body) = json_response(&app, req).await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "unmatched /api/v1/... should 404, got body: {body}"
+    );
+}

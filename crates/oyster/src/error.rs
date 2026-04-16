@@ -83,6 +83,13 @@ impl IntoResponse for AppError {
                     StatusCode::NOT_IMPLEMENTED,
                     format!("not implemented: {msg}"),
                 ),
+                crate::blob_store::BlobStoreError::Unreachable(msg) => {
+                    tracing::error!(error = %msg, "upstream blob store unreachable");
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        "upstream blob store unreachable".into(),
+                    )
+                }
                 crate::blob_store::BlobStoreError::Upstream { status, message } => {
                     let code = StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY);
                     if code.is_client_error() {
