@@ -79,6 +79,10 @@ impl IntoResponse for AppError {
                 crate::blob_store::BlobStoreError::NotFound(_) => {
                     (StatusCode::NOT_FOUND, self.to_string())
                 }
+                crate::blob_store::BlobStoreError::Unsupported(msg) => (
+                    StatusCode::NOT_IMPLEMENTED,
+                    format!("not implemented: {msg}"),
+                ),
                 crate::blob_store::BlobStoreError::Upstream { status, message } => {
                     let code = StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY);
                     if code.is_client_error() {

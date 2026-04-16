@@ -7,6 +7,7 @@ use axum::{
 };
 
 use crate::{
+    AccountId,
     AppState,
     auth::AuthenticatedAccount,
     blob_store::BlobId,
@@ -74,6 +75,42 @@ fn check_json_conditions(
         }
     }
     Ok(())
+}
+
+/// If `prior` existed and its content differs from `new_blob_id`, and no other
+/// `blobs` rows still reference the prior content, delete the prior row's
+/// underlying blob-store object. Errors are logged, not propagated.
+pub(crate) async fn reclaim_if_orphaned(
+    state: &AppState,
+    prior: Option<&BlobMetadata>,
+    account_id: &AccountId,
+    new_blob_id: &str,
+) {
+    let Some(prior) = prior else { return };
+    if prior.blob_id == new_blob_id {
+        return;
+    }
+    let count = match db::blobs::count_references(&state.db, &prior.blob_id).await {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "count_references failed during overwrite reclaim");
+            return;
+        }
+    };
+    if count != 0 {
+        return;
+    }
+    if let Err(e) = state
+        .blob_store
+        .delete(
+            &BlobId(prior.blob_id.clone()),
+            prior.sui_object_id.as_deref(),
+            account_id,
+        )
+        .await
+    {
+        tracing::warn!(error = %e, blob_id = %prior.blob_id, "overwrite reclaim failed");
+    }
 }
 
 #[utoipa::path(
@@ -166,6 +203,14 @@ pub async fn store_blob(
         result.sui_object_id.as_deref(),
     )
     .await?;
+
+    reclaim_if_orphaned(
+        &state,
+        existing.as_ref(),
+        &auth.account_id,
+        result.blob_id.as_str(),
+    )
+    .await;
 
     let etag = format!("\"{}\"", metadata.md5);
     Ok((

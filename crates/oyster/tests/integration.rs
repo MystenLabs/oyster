@@ -91,6 +91,16 @@ impl BlobStore for SpyBlobStore {
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
         self.inner.exists(blob_id)
     }
+
+    fn duplicate(
+        &self,
+        blob_id: &BlobId,
+        source_sui_object_id: Option<&str>,
+        account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        self.inner
+            .duplicate(blob_id, source_sui_object_id, account_id)
+    }
 }
 
 /// Build a fresh app with an in-memory SQLite DB and a temp blob store directory.
@@ -651,6 +661,120 @@ async fn content_addressed_dedup() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body, data);
+}
+
+#[tokio::test]
+async fn overwrite_reclaims_old_blob_when_content_changes() {
+    let tmp = TempDir::new().unwrap();
+    let inner = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(inner));
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "overwrite-test").await;
+
+    let (_, blob_id_a) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "overwrite.txt",
+        "text/plain",
+        b"first",
+    )
+    .await;
+    assert!(spy.recorded_delete_calls().is_empty());
+
+    let (_, blob_id_b) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "overwrite.txt",
+        "text/plain",
+        b"second",
+    )
+    .await;
+    assert_ne!(blob_id_a, blob_id_b);
+
+    let deletes = spy.recorded_delete_calls();
+    assert_eq!(deletes.len(), 1);
+    assert_eq!(deletes[0].0, blob_id_a);
+}
+
+#[tokio::test]
+async fn overwrite_same_content_does_not_reclaim() {
+    let tmp = TempDir::new().unwrap();
+    let inner = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(inner));
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "same-content-test").await;
+
+    let (_, blob_id_a) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "same.txt",
+        "text/plain",
+        b"identical",
+    )
+    .await;
+    let (_, blob_id_b) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "same.txt",
+        "text/plain",
+        b"identical",
+    )
+    .await;
+
+    assert_eq!(blob_id_a, blob_id_b);
+    assert!(spy.recorded_delete_calls().is_empty());
+}
+
+#[tokio::test]
+async fn overwrite_with_outstanding_references_does_not_reclaim() {
+    let tmp = TempDir::new().unwrap();
+    let inner = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(inner));
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "refcount-test").await;
+
+    // key1 and key2 both reference the same content
+    let (_, blob_id_shared) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "key1.txt",
+        "text/plain",
+        b"shared",
+    )
+    .await;
+    let (_, blob_id_shared_2) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "key2.txt",
+        "text/plain",
+        b"shared",
+    )
+    .await;
+    assert_eq!(blob_id_shared, blob_id_shared_2);
+
+    // Overwrite key1 with different content. key2 still holds a reference to
+    // `blob_id_shared`, so the blob-store delete MUST NOT fire.
+    let (_, blob_id_new) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "key1.txt",
+        "text/plain",
+        b"different",
+    )
+    .await;
+    assert_ne!(blob_id_shared, blob_id_new);
+
+    assert!(spy.recorded_delete_calls().is_empty());
 }
 
 #[tokio::test]

@@ -55,6 +55,9 @@ pub enum BlobStoreError {
     /// The account has insufficient on-chain balance to complete the operation.
     #[error("insufficient balance: {0}")]
     InsufficientBalance(String),
+    /// Operation not supported by this backend.
+    #[error("operation not supported: {0}")]
+    Unsupported(String),
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -78,6 +81,16 @@ pub trait BlobStore: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     /// Check whether a blob exists.
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>>;
+    /// Reify a second reference to an existing content-addressed blob without
+    /// re-uploading its bytes. For on-chain backends this creates a new `Blob`
+    /// object pointing at the same Walrus `blob_id`. For `LocalBlobStore` this
+    /// is a no-op existence check.
+    fn duplicate(
+        &self,
+        blob_id: &BlobId,
+        source_sui_object_id: Option<&str>,
+        account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
 }
 
 /// Filesystem-backed blob store for local development and testing.
@@ -164,5 +177,56 @@ impl BlobStore for LocalBlobStore {
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
         let path = self.blob_path(blob_id);
         Box::pin(async move { Ok(path.exists()) })
+    }
+
+    fn duplicate(
+        &self,
+        blob_id: &BlobId,
+        _source_sui_object_id: Option<&str>,
+        _account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        let path = self.blob_path(blob_id);
+        let blob_id = blob_id.clone();
+        Box::pin(async move {
+            if !tokio::fs::try_exists(&path).await? {
+                return Err(BlobStoreError::NotFound(blob_id.0));
+            }
+            Ok(StoreResult {
+                blob_id,
+                sui_object_id: None,
+            })
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn local_duplicate_returns_same_blob_id_when_source_exists() {
+        let tmp = TempDir::new().unwrap();
+        let store = LocalBlobStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let account_id = AccountId::new();
+        let StoreResult { blob_id, .. } = store.store(b"hello", &account_id).await.unwrap();
+
+        let dup = store.duplicate(&blob_id, None, &account_id).await.unwrap();
+        assert_eq!(dup.blob_id, blob_id);
+        assert!(dup.sui_object_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn local_duplicate_missing_source_returns_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let store = LocalBlobStore::new(tmp.path().to_path_buf()).await.unwrap();
+        let bogus = BlobId("deadbeef".repeat(8));
+
+        let err = store
+            .duplicate(&bogus, None, &AccountId::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, BlobStoreError::NotFound(_)));
     }
 }

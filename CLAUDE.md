@@ -53,6 +53,12 @@ Oyster and Pearl are configured via environment variables (see `crates/oyster/sr
 
 Oyster exposes Swagger/Scalar docs at `/api/docs` (via `utoipa` + `utoipa-axum` + `utoipa-scalar`).
 
+## Linear
+
+Oyster work is tracked on the **Walrus Core** team (`WAL`), inside the **Walrus Hosted API**
+project (slug `6188b026c258`, UUID `1ceebd93-d3db-45d2-a76a-8da637907a02`). When filing issues for
+Oyster, pass `--team WAL --project 6188b026c258` to `linear issue create`.
+
 ### Gotchas
 
 Occasionally you will encounter something that makes you think, "this is/was a pre-existing issue."

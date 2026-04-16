@@ -311,4 +311,17 @@ impl BlobStore for DirectWalrusBlobStore {
             }
         })
     }
+
+    fn duplicate(
+        &self,
+        _blob_id: &BlobId,
+        _source_sui_object_id: Option<&str>,
+        _account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        Box::pin(async move {
+            Err(BlobStoreError::Unsupported(
+                "blob duplication not yet implemented for the Walrus backend".into(),
+            ))
+        })
+    }
 }

@@ -81,6 +81,15 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             });
             err
         }
+        BlobStoreError::Unsupported(ref msg) => {
+            tracing::warn!(error = %msg, "blob store operation not supported");
+            let mut err = S3Error::with_message(
+                S3ErrorCode::Custom(bytestring::ByteString::from("NotImplemented")),
+                format!("not implemented: {msg}"),
+            );
+            err.set_status_code(hyper::StatusCode::NOT_IMPLEMENTED);
+            err
+        }
     }
 }
 
@@ -362,6 +371,14 @@ impl s3s::S3 for OysterS3 {
         )
         .await
         .map_err(internal_error)?;
+
+        crate::routes::blobs::reclaim_if_orphaned(
+            &self.state,
+            existing.as_ref(),
+            &account_id,
+            result.blob_id.as_str(),
+        )
+        .await;
 
         Ok(S3Response::new(PutObjectOutput {
             e_tag: Some(etag_from_md5(&metadata.md5)),
