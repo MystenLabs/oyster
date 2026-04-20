@@ -217,6 +217,143 @@ impl DirectWalrusBlobStore {
             sui_object_id: Some(blob_sui_object_id.to_string()),
         })
     }
+
+    async fn duplicate_impl(
+        &self,
+        blob_id: &BlobId,
+        source_sui_object_id: Option<&str>,
+        account_id: &AccountId,
+    ) -> Result<StoreResult, BlobStoreError> {
+        // The source blob must already exist on-chain; we re-use its
+        // storage metadata and certificate to register a new Blob object
+        // without re-uploading slivers.
+        let source_oid_str = source_sui_object_id.ok_or_else(|| {
+            BlobStoreError::Unsupported(
+                "cannot duplicate a blob without a source sui_object_id on the Walrus backend"
+                    .into(),
+            )
+        })?;
+        let source_oid: ObjectID = source_oid_str
+            .parse()
+            .map_err(|e| BlobStoreError::Http(format!("invalid source sui_object_id: {e}")))?;
+
+        let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
+
+        // Fetch the source Blob object so we can read its `certified_epoch`.
+        let source = self
+            .node_client
+            .get_blob_by_object_id(&source_oid)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("get source blob: {e}")))?;
+        let certified_epoch = source
+            .blob
+            .certified_epoch
+            .ok_or_else(|| BlobStoreError::Http("source blob is not certified".into()))?;
+
+        // Retrieve the verified metadata from storage nodes to reconstruct the
+        // encoded size / root hash needed to reserve storage for the new blob.
+        let walrus_blob_id: walrus_core::BlobId = blob_id
+            .as_str()
+            .parse()
+            .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
+        let metadata = self
+            .node_client
+            .retrieve_metadata(certified_epoch, &walrus_blob_id)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("retrieve_metadata: {e}")))?;
+        let blob_obj_metadata = BlobObjectMetadata::try_from(&metadata)
+            .map_err(|e| BlobStoreError::Http(format!("blob metadata: {e}")))?;
+
+        // PTB #1: reserve_space + register_blob, yielding a new deletable Blob object.
+        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
+        let storage_arg = ptb
+            .reserve_space(blob_obj_metadata.encoded_size, self.epochs)
+            .await
+            .map_err(|e| {
+                let msg = format!("reserve_space: {e}");
+                if is_insufficient_balance(&msg) {
+                    BlobStoreError::InsufficientBalance(msg)
+                } else {
+                    BlobStoreError::Http(msg)
+                }
+            })?;
+        let _ = ptb
+            .register_blob(
+                storage_arg.into(),
+                blob_obj_metadata,
+                BlobPersistence::Deletable,
+            )
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("register_blob: {e}")))?;
+        let tx_data = ptb
+            .build_transaction_data(None)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
+        let register_resp =
+            sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
+                .await
+                .map_err(|e| {
+                    let msg = format!("register tx: {e}");
+                    if is_insufficient_balance(&msg) {
+                        BlobStoreError::InsufficientBalance(msg)
+                    } else {
+                        BlobStoreError::Http(msg)
+                    }
+                })?;
+        let new_oid = register_resp
+            .object_changes
+            .as_ref()
+            .and_then(|changes| {
+                changes.iter().find_map(|c| {
+                    if let ObjectChange::Created { object_id, .. } = c {
+                        Some(*object_id)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .ok_or_else(|| {
+                BlobStoreError::Http("no created object in register_blob response".into())
+            })?;
+
+        // Collect a fresh certificate for the new Blob object without uploading
+        // any slivers (the data is already stored by the source blob).
+        let persistence_type = BlobPersistenceType::Deletable {
+            object_id: new_oid.into(),
+        };
+        let certificate = self
+            .node_client
+            .get_certificate_standalone(&walrus_blob_id, certified_epoch, &persistence_type)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("get_certificate_standalone: {e}")))?;
+
+        // PTB #2: certify_blob against the new object.
+        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
+        ptb.certify_blob(new_oid.into(), &certificate)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("certify_blob: {e}")))?;
+        let tx_data = ptb
+            .build_transaction_data(None)
+            .await
+            .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
+        sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
+            .await
+            .map_err(|e| {
+                let msg = format!("certify tx: {e}");
+                if is_insufficient_balance(&msg) {
+                    BlobStoreError::InsufficientBalance(msg)
+                } else {
+                    BlobStoreError::Http(msg)
+                }
+            })?;
+
+        Ok(StoreResult {
+            blob_id: blob_id.clone(),
+            sui_object_id: Some(new_oid.to_string()),
+        })
+    }
 }
 
 impl BlobStore for DirectWalrusBlobStore {
@@ -325,14 +462,16 @@ impl BlobStore for DirectWalrusBlobStore {
 
     fn duplicate(
         &self,
-        _blob_id: &BlobId,
-        _source_sui_object_id: Option<&str>,
-        _account_id: &AccountId,
+        blob_id: &BlobId,
+        source_sui_object_id: Option<&str>,
+        account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        let blob_id = blob_id.clone();
+        let source_sui_object_id = source_sui_object_id.map(String::from);
+        let account_id = *account_id;
         Box::pin(async move {
-            Err(BlobStoreError::Unsupported(
-                "blob duplication not yet implemented for the Walrus backend".into(),
-            ))
+            self.duplicate_impl(&blob_id, source_sui_object_id.as_deref(), &account_id)
+                .await
         })
     }
 }

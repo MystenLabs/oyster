@@ -213,6 +213,109 @@ fn e2e_content_dedup() {
     });
 }
 
+/// Duplicate a Walrus-backed blob: the destination row should reuse the same
+/// `blob_id` but own a distinct Sui object, and both keys should resolve to
+/// the same bytes. Exercises `DirectWalrusBlobStore::duplicate` (Phase C of
+/// WAL-1221) via the real PTB + `get_certificate_standalone` flow.
+#[test]
+fn e2e_blob_duplicate() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-dup-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+
+        let src_bucket = create_test_bucket(app, &api_key, "dup-src").await;
+        let dst_bucket = create_test_bucket(app, &api_key, "dup-dst").await;
+
+        // Store the source blob.
+        let blob_data = b"Oyster duplicate-blob e2e payload";
+        let src_key = "source.bin";
+        let store_req = Request::put(format!("/api/v1/buckets/{src_bucket}/blobs/{src_key}"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(blob_data.to_vec()))
+            .unwrap();
+        let (status, src_body) = json_response(app, store_req).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CREATED,
+            "store source blob failed: {src_body}"
+        );
+        let src_blob_id = src_body["blob_id"].as_str().unwrap().to_string();
+        let src_sui_object_id = src_body["sui_object_id"]
+            .as_str()
+            .expect("direct walrus mode should return sui_object_id")
+            .to_string();
+
+        // Duplicate into the destination bucket without re-uploading bytes.
+        let dst_key = "copy.bin";
+        let dup_req = Request::post(format!(
+            "/api/v1/buckets/{src_bucket}/blobs/{src_key}/duplicate"
+        ))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(
+            r#"{{"destination_bucket":"{dst_bucket}","destination_key":"{dst_key}"}}"#
+        )))
+        .unwrap();
+        let (status, dup_body) = json_response(app, dup_req).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::CREATED,
+            "duplicate failed: {dup_body}"
+        );
+
+        assert_eq!(
+            dup_body["blob_id"].as_str().unwrap(),
+            src_blob_id,
+            "duplicate should preserve blob_id"
+        );
+        let dst_sui_object_id = dup_body["sui_object_id"]
+            .as_str()
+            .expect("duplicate should register a fresh Sui blob object");
+        assert_ne!(
+            dst_sui_object_id, src_sui_object_id,
+            "duplicate should have its own distinct sui_object_id"
+        );
+
+        // Both bucket/key pairs must serve the original bytes.
+        for (bucket, key) in [(&src_bucket, src_key), (&dst_bucket, dst_key)] {
+            let (status, body) = raw_response(
+                app,
+                Request::get(format!("/api/v1/buckets/{bucket}/blobs/{key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK);
+            assert_eq!(
+                body, blob_data,
+                "read {bucket}/{key} should match original data"
+            );
+        }
+
+        // And the content-addressed lookup should likewise resolve to the same bytes.
+        let (status, body) = raw_response(
+            app,
+            Request::get(format!("/api/v1/blobs/by-blob-id/{src_blob_id}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(
+            body, blob_data,
+            "by-blob-id read should match original data"
+        );
+    });
+}
+
 /// Test the wallet provisioning flow through the real stack.
 #[test]
 fn e2e_wallet_provisioning() {

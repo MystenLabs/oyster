@@ -25,8 +25,14 @@ pub async fn build_sui_read_client(
         Some(3),
     );
     let contract_config = ContractConfig::new(system_object, staking_object);
-    let read_client =
-        SuiReadClient::new_for_rpc_urls(&[rpc_url], &contract_config, backoff).await?;
+    let checkpoint_wait_timeout = std::time::Duration::from_secs(60);
+    let read_client = SuiReadClient::new_for_rpc_urls(
+        &[rpc_url],
+        &contract_config,
+        backoff,
+        checkpoint_wait_timeout,
+    )
+    .await?;
     Ok(Arc::new(read_client))
 }
 

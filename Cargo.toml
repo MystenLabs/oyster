@@ -55,18 +55,25 @@ utoipa-scalar = { version = "0.3.0", features = ["axum"] }
 zeroize = "1.8.2"
 
 # Sui ecosystem — single version across workspace
-fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "db643fd05a1b1c4cd52de3939766b53e12ce137e" }
-shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
-sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
-sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.68.0" }
+# TEMPORARY: rev pins (not tags) to consume sui#26315 (chrono unpin). Revert to
+# a `testnet-v1.*` tag once sui cuts a release containing commit 1ed1c8b78e.
+# Tracking: linear.app/mysten-labs/issue/WAL-1225
+fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "5f87e04bb21d295ef6b39375a06615d45cbb906c" }
+shared-crypto = { git = "https://github.com/MystenLabs/sui", rev = "1ed1c8b78e0e16ab879be85ce677b3bd48ce9010" }
+sui-sdk = { git = "https://github.com/MystenLabs/sui", rev = "1ed1c8b78e0e16ab879be85ce677b3bd48ce9010" }
+sui-types = { git = "https://github.com/MystenLabs/sui", rev = "1ed1c8b78e0e16ab879be85ce677b3bd48ce9010" }
 
 # Walrus ecosystem — single version across workspace
-walrus-core = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
-walrus-sdk = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
-walrus-service = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
-walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
-walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
-walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.45.2" }
+# TEMPORARY: pinned to the wbbradley/temp-chrono-unblock-oyster branch head so
+# DirectWalrusBlobStore::duplicate can use WalrusNodeClient::get_certificate_standalone
+# (walrus PR #3294). Revert to a `testnet-v1.*` tag once walrus cuts one against
+# the sui release containing sui#26315. Tracking: linear.app/mysten-labs/issue/WAL-1225
+walrus-core = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
+walrus-sdk = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
+walrus-service = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
+walrus-sui = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
+walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
+walrus-utils = { git = "https://github.com/MystenLabs/walrus", rev = "f78457e50699e5b8a38a771d22058b5c818077de" }
 
 # Internal path deps
 oyster = { path = "crates/oyster" }
