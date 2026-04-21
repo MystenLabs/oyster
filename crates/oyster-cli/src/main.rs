@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use client::{ApiError, OysterClient};
-use config::ConfigError;
+use config::{AppEntry, ConfigError};
 use output::Output;
 
 #[derive(Parser)]
@@ -16,6 +16,8 @@ use output::Output;
 struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
+    #[arg(long, global = true)]
+    context: Option<String>,
     #[arg(long, global = true)]
     url: Option<String>,
     #[arg(long, global = true)]
@@ -90,6 +92,25 @@ enum Command {
     Wallet,
     /// Show resolved configuration
     Info,
+    /// App JWT management
+    App {
+        #[command(subcommand)]
+        command: AppCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AppCommand {
+    /// Rotate the stored JWT for an app via the server's token-refresh endpoint.
+    RefreshJwt {
+        /// Name of the app as stored in the active context's `apps` map.
+        app_name: String,
+    },
+    /// Import a JWT for an app (read interactively, hidden input when tty).
+    Import {
+        /// Name of the app to store the JWT under in the active context.
+        app_name: String,
+    },
 }
 
 fn guess_content_type(path: &std::path::Path) -> &'static str {
@@ -132,6 +153,8 @@ enum CliError {
     Api(#[from] ApiError),
     #[error("{0}")]
     Io(#[from] std::io::Error),
+    #[error("{0}")]
+    Message(String),
 }
 
 impl CliError {
@@ -277,6 +300,116 @@ async fn cmd_wallet(client: &OysterClient, out: &Output) -> Result<(), CliError>
     Ok(())
 }
 
+/// Refresh the stored JWT for an app via the server's token-refresh endpoint.
+///
+/// Invariant: the old JWT is always sourced from the active context's
+/// `apps.<app_name>` entry (this subcommand takes only `app_name`, never a
+/// raw token). Because of that, we always write the refreshed JWT back to
+/// the same entry. If a future flag adds an alternate input source
+/// (`--jwt <val>` etc.), that code path MUST NOT write back.
+async fn cmd_app_refresh_jwt(
+    cli_config: Option<&std::path::Path>,
+    cli_context: Option<&str>,
+    app_name: &str,
+) -> Result<(), CliError> {
+    let (mut file, config_path) = config::load_file_config(cli_config)?;
+    let ctx_name = config::require_context_name(cli_context, &file)?;
+
+    let (old_jwt, base_url) = {
+        let ctx = file
+            .contexts
+            .get(&ctx_name)
+            .ok_or_else(|| CliError::Message(format!("context '{ctx_name}' not found")))?;
+        let entry = ctx
+            .apps
+            .get(app_name)
+            .ok_or_else(|| ConfigError::MissingAppJwt(app_name.to_string()))?;
+        let url = ctx.url.clone().ok_or(ConfigError::MissingUrl)?;
+        (entry.jwt.clone(), url)
+    };
+
+    let refresh = match OysterClient::refresh_app_jwt(&base_url, &old_jwt).await {
+        Ok(r) => r,
+        Err(ApiError::Server { status: 401, .. }) => {
+            eprintln!(
+                "error: token refresh rejected; ask an admin to re-issue via 'oysterd app jwt <APP_ID>'"
+            );
+            return Err(CliError::Api(ApiError::Server {
+                status: 401,
+                message: "unauthorized".to_string(),
+            }));
+        }
+        Err(ApiError::Server { status: 403, .. }) => {
+            eprintln!("error: token refresh not allowed for this app (allow_refresh_jwt=false)");
+            return Err(CliError::Api(ApiError::Server {
+                status: 403,
+                message: "forbidden".to_string(),
+            }));
+        }
+        Err(e) => return Err(CliError::Api(e)),
+    };
+
+    let new_expiry = config::decode_exp(&refresh.access_token)
+        .or_else(|| Some(chrono::Utc::now() + chrono::Duration::seconds(refresh.expires_in)));
+
+    let path = config_path.ok_or(ConfigError::NoConfigFile)?;
+    let ctx = file
+        .contexts
+        .get_mut(&ctx_name)
+        .ok_or_else(|| CliError::Message(format!("context '{ctx_name}' not found")))?;
+    ctx.apps.insert(
+        app_name.to_string(),
+        AppEntry {
+            jwt: refresh.access_token.clone(),
+            jwt_expiry: new_expiry,
+        },
+    );
+    config::save_config(&path, &file)?;
+
+    let expiry_str = new_expiry
+        .map(|e| e.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| "(unknown)".to_string());
+    eprintln!("refreshed {app_name} in context {ctx_name}, expires at {expiry_str}");
+    println!("{}", refresh.access_token);
+    Ok(())
+}
+
+/// Import a JWT for an app, reading interactively (no echo when stdin is a
+/// tty). Persists to the active context via atomic write.
+fn cmd_app_import(
+    cli_config: Option<&std::path::Path>,
+    cli_context: Option<&str>,
+    app_name: &str,
+) -> Result<(), CliError> {
+    let (mut file, config_path) = config::load_file_config(cli_config)?;
+    let ctx_name = config::require_context_name(cli_context, &file)?;
+    let path = config_path.ok_or(ConfigError::NoConfigFile)?;
+
+    let prompt = format!("JWT for {app_name}: ");
+    let jwt = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        rpassword::prompt_password(&prompt)?
+    } else {
+        use std::io::BufRead;
+        let stdin = std::io::stdin();
+        let mut line = String::new();
+        stdin.lock().read_line(&mut line)?;
+        line
+    };
+    let jwt = jwt.trim().to_string();
+    if jwt.is_empty() {
+        return Err(CliError::Message("empty JWT input".to_string()));
+    }
+
+    let jwt_expiry = config::decode_exp(&jwt);
+
+    let ctx = file.contexts.entry(ctx_name.clone()).or_default();
+    ctx.apps
+        .insert(app_name.to_string(), AppEntry { jwt, jwt_expiry });
+    config::save_config(&path, &file)?;
+    eprintln!("imported {app_name} into context {ctx_name}");
+    Ok(())
+}
+
 fn cmd_info(out: &Output, config_path: Option<&std::path::Path>, url: &str, api_key: Option<&str>) {
     if out.json {
         let info = serde_json::json!({
@@ -322,7 +455,11 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
             ref bucket,
             ref output,
         } => {
-            let (url, _) = config::resolve_url_only(cli.config.as_deref(), cli.url.as_deref())?;
+            let (url, _) = config::resolve_url_only(
+                cli.config.as_deref(),
+                cli.context.as_deref(),
+                cli.url.as_deref(),
+            )?;
             let client = OysterClient::new(url, None);
             cmd_read(&client, bucket, key, output.as_deref()).await
         }
@@ -331,20 +468,42 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
             // Info is special: best-effort resolve, never errors on missing fields
             let (file_config, config_path) =
                 config::load_file_config(cli.config.as_deref()).unwrap_or_default();
+            let env_ctx = std::env::var("OYSTER_CONTEXT").ok();
+            let ctx_name = config::resolve_context_name(
+                cli.context.as_deref(),
+                env_ctx.as_deref(),
+                &file_config,
+            )
+            .ok()
+            .flatten();
+            let ctx = ctx_name.as_ref().and_then(|n| file_config.contexts.get(n));
             let url = cli
                 .url
                 .as_deref()
-                .or(file_config.url.as_deref())
+                .or_else(|| ctx.and_then(|c| c.url.as_deref()))
                 .unwrap_or("(not set)");
-            let api_key = cli.api_key.as_deref().or(file_config.api_key.as_deref());
+            let api_key = cli
+                .api_key
+                .as_deref()
+                .or_else(|| ctx.and_then(|c| c.api_key.as_deref()));
             cmd_info(out, config_path.as_deref(), url, api_key);
             Ok(())
         }
+
+        Command::App { ref command } => match command {
+            AppCommand::RefreshJwt { app_name } => {
+                cmd_app_refresh_jwt(cli.config.as_deref(), cli.context.as_deref(), app_name).await
+            }
+            AppCommand::Import { app_name } => {
+                cmd_app_import(cli.config.as_deref(), cli.context.as_deref(), app_name)
+            }
+        },
 
         // Authenticated commands
         command => {
             let resolved = config::resolve(
                 cli.config.as_deref(),
+                cli.context.as_deref(),
                 cli.url.as_deref(),
                 cli.api_key.as_deref(),
             )?;
@@ -375,7 +534,7 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                 Command::ListBuckets { limit } => cmd_list_buckets(&client, out, limit).await,
                 Command::DeleteBucket { ref name } => cmd_delete_bucket(&client, out, name).await,
                 Command::Wallet => cmd_wallet(&client, out).await,
-                Command::Read { .. } | Command::Info => unreachable!(),
+                Command::Read { .. } | Command::Info | Command::App { .. } => unreachable!(),
             }
         }
     }

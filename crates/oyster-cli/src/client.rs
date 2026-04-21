@@ -46,6 +46,14 @@ pub struct WalletResponse {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct TokenRefreshResponse {
+    pub access_token: String,
+    #[allow(dead_code)]
+    pub token_type: String,
+    pub expires_in: i64,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -243,6 +251,30 @@ impl OysterClient {
             .await?;
         self.check_error(resp).await?;
         Ok(())
+    }
+
+    /// Refresh an app JWT via `POST /apps/token-refresh` using the old JWT
+    /// as a bearer token. Does not touch the API-key auth path.
+    pub async fn refresh_app_jwt(
+        base_url: &str,
+        old_jwt: &str,
+    ) -> Result<TokenRefreshResponse, ApiError> {
+        let http = reqwest::Client::new();
+        let resp = http
+            .post(format!("{base_url}/apps/token-refresh"))
+            .header("Authorization", format!("Bearer {old_jwt}"))
+            .header("Content-Length", "0")
+            .send()
+            .await?;
+        let status = resp.status().as_u16();
+        if status >= 400 {
+            let message = match resp.json::<ErrorResponse>().await {
+                Ok(body) => body.error,
+                Err(_) => format!("HTTP {status}"),
+            };
+            return Err(ApiError::Server { status, message });
+        }
+        Ok(resp.json().await?)
     }
 
     // Wallet operations

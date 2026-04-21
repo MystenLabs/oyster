@@ -253,8 +253,12 @@ oyster wallet
 ```
 
 Configuration is read from `./client.yaml`, `$XDG_CONFIG_HOME/oyster/client.yaml`, or
-`~/.config/oyster/client.yaml`, with CLI flags as overrides. Pass `--json` for
-machine-readable output.
+`~/.config/oyster/client.yaml`. The file holds a map of named **contexts** (each
+with its own `url`, `api_key`, and managed app JWTs); pick one with `--context
+<name>`, `OYSTER_CONTEXT`, or the file's `active_context` field. CLI flags
+(`--url`, `--api-key`) override the selected context. Pass `--json` for
+machine-readable output. See `oyster app import` / `oyster app refresh-jwt` for
+managing per-app JWTs.
 
 ---
 
