@@ -161,21 +161,23 @@ impl OysterTestHarness {
         let staking_object: oyster::sui_types::base_types::ObjectID =
             staking_object_str.parse().expect("valid staking_object");
 
+        // 7. Build the Oyster AppState and Router.
+        let oyster_db = db::create_pool("sqlite::memory:")
+            .await
+            .expect("failed to create in-memory oyster db");
+
         let blob_store = DirectWalrusBlobStore::new(
             rpc_url.clone(),
             aggregator_url,
             system_object,
             staking_object,
             pearl.clone(),
-            1, // 1 epoch for tests
+            oyster_db.clone(),
+            1, // pool_initial_encoded_capacity_bytes
+            1, // pool_initial_epochs_ahead (1 epoch for tests)
         )
         .await
         .expect("failed to create DirectWalrusBlobStore");
-
-        // 7. Build the Oyster AppState and Router.
-        let oyster_db = db::create_pool("sqlite::memory:")
-            .await
-            .expect("failed to create in-memory oyster db");
 
         let config = Config {
             bind_addr: "unused".into(),

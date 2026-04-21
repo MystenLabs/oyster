@@ -94,11 +94,11 @@ fn e2e_blob_lifecycle() {
         assert!(!key.is_empty(), "key should be non-empty");
         assert!(!blob_id.is_empty(), "blob_id should be non-empty");
 
-        // The response should include sui_object_id since we're using DirectWalrusBlobStore.
-        let sui_object_id = store_body["sui_object_id"].as_str();
+        // The response should include pooled_blob_object_id since we're using DirectWalrusBlobStore.
+        let pooled_blob_object_id = store_body["pooled_blob_object_id"].as_str();
         assert!(
-            sui_object_id.is_some(),
-            "sui_object_id should be present in direct walrus mode"
+            pooled_blob_object_id.is_some(),
+            "pooled_blob_object_id should be present in direct walrus mode"
         );
 
         // 5. Read the blob back by bucket + key.

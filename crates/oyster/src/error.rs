@@ -79,6 +79,10 @@ impl IntoResponse for AppError {
                 crate::blob_store::BlobStoreError::NotFound(_) => {
                     (StatusCode::NOT_FOUND, self.to_string())
                 }
+                crate::blob_store::BlobStoreError::PoolCreationFailed(msg) => {
+                    tracing::error!(error = %msg, "pool creation failed");
+                    (StatusCode::BAD_GATEWAY, "pool creation failed".into())
+                }
                 crate::blob_store::BlobStoreError::Unreachable(msg) => {
                     tracing::error!(error = %msg, "upstream blob store unreachable");
                     (
@@ -111,5 +115,21 @@ impl IntoResponse for AppError {
             },
         };
         (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::http::StatusCode;
+
+    use super::*;
+
+    #[test]
+    fn pool_creation_failed_maps_to_502() {
+        let err = AppError::BlobStore(crate::blob_store::BlobStoreError::PoolCreationFailed(
+            "boom".into(),
+        ));
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
     }
 }

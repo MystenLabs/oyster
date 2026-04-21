@@ -158,7 +158,9 @@ async fn main() {
                         system_object,
                         staking_object,
                         pearl_conn.clone(),
-                        config.walrus_default_epochs,
+                        db.clone(),
+                        config.pool_initial_encoded_capacity_bytes,
+                        config.pool_initial_epochs_ahead,
                     )
                     .await
                     .expect("failed to initialize direct Walrus blob store"),

@@ -70,6 +70,7 @@ pub async fn sign_and_submit(
             signed_tx,
             SuiTransactionBlockResponseOptions::new()
                 .with_effects()
+                .with_events()
                 .with_object_changes(),
             None,
         )

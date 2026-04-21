@@ -163,7 +163,7 @@ pub async fn store_blob(
         body.len() as i64,
         &md5_digest,
         &expires_at,
-        result.sui_object_id.as_deref(),
+        result.pooled_blob_object_id.as_deref(),
     )
     .await?;
 
@@ -176,7 +176,7 @@ pub async fn store_blob(
             blob_id: metadata.blob_id,
             size: metadata.size,
             md5: metadata.md5,
-            sui_object_id: metadata.sui_object_id,
+            pooled_blob_object_id: metadata.pooled_blob_object_id,
             created_at: metadata.created_at,
             expires_at: metadata.expires_at,
         }),
@@ -411,13 +411,12 @@ pub async fn delete_blob(
     // Reference-counted deletion: only delete from store if no more references
     let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
     if count == 0 {
+        let pool_id = db::accounts::get_storage_pool(&state.db, &auth.account_id)
+            .await?
+            .map(|s| s.object_id);
         match state
             .blob_store
-            .delete(
-                &BlobId(info.blob_id),
-                info.sui_object_id.as_deref(),
-                &auth.account_id,
-            )
+            .delete(&BlobId(info.blob_id), pool_id.as_deref(), &auth.account_id)
             .await
         {
             Ok(()) => {

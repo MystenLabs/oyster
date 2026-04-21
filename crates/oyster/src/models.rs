@@ -113,8 +113,8 @@ pub struct BlobMetadata {
     pub size: i64,
     /// Hex-encoded MD5 digest (S3 ETag).
     pub md5: String,
-    /// On-chain Sui object ID for the blob, if stored on Walrus.
-    pub sui_object_id: Option<String>,
+    /// On-chain Sui object ID of the `PooledBlob`, if stored on Walrus.
+    pub pooled_blob_object_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 expiration timestamp, if applicable.
@@ -182,8 +182,8 @@ pub struct StoreBlobResponse {
     pub size: i64,
     /// Hex-encoded MD5 digest (S3 ETag).
     pub md5: String,
-    /// On-chain Sui object ID, if applicable.
-    pub sui_object_id: Option<String>,
+    /// On-chain Sui object ID of the `PooledBlob`, if applicable.
+    pub pooled_blob_object_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 expiration timestamp, if applicable.

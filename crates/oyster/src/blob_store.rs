@@ -13,8 +13,8 @@ pub struct BlobId(pub String);
 pub struct StoreResult {
     /// The content-addressed blob ID.
     pub blob_id: BlobId,
-    /// On-chain Sui object ID, if the blob was registered on Walrus.
-    pub sui_object_id: Option<String>,
+    /// On-chain Sui object ID of the `PooledBlob`, if the blob was registered on Walrus.
+    pub pooled_blob_object_id: Option<String>,
 }
 
 impl BlobId {
@@ -59,6 +59,12 @@ pub enum BlobStoreError {
     /// The account has insufficient on-chain balance to complete the operation.
     #[error("insufficient balance: {0}")]
     InsufficientBalance(String),
+    /// Lazy creation of a `StoragePool` failed on-chain. Maps to 502 Bad Gateway.
+    #[error("pool creation failed: {0}")]
+    PoolCreationFailed(String),
+    /// Error bookkeeping pool/blob state in the Oyster database.
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -73,11 +79,13 @@ pub trait BlobStore: Send + Sync + 'static {
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     /// Read blob data by its ID.
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
-    /// Delete a blob by its ID.
+    /// Delete a blob by its ID. `pool_id` is the on-chain `StoragePool`
+    /// ObjectID owning the `PooledBlob`; `None` when the backing store has
+    /// no on-chain integration (e.g. `LocalBlobStore`).
     fn delete(
         &self,
         blob_id: &BlobId,
-        sui_object_id: Option<&str>,
+        pool_id: Option<&str>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     /// Check whether a blob exists.
@@ -126,7 +134,7 @@ impl BlobStore for LocalBlobStore {
             if path.exists() {
                 return Ok(StoreResult {
                     blob_id,
-                    sui_object_id: None,
+                    pooled_blob_object_id: None,
                 });
             }
             let parent = path.parent().expect("blob path must have parent");
@@ -134,7 +142,7 @@ impl BlobStore for LocalBlobStore {
             tokio::fs::write(&path, &data).await?;
             Ok(StoreResult {
                 blob_id,
-                sui_object_id: None,
+                pooled_blob_object_id: None,
             })
         })
     }
@@ -153,7 +161,7 @@ impl BlobStore for LocalBlobStore {
     fn delete(
         &self,
         blob_id: &BlobId,
-        _sui_object_id: Option<&str>,
+        _pool_id: Option<&str>,
         _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);

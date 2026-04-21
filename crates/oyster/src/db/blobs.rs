@@ -14,13 +14,13 @@ fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
         content_type: row.get("content_type"),
         size: row.get("size"),
         md5: row.get("md5"),
-        sui_object_id: row.get("sui_object_id"),
+        pooled_blob_object_id: row.get("pooled_blob_object_id"),
         created_at: row.get("created_at"),
         expires_at: row.get("expires_at"),
     }
 }
 
-const BLOB_COLUMNS: &str = "key, blob_id, bucket_name, account_id, content_type, size, md5, sui_object_id, created_at, expires_at";
+const BLOB_COLUMNS: &str = "key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, created_at, expires_at";
 
 /// Count the total number of blobs.
 pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
@@ -54,7 +54,7 @@ pub async fn insert_blob(
     size: i64,
     md5: &str,
     expires_at: &str,
-    sui_object_id: Option<&str>,
+    pooled_blob_object_id: Option<&str>,
 ) -> Result<BlobMetadata, sqlx::Error> {
     // Delete-then-insert for cross-DB upsert compatibility
     sqlx::query(&super::sql(
@@ -66,7 +66,7 @@ pub async fn insert_blob(
     .await?;
 
     let query = format!(
-        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, expires_at, sui_object_id) \
+        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, expires_at, pooled_blob_object_id) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
          RETURNING {BLOB_COLUMNS}",
     );
@@ -79,7 +79,7 @@ pub async fn insert_blob(
         .bind(size)
         .bind(md5)
         .bind(expires_at)
-        .bind(sui_object_id)
+        .bind(pooled_blob_object_id)
         .fetch_one(pool)
         .await?;
 
@@ -99,6 +99,24 @@ pub async fn get_blob_by_blob_id(
         .await?;
 
     Ok(row.map(row_to_blob))
+}
+
+/// Find an existing `PooledBlob` ObjectID for the given account and blob ID,
+/// if any blob row already references this content under that account.
+pub async fn find_pooled_blob_object_id_for_account(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    blob_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(&super::sql(
+        "SELECT pooled_blob_object_id FROM blobs \
+         WHERE account_id = ? AND blob_id = ? AND pooled_blob_object_id IS NOT NULL LIMIT 1",
+    ))
+    .bind(account_id)
+    .bind(blob_id)
+    .fetch_optional(pool)
+    .await
+    .map(|opt: Option<Option<String>>| opt.flatten())
 }
 
 /// Fetch blob metadata by bucket name and key.
@@ -183,8 +201,8 @@ pub async fn update_blob_metadata(
 pub struct DeletedBlobInfo {
     /// Content-addressed blob ID.
     pub blob_id: String,
-    /// On-chain Sui object ID, if applicable.
-    pub sui_object_id: Option<String>,
+    /// On-chain Sui object ID of the `PooledBlob`, if applicable.
+    pub pooled_blob_object_id: Option<String>,
 }
 
 /// Delete a blob by bucket name, key, and account, returning its IDs if it existed.
@@ -195,7 +213,7 @@ pub async fn delete_blob(
     account_id: &AccountId,
 ) -> Result<Option<DeletedBlobInfo>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "DELETE FROM blobs WHERE bucket_name = ? AND key = ? AND account_id = ? RETURNING blob_id, sui_object_id",
+        "DELETE FROM blobs WHERE bucket_name = ? AND key = ? AND account_id = ? RETURNING blob_id, pooled_blob_object_id",
     ))
     .bind(bucket_name)
     .bind(key)
@@ -204,7 +222,7 @@ pub async fn delete_blob(
     .await?;
     Ok(row.map(|r| DeletedBlobInfo {
         blob_id: r.get("blob_id"),
-        sui_object_id: r.get("sui_object_id"),
+        pooled_blob_object_id: r.get("pooled_blob_object_id"),
     }))
 }
 
@@ -287,6 +305,40 @@ mod tests {
         db::create_pool("sqlite::memory:").await.unwrap()
     }
 
+    /// Insert a blob row populating the legacy `sui_object_id` column. Used by
+    /// tests that exercise the dormant extension-task SQL, which still reads
+    /// from `sui_object_id` until Phase 4 rewrites it.
+    #[allow(clippy::too_many_arguments)]
+    async fn insert_legacy_blob_for_test(
+        pool: &super::super::DbPool,
+        key: &str,
+        blob_id: &str,
+        bucket_name: &str,
+        account_id: &AccountId,
+        content_type: &str,
+        size: i64,
+        md5: &str,
+        expires_at: &str,
+        sui_object_id: &str,
+    ) {
+        sqlx::query(&super::super::sql(
+            "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, expires_at, sui_object_id) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind(key)
+        .bind(blob_id)
+        .bind(bucket_name)
+        .bind(account_id)
+        .bind(content_type)
+        .bind(size)
+        .bind(md5)
+        .bind(expires_at)
+        .bind(sui_object_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
     async fn seed_account_and_bucket(pool: &super::super::DbPool) -> (AccountId, String) {
         let account_id = AccountId::new();
         let bucket_name = format!("test-bucket-{}", uuid::Uuid::new_v4());
@@ -317,7 +369,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        insert_blob(
+        insert_legacy_blob_for_test(
             &pool,
             "file1.txt",
             "blob-hash-1",
@@ -327,10 +379,9 @@ mod tests {
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
-            Some("0xabc123"),
+            "0xabc123",
         )
-        .await
-        .unwrap();
+        .await;
 
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(7))
@@ -339,7 +390,7 @@ mod tests {
             .to_string();
         let blobs = get_expiring_blobs(&pool, &cutoff, 100).await.unwrap();
         assert_eq!(blobs.len(), 1);
-        assert_eq!(blobs[0].sui_object_id.as_deref(), Some("0xabc123"));
+        assert_eq!(blobs[0].blob_id, "blob-hash-1");
     }
 
     #[tokio::test]
@@ -383,7 +434,7 @@ mod tests {
         let (account_id, bucket_name) = seed_account_and_bucket(&pool).await;
 
         let expires_at = "2026-03-01 00:00:00";
-        let blob = insert_blob(
+        insert_legacy_blob_for_test(
             &pool,
             "file4.txt",
             "blob-hash-4",
@@ -393,17 +444,16 @@ mod tests {
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
             expires_at,
-            Some("0xupdate789"),
+            "0xupdate789",
         )
-        .await
-        .unwrap();
+        .await;
 
         let new_expires_at = "2026-06-01 00:00:00";
         update_blob_expires_at(&pool, "0xupdate789", new_expires_at)
             .await
             .unwrap();
 
-        let updated = get_blob_by_key(&pool, &blob.bucket_name, &blob.key)
+        let updated = get_blob_by_key(&pool, &bucket_name, "file4.txt")
             .await
             .unwrap()
             .unwrap();
@@ -421,7 +471,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        insert_blob(
+        insert_legacy_blob_for_test(
             &pool,
             "pa1.txt",
             "blob-hash-pa1",
@@ -431,10 +481,9 @@ mod tests {
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
-            Some("0xpa1"),
+            "0xpa1",
         )
-        .await
-        .unwrap();
+        .await;
 
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(7))
@@ -461,7 +510,7 @@ mod tests {
             .format("%Y-%m-%d %H:%M:%S")
             .to_string();
 
-        insert_blob(
+        insert_legacy_blob_for_test(
             &pool,
             "mixed1.txt",
             "blob-hash-mixed1",
@@ -471,12 +520,11 @@ mod tests {
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
-            Some("0xmixed1"),
+            "0xmixed1",
         )
-        .await
-        .unwrap();
+        .await;
 
-        insert_blob(
+        insert_legacy_blob_for_test(
             &pool,
             "mixed2.txt",
             "blob-hash-mixed2",
@@ -486,10 +534,9 @@ mod tests {
             200,
             "d41d8cd98f00b204e9800998ecf8427e",
             &expires_at,
-            Some("0xmixed2"),
+            "0xmixed2",
         )
-        .await
-        .unwrap();
+        .await;
 
         let cutoff = chrono::Utc::now()
             .checked_add_days(chrono::Days::new(7))

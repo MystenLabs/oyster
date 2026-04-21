@@ -56,38 +56,121 @@ pub async fn count_accounts(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
-/// Set the StoragePool ObjectID for an account. Idempotent: only populates
-/// the column when it's currently NULL (lazy-creation narrowing — first
-/// writer wins). Returns true if a row was updated.
-pub async fn set_storage_pool_object_id(
+/// Persistent per-account `StoragePool` accounting state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoragePoolState {
+    /// On-chain Sui `ObjectID` of the pool.
+    pub object_id: String,
+    /// Epoch at which the current reservation expires.
+    pub end_epoch: i64,
+    /// Total encoded bytes reserved on the pool.
+    pub reserved_encoded_bytes: i64,
+    /// Encoded bytes currently consumed by registered blobs.
+    pub used_encoded_bytes: i64,
+}
+
+/// Persist a freshly-created `StoragePool` for an account. Idempotent: only
+/// populates the columns when the pool is currently `NULL` (first writer
+/// wins); returns `true` on first-writer win, `false` on race loss.
+pub async fn set_storage_pool(
     pool: &super::DbPool,
     account_id: &AccountId,
     object_id: &str,
+    end_epoch: i64,
+    reserved_encoded_bytes: i64,
+    used_encoded_bytes: i64,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(&super::sql(
-        "UPDATE accounts SET storage_pool_object_id = ? \
+        "UPDATE accounts SET \
+             storage_pool_object_id = ?, \
+             pool_end_epoch = ?, \
+             pool_reserved_encoded_bytes = ?, \
+             pool_used_encoded_bytes = ? \
          WHERE id = ? AND storage_pool_object_id IS NULL",
     ))
     .bind(object_id)
+    .bind(end_epoch)
+    .bind(reserved_encoded_bytes)
+    .bind(used_encoded_bytes)
     .bind(account_id)
     .execute(pool)
     .await?;
     Ok(result.rows_affected() == 1)
 }
 
-/// Get the StoragePool ObjectID for an account, or `None` if unset or the
-/// account doesn't exist.
-pub async fn get_storage_pool_object_id(
+/// Fetch the current `StoragePool` state for an account, or `None` if the
+/// account hasn't lazy-created a pool yet (or doesn't exist).
+pub async fn get_storage_pool(
     pool: &super::DbPool,
     account_id: &AccountId,
-) -> Result<Option<String>, sqlx::Error> {
-    sqlx::query_scalar(&super::sql(
-        "SELECT storage_pool_object_id FROM accounts WHERE id = ?",
+) -> Result<Option<StoragePoolState>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT storage_pool_object_id, pool_end_epoch, \
+                pool_reserved_encoded_bytes, pool_used_encoded_bytes \
+         FROM accounts WHERE id = ?",
     ))
     .bind(account_id)
     .fetch_optional(pool)
-    .await
-    .map(|opt: Option<Option<String>>| opt.flatten())
+    .await?;
+    let Some(row) = row else {
+        return Ok(None);
+    };
+    let object_id: Option<String> = row.get("storage_pool_object_id");
+    let end_epoch: Option<i64> = row.get("pool_end_epoch");
+    let reserved: Option<i64> = row.get("pool_reserved_encoded_bytes");
+    let used: Option<i64> = row.get("pool_used_encoded_bytes");
+    match (object_id, end_epoch, reserved, used) {
+        (Some(object_id), Some(end_epoch), Some(reserved), Some(used)) => {
+            Ok(Some(StoragePoolState {
+                object_id,
+                end_epoch,
+                reserved_encoded_bytes: reserved,
+                used_encoded_bytes: used,
+            }))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Bump reserved + used byte counters after a successful `register_pooled_blob`
+/// transaction. `added_reserved_bytes` may be zero when the existing
+/// reservation already covered the new blob.
+pub async fn update_pool_after_register(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    added_reserved_bytes: i64,
+    added_used_bytes: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&super::sql(
+        "UPDATE accounts SET \
+             pool_reserved_encoded_bytes = pool_reserved_encoded_bytes + ?, \
+             pool_used_encoded_bytes = pool_used_encoded_bytes + ? \
+         WHERE id = ?",
+    ))
+    .bind(added_reserved_bytes)
+    .bind(added_used_bytes)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Decrement the used-byte counter after a successful `delete_pooled_blob`.
+pub async fn update_pool_after_delete(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    freed_used_bytes: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&super::sql(
+        "UPDATE accounts SET \
+             pool_used_encoded_bytes = pool_used_encoded_bytes - ? \
+         WHERE id = ?",
+    ))
+    .bind(freed_used_bytes)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -134,62 +217,102 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_storage_pool_object_id_is_none_for_fresh_account() {
+    async fn get_storage_pool_is_none_for_fresh_account() {
         let pool = test_pool().await;
         let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
-        let result = get_storage_pool_object_id(&pool, &account.id)
-            .await
-            .unwrap();
+        let result = get_storage_pool(&pool, &account.id).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn get_storage_pool_object_id_is_none_for_missing_account() {
+    async fn get_storage_pool_is_none_for_missing_account() {
         let pool = test_pool().await;
-        let result = get_storage_pool_object_id(&pool, &AccountId::new())
-            .await
-            .unwrap();
+        let result = get_storage_pool(&pool, &AccountId::new()).await.unwrap();
         assert!(result.is_none());
     }
 
     #[tokio::test]
-    async fn set_storage_pool_object_id_sets_when_null() {
+    async fn set_storage_pool_sets_full_state() {
         let pool = test_pool().await;
         let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
-        let updated = set_storage_pool_object_id(&pool, &account.id, "0xabc")
+        let updated = set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
         assert!(updated);
-        let fetched = get_storage_pool_object_id(&pool, &account.id)
+        let fetched = get_storage_pool(&pool, &account.id)
             .await
-            .unwrap();
-        assert_eq!(fetched.as_deref(), Some("0xabc"));
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(fetched.object_id, "0xabc");
+        assert_eq!(fetched.end_epoch, 42);
+        assert_eq!(fetched.reserved_encoded_bytes, 1_000);
+        assert_eq!(fetched.used_encoded_bytes, 0);
     }
 
     #[tokio::test]
-    async fn set_storage_pool_object_id_is_idempotent() {
+    async fn set_storage_pool_is_idempotent() {
         let pool = test_pool().await;
         let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
-        let first = set_storage_pool_object_id(&pool, &account.id, "0xabc")
+        let first = set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
         assert!(first);
-        let second = set_storage_pool_object_id(&pool, &account.id, "0xdef")
+        let second = set_storage_pool(&pool, &account.id, "0xdef", 99, 5_000, 50)
             .await
             .unwrap();
         assert!(!second);
-        let fetched = get_storage_pool_object_id(&pool, &account.id)
+        let fetched = get_storage_pool(&pool, &account.id)
             .await
-            .unwrap();
-        assert_eq!(fetched.as_deref(), Some("0xabc"));
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(fetched.object_id, "0xabc");
+        assert_eq!(fetched.end_epoch, 42);
+        assert_eq!(fetched.reserved_encoded_bytes, 1_000);
+        assert_eq!(fetched.used_encoded_bytes, 0);
     }
 
     #[tokio::test]
-    async fn set_storage_pool_object_id_noop_for_missing_account() {
+    async fn set_storage_pool_noop_for_missing_account() {
         let pool = test_pool().await;
-        let updated = set_storage_pool_object_id(&pool, &AccountId::new(), "0xabc")
+        let updated = set_storage_pool(&pool, &AccountId::new(), "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
         assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn update_pool_after_register_bumps_both() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
+            .await
+            .unwrap();
+        update_pool_after_register(&pool, &account.id, 500, 300)
+            .await
+            .unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.reserved_encoded_bytes, 1_500);
+        assert_eq!(state.used_encoded_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn update_pool_after_delete_decrements_used() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 400)
+            .await
+            .unwrap();
+        update_pool_after_delete(&pool, &account.id, 250)
+            .await
+            .unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.reserved_encoded_bytes, 1_000);
+        assert_eq!(state.used_encoded_bytes, 150);
     }
 }

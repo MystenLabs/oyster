@@ -36,7 +36,7 @@ struct SpyBlobStore {
     inner: LocalBlobStore,
     /// Each `store()` call appends the `account_id` argument here.
     calls: Mutex<Vec<AccountId>>,
-    /// Each `delete()` call appends (blob_id, sui_object_id, account_id) here.
+    /// Each `delete()` call appends (blob_id, pool_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
 }
 
@@ -77,15 +77,15 @@ impl BlobStore for SpyBlobStore {
     fn delete(
         &self,
         blob_id: &BlobId,
-        sui_object_id: Option<&str>,
+        pool_id: Option<&str>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         self.delete_calls.lock().unwrap().push((
             blob_id.0.clone(),
-            sui_object_id.map(|s| s.to_string()),
+            pool_id.map(|s| s.to_string()),
             *account_id,
         ));
-        self.inner.delete(blob_id, sui_object_id, account_id)
+        self.inner.delete(blob_id, pool_id, account_id)
     }
 
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
@@ -252,8 +252,8 @@ async fn store_test_blob(
     let (status, body) = json_response(app, req).await;
     assert_eq!(status, StatusCode::CREATED);
     assert!(
-        body.get("sui_object_id").is_some(),
-        "response should include sui_object_id field"
+        body.get("pooled_blob_object_id").is_some(),
+        "response should include pooled_blob_object_id field"
     );
     assert!(
         body.get("md5").is_some(),
@@ -342,7 +342,7 @@ async fn full_lifecycle() {
     let blobs = body["data"].as_array().unwrap();
     assert_eq!(blobs.len(), 1);
     assert_eq!(blobs[0]["key"].as_str().unwrap(), blob_key);
-    assert!(blobs[0].get("sui_object_id").is_some());
+    assert!(blobs[0].get("pooled_blob_object_id").is_some());
     assert!(blobs[0].get("md5").is_some());
 
     // 7. Update blob metadata
@@ -1117,9 +1117,10 @@ async fn delete_blob_threads_account_id() {
 
     let delete_calls = spy.recorded_delete_calls();
     assert_eq!(delete_calls.len(), 1, "expected exactly one delete call");
-    let (ref _blob_id, ref sui_object_id, ref _account_id) = delete_calls[0];
-    // sui_object_id is None because LocalBlobStore::store() returns StoreResult { sui_object_id: None }.
-    assert_eq!(*sui_object_id, None);
+    let (ref _blob_id, ref pool_id, ref _account_id) = delete_calls[0];
+    // pool_id is None because LocalBlobStore has no on-chain pool; the account
+    // never lazy-created one, so routes/blobs.rs threads through None.
+    assert_eq!(*pool_id, None);
 }
 
 // ---------------------------------------------------------------------------

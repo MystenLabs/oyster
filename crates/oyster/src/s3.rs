@@ -90,6 +90,16 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             err.set_status_code(hyper::StatusCode::BAD_GATEWAY);
             err
         }
+        BlobStoreError::PoolCreationFailed(ref msg) => {
+            tracing::error!(error = %msg, "pool creation failed");
+            let mut err = S3Error::with_message(S3ErrorCode::InternalError, "pool creation failed");
+            err.set_status_code(hyper::StatusCode::BAD_GATEWAY);
+            err
+        }
+        BlobStoreError::Database(ref db_err) => {
+            tracing::error!(error = %db_err, "blob store database error");
+            S3Error::with_message(S3ErrorCode::InternalError, db_err.to_string())
+        }
     }
 }
 
@@ -367,7 +377,7 @@ impl s3s::S3 for OysterS3 {
             body_bytes.len() as i64,
             &md5_digest,
             &expires_at,
-            result.sui_object_id.as_deref(),
+            result.pooled_blob_object_id.as_deref(),
         )
         .await
         .map_err(internal_error)?;
@@ -485,14 +495,14 @@ impl s3s::S3 for OysterS3 {
                 .await
                 .map_err(internal_error)?;
             if count == 0 {
+                let pool_id = db::accounts::get_storage_pool(&self.state.db, &account_id)
+                    .await
+                    .map_err(internal_error)?
+                    .map(|s| s.object_id);
                 let _ = self
                     .state
                     .blob_store
-                    .delete(
-                        &BlobId(info.blob_id),
-                        info.sui_object_id.as_deref(),
-                        &account_id,
-                    )
+                    .delete(&BlobId(info.blob_id), pool_id.as_deref(), &account_id)
                     .await;
             }
         }
