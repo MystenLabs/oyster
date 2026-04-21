@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.3.0] - 2026-04-21
+
+### Breaking Changes
+- `oyster-cli` `client.yaml` schema rewritten to named contexts — top-level `url`/`api_key` no longer parse (`deny_unknown_fields`). Migrate by wrapping existing values in `contexts.<name>: { url, api_key }` and optionally setting `active_context: <name>`.
+
+### Added
+- `oyster-cli`: `--context <name>` global flag and `OYSTER_CONTEXT` env var select the active context (precedence: flag > env > `active_context` field; auto-selects when exactly one context is defined)
+- `oyster-cli`: new `app` subcommand — `app import <name>` reads a JWT with hidden tty input (or a stdin line when piped) and stores it, `app refresh-jwt <name>` calls `POST /apps/token-refresh` with the stored JWT, writes the rotated token back atomically, prints the new JWT on stdout with status on stderr
+- `oyster-cli` `client.yaml`: per-context `apps.<name>: { jwt, jwt_expiry }` map for persisted app JWTs; `jwt_expiry` is populated by decoding the JWT `exp` claim without signature verification
+- `oyster-cli` `app refresh-jwt` surfaces 401 as "ask admin to re-issue via `oysterd app jwt <APP_ID>`" and 403 as "refresh not allowed for this app (`allow_refresh_jwt=false`)"
+
+### Changed
+- Upstream Walrus aggregator connect failures, DNS failures, and request timeouts now return HTTP 502 Bad Gateway (both JSON API and S3 paths) instead of 500 Internal Server Error
+- The root-level S3 fallback no longer shadows unmatched `/api/*` URLs — those now return a clean `{"error":"not found"}` 404 instead of a confusing S3 "invalid authorization header" 400
+- `/apps/token-refresh` and JWT grace-verification emit tracing logs (warn on reject reasons, info on successful refresh with `app_id`/`jti`/`expired_ago_secs`) to make production failures diagnosable
+- Docs: README and `docs/src/guides/cli.md` updated with the multi-context schema, precedence rules, and `app import` / `app refresh-jwt` usage
+
+### Fixed
+- Chain-refreshing a JWT (refreshing a token itself obtained from a prior refresh) now works correctly for both fresh and expired-within-grace tokens
+
 ## [0.2.2] - 2026-04-10
 
 ### Added
