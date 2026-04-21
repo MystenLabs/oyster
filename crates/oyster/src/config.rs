@@ -37,6 +37,17 @@ pub struct Config {
     pub blob_extend_lookahead_days: u32,
     /// Number of epochs to extend blobs by.
     pub blob_extend_epochs: u32,
+    /// Initial epoch window for newly-created `StoragePool` objects.
+    pub pool_initial_epochs_ahead: u32,
+    /// Initial encoded capacity (bytes) reserved on a newly-created
+    /// `StoragePool`. Must be non-zero because the Move contract rejects
+    /// zero-byte reservations; the first upload always bumps this via
+    /// `increase_storage_pool_capacity`.
+    pub pool_initial_encoded_capacity_bytes: u64,
+    /// Number of epochs to extend `StoragePool` objects by.
+    pub pool_extend_epochs: u32,
+    /// Number of days to look ahead for expiring `StoragePool` objects.
+    pub pool_extend_lookahead_days: u32,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
     /// Optional JWT signing secret for app authentication.
@@ -80,6 +91,24 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
+            pool_initial_epochs_ahead: std::env::var("POOL_INITIAL_EPOCHS_AHEAD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            pool_initial_encoded_capacity_bytes: std::env::var(
+                "POOL_INITIAL_ENCODED_CAPACITY_BYTES",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1),
+            pool_extend_epochs: std::env::var("POOL_EXTEND_EPOCHS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            pool_extend_lookahead_days: std::env::var("POOL_EXTEND_LOOKAHEAD_DAYS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
             jwt_secret: overrides

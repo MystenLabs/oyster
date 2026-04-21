@@ -192,6 +192,10 @@ impl OysterTestHarness {
             blob_extend_interval_secs: 3600,
             blob_extend_lookahead_days: 7,
             blob_extend_epochs: 1,
+            pool_initial_epochs_ahead: 1,
+            pool_initial_encoded_capacity_bytes: 1,
+            pool_extend_epochs: 1,
+            pool_extend_lookahead_days: 7,
             extension_metrics_bind_addr: "unused".into(),
             jwt_secret: Some("e2e-test-jwt-secret".into()),
         };

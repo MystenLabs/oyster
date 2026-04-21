@@ -56,6 +56,40 @@ pub async fn count_accounts(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
         .await
 }
 
+/// Set the StoragePool ObjectID for an account. Idempotent: only populates
+/// the column when it's currently NULL (lazy-creation narrowing — first
+/// writer wins). Returns true if a row was updated.
+pub async fn set_storage_pool_object_id(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    object_id: &str,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET storage_pool_object_id = ? \
+         WHERE id = ? AND storage_pool_object_id IS NULL",
+    ))
+    .bind(object_id)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
+/// Get the StoragePool ObjectID for an account, or `None` if unset or the
+/// account doesn't exist.
+pub async fn get_storage_pool_object_id(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(&super::sql(
+        "SELECT storage_pool_object_id FROM accounts WHERE id = ?",
+    ))
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await
+    .map(|opt: Option<Option<String>>| opt.flatten())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,5 +131,65 @@ mod tests {
         let pool = test_pool().await;
         let result = get_account(&pool, &AccountId::new()).await.unwrap();
         assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_storage_pool_object_id_is_none_for_fresh_account() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let result = get_storage_pool_object_id(&pool, &account.id)
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_storage_pool_object_id_is_none_for_missing_account() {
+        let pool = test_pool().await;
+        let result = get_storage_pool_object_id(&pool, &AccountId::new())
+            .await
+            .unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn set_storage_pool_object_id_sets_when_null() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let updated = set_storage_pool_object_id(&pool, &account.id, "0xabc")
+            .await
+            .unwrap();
+        assert!(updated);
+        let fetched = get_storage_pool_object_id(&pool, &account.id)
+            .await
+            .unwrap();
+        assert_eq!(fetched.as_deref(), Some("0xabc"));
+    }
+
+    #[tokio::test]
+    async fn set_storage_pool_object_id_is_idempotent() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let first = set_storage_pool_object_id(&pool, &account.id, "0xabc")
+            .await
+            .unwrap();
+        assert!(first);
+        let second = set_storage_pool_object_id(&pool, &account.id, "0xdef")
+            .await
+            .unwrap();
+        assert!(!second);
+        let fetched = get_storage_pool_object_id(&pool, &account.id)
+            .await
+            .unwrap();
+        assert_eq!(fetched.as_deref(), Some("0xabc"));
+    }
+
+    #[tokio::test]
+    async fn set_storage_pool_object_id_noop_for_missing_account() {
+        let pool = test_pool().await;
+        let updated = set_storage_pool_object_id(&pool, &AccountId::new(), "0xabc")
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 }
