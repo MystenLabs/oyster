@@ -62,131 +62,139 @@ pub async fn run_extension_loop(
 
     loop {
         tokio::time::sleep(config.check_interval).await;
+        let _ = run_extension_cycle_once(&db, &pearl, &rpc_url, &read_client, &config).await;
+    }
+}
 
-        counter!(EXTENSION_CYCLES_TOTAL).increment(1);
-        let cycle_start = Instant::now();
+/// Execute exactly one pool-extension cycle synchronously, without the
+/// surrounding sleep loop. Tests use this to drive the extension task
+/// deterministically. Returns `(extended, errors)`.
+pub async fn run_extension_cycle_once(
+    db: &DbPool,
+    pearl: &PearlConnection,
+    rpc_url: &str,
+    read_client: &std::sync::Arc<walrus_sui::client::SuiReadClient>,
+    config: &ExtensionConfig,
+) -> (u32, u32) {
+    counter!(EXTENSION_CYCLES_TOTAL).increment(1);
+    let cycle_start = Instant::now();
 
-        let current_epoch = match read_client.current_epoch().await {
-            Ok(e) => e,
+    let current_epoch = match read_client.current_epoch().await {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("failed to query current_epoch: {e}");
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "current_epoch").increment(1);
+            return (0, 1);
+        }
+    };
+
+    let cutoff_epoch = (current_epoch as i64) + (config.lookahead_epochs as i64);
+
+    let pools =
+        match db::accounts::list_accounts_with_pools_expiring_before(db, cutoff_epoch, 100).await {
+            Ok(p) => p,
             Err(e) => {
-                tracing::error!("failed to query current_epoch: {e}");
-                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "current_epoch").increment(1);
-                continue;
+                tracing::error!("failed to query expiring pools: {e}");
+                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_query").increment(1);
+                return (0, 1);
             }
         };
 
-        let cutoff_epoch = (current_epoch as i64) + (config.lookahead_epochs as i64);
+    gauge!(EXTENSION_POOLS_EXPIRING).set(pools.len() as f64);
 
-        let pools =
-            match db::accounts::list_accounts_with_pools_expiring_before(&db, cutoff_epoch, 100)
-                .await
-            {
-                Ok(p) => p,
-                Err(e) => {
-                    tracing::error!("failed to query expiring pools: {e}");
-                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_query").increment(1);
-                    continue;
-                }
-            };
+    if pools.is_empty() {
+        tracing::debug!("no pools need extension");
+        gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(0.0);
+        histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
+        return (0, 0);
+    }
 
-        gauge!(EXTENSION_POOLS_EXPIRING).set(pools.len() as f64);
+    tracing::info!("{} pool(s) approaching expiry, extending", pools.len());
 
-        if pools.is_empty() {
-            tracing::debug!("no pools need extension");
-            gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(0.0);
-            histogram!(EXTENSION_CYCLE_DURATION_SECONDS)
-                .record(cycle_start.elapsed().as_secs_f64());
-            continue;
-        }
+    let mut extended = 0u32;
+    let mut errors = 0u32;
+    let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
+    let mut webhook_clients: HashMap<String, WebhookClient> = HashMap::new();
 
-        tracing::info!("{} pool(s) approaching expiry, extending", pools.len());
-
-        let mut extended = 0u32;
-        let mut errors = 0u32;
-        let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
-        let mut webhook_clients: HashMap<String, WebhookClient> = HashMap::new();
-
-        for pool in &pools {
-            let sender_address = match address_cache.get(&pool.account_id) {
-                Some(&addr) => addr,
-                None => {
-                    match sui_transaction::resolve_sender_address(&pearl, &pool.account_id).await {
-                        Ok(addr) => {
-                            address_cache.insert(pool.account_id, addr);
-                            addr
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                account_id = %pool.account_id,
-                                error = %e,
-                                "failed to resolve sender address, skipping pool"
-                            );
-                            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "resolve_address")
-                                .increment(1);
-                            errors += 1;
-                            continue;
-                        }
-                    }
-                }
-            };
-
-            match extend_single_pool(
-                &read_client,
-                &pearl,
-                &pool.account_id,
-                &rpc_url,
-                sender_address,
-                pool,
-                config.extend_epochs,
-            )
-            .await
-            {
-                Ok(()) => {
-                    let new_end = pool.pool_end_epoch + config.extend_epochs as i64;
-                    if let Err(e) =
-                        db::accounts::bump_pool_end_epoch(&db, &pool.account_id, new_end).await
-                    {
-                        tracing::warn!(
-                            account_id = %pool.account_id,
-                            error = %e,
-                            "failed to bump pool_end_epoch in DB"
-                        );
-                        counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
-                    }
-                    counter!(EXTENSION_POOLS_EXTENDED_TOTAL).increment(1);
-                    extended += 1;
+    for pool in &pools {
+        let sender_address = match address_cache.get(&pool.account_id) {
+            Some(&addr) => addr,
+            None => match sui_transaction::resolve_sender_address(pearl, &pool.account_id).await {
+                Ok(addr) => {
+                    address_cache.insert(pool.account_id, addr);
+                    addr
                 }
                 Err(e) => {
                     tracing::warn!(
                         account_id = %pool.account_id,
-                        storage_pool_object_id = %pool.storage_pool_object_id,
                         error = %e,
-                        "failed to extend pool"
+                        "failed to resolve sender address, skipping pool"
                     );
-                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "resolve_address").increment(1);
                     errors += 1;
+                    continue;
+                }
+            },
+        };
 
-                    if let Some(ref url) = pool.webhook_url
-                        && webhook::is_insufficient_funds_error(e.as_ref())
-                    {
-                        let wh = webhook_clients
-                            .entry(url.clone())
-                            .or_insert_with(|| WebhookClient::new(url.clone()));
-                        wh.notify_insufficient_funds(&InsufficientFundsPayload {
-                            account_id: pool.account_id,
-                            address: sender_address.to_string(),
-                            error: e.to_string(),
-                        })
-                        .await;
-                    }
+        match extend_single_pool(
+            read_client,
+            pearl,
+            &pool.account_id,
+            rpc_url,
+            sender_address,
+            pool,
+            config.extend_epochs,
+        )
+        .await
+        {
+            Ok(()) => {
+                let new_end = pool.pool_end_epoch + config.extend_epochs as i64;
+                if let Err(e) =
+                    db::accounts::bump_pool_end_epoch(db, &pool.account_id, new_end).await
+                {
+                    tracing::warn!(
+                        account_id = %pool.account_id,
+                        error = %e,
+                        "failed to bump pool_end_epoch in DB"
+                    );
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                }
+                counter!(EXTENSION_POOLS_EXTENDED_TOTAL).increment(1);
+                extended += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    account_id = %pool.account_id,
+                    storage_pool_object_id = %pool.storage_pool_object_id,
+                    error = %e,
+                    "failed to extend pool"
+                );
+                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
+                errors += 1;
+
+                if let Some(ref url) = pool.webhook_url
+                    && webhook::is_insufficient_funds_error(e.as_ref())
+                {
+                    let wh = webhook_clients
+                        .entry(url.clone())
+                        .or_insert_with(|| WebhookClient::new(url.clone()));
+                    wh.notify_insufficient_funds(&InsufficientFundsPayload {
+                        account_id: pool.account_id,
+                        address: sender_address.to_string(),
+                        error: e.to_string(),
+                    })
+                    .await;
                 }
             }
         }
-
-        gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set((extended + errors) as f64);
-        histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
-        tracing::info!(extended, errors, "extension cycle complete");
     }
+
+    gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set((extended + errors) as f64);
+    histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
+    tracing::info!(extended, errors, "extension cycle complete");
+
+    (extended, errors)
 }
 
 async fn extend_single_pool(

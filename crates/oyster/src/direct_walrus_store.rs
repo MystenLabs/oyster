@@ -277,10 +277,14 @@ impl DirectWalrusBlobStore {
         )
         .await?
         {
+            // Record encoded_size on the dedup'd row so the final delete (when
+            // the last reference to this blob_id is removed) can decrement
+            // pool_used_encoded_bytes — Walrus is content-addressed, so the
+            // encoded_size matches the prior row.
             return Ok(StoreResult {
                 blob_id: BlobId(walrus_blob_id_str),
                 pooled_blob_object_id: Some(existing),
-                encoded_size: None,
+                encoded_size: Some(encoded_size),
             });
         }
 

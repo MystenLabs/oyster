@@ -86,7 +86,11 @@ pub struct OysterTestHarness {
     /// Oyster database pool (for direct DB operations in tests).
     pub db: db::DbPool,
     /// Sui RPC URL for the test cluster.
-    rpc_url: String,
+    pub rpc_url: String,
+    /// Walrus system object ID.
+    pub system_object: oyster::sui_types::base_types::ObjectID,
+    /// Walrus staking object ID.
+    pub staking_object: oyster::sui_types::base_types::ObjectID,
     /// The walrus admin client (its temp_dir holds the admin wallet config for funding).
     walrus_client: WithTempDir<walrus_sdk::node_client::WalrusNodeClient<SuiContractClient>>,
 }
@@ -220,8 +224,45 @@ impl OysterTestHarness {
             aggregator,
             db: oyster_db,
             rpc_url,
+            system_object,
+            staking_object,
             walrus_client,
         }
+    }
+
+    /// Access the walrus admin's `SuiContractClient` for read-only on-chain
+    /// queries (e.g., `storage_pool_status`).
+    pub fn walrus_sui_client(&self) -> &walrus_sui::client::SuiContractClient {
+        self.walrus_client.as_ref().sui_client()
+    }
+
+    /// Run exactly one extension cycle synchronously, returning
+    /// `(extended, errors)`. Uses `ExtensionConfig { check_interval: ZERO, ... }`.
+    pub async fn trigger_extension_cycle(
+        &self,
+        lookahead_epochs: u32,
+        extend_epochs: u32,
+    ) -> (u32, u32) {
+        let read_client = oyster::sui_transaction::build_sui_read_client(
+            &self.rpc_url,
+            self.system_object,
+            self.staking_object,
+        )
+        .await
+        .expect("build SuiReadClient");
+        let config = oyster::extension_task::ExtensionConfig {
+            check_interval: std::time::Duration::ZERO,
+            lookahead_epochs,
+            extend_epochs,
+        };
+        oyster::extension_task::run_extension_cycle_once(
+            &self.db,
+            &self.pearl,
+            &self.rpc_url,
+            &read_client,
+            &config,
+        )
+        .await
     }
 
     /// Bind the Oyster HTTP router to a random TCP port and serve it.

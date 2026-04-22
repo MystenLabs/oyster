@@ -1,5 +1,7 @@
 #![allow(missing_docs)]
 
+use std::str::FromStr;
+
 use axum::{Router, body::Body, http::Request};
 use http_body_util::BodyExt;
 use oyster_e2e_tests::{OysterTestHarness, run_e2e};
@@ -412,5 +414,313 @@ fn e2e_admin_account_blob_lifecycle() {
         .await;
         assert_eq!(status, axum::http::StatusCode::OK);
         assert_eq!(body, blob_data, "read blob data should match stored data");
+    });
+}
+
+/// Helper: PUT a blob and return the parsed JSON body.
+async fn put_blob(app: &Router, api_key: &str, bucket_id: &str, key: &str, data: &[u8]) -> Value {
+    let req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(data.to_vec()))
+        .unwrap();
+    let (status, body) = json_response(app, req).await;
+    assert_eq!(
+        status,
+        axum::http::StatusCode::CREATED,
+        "store blob failed: {body}"
+    );
+    body
+}
+
+/// Test A — pool is lazy-created on an account's first blob upload and the
+/// on-chain `StoragePool` matches DB accounting.
+#[test]
+fn e2e_pool_created_lazily_on_first_blob() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-lazy-pool-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+
+        // Before any upload, the account has no pool.
+        let pre = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool");
+        assert!(pre.is_none(), "pool should not exist before any upload");
+
+        let bucket_id = create_test_bucket(app, &api_key, "lazy-pool-bucket").await;
+        put_blob(
+            app,
+            &api_key,
+            &bucket_id,
+            "lazy.txt",
+            b"lazy pool creation test",
+        )
+        .await;
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist after first upload");
+        assert!(
+            !state.object_id.is_empty(),
+            "DB pool object_id should be non-empty",
+        );
+        assert!(
+            state.used_encoded_bytes > 0,
+            "DB pool_used_encoded_bytes should be non-zero after one upload",
+        );
+
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+        let status = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status");
+
+        assert_eq!(status.storage_pool_object_id, pool_id);
+        assert_eq!(status.blob_count, 1, "one blob should be registered");
+        assert!(
+            status.used_encoded_bytes > 0,
+            "on-chain used_encoded_bytes should be non-zero",
+        );
+        assert!(
+            status.reserved_encoded_capacity_bytes >= status.used_encoded_bytes,
+            "reserved >= used",
+        );
+        assert!(
+            status.end_epoch > status.start_epoch,
+            "end_epoch > start_epoch",
+        );
+        assert_eq!(
+            status.used_encoded_bytes as i64, state.used_encoded_bytes,
+            "DB and on-chain used_encoded_bytes should agree",
+        );
+    });
+}
+
+/// Test B — `blob_count` and `used_encoded_bytes` track N distinct uploads.
+#[test]
+fn e2e_pool_accounting_across_n_uploads() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-n-uploads-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "n-uploads-bucket").await;
+
+        for i in 0..3 {
+            let content = format!("n-uploads-test content #{i}");
+            put_blob(
+                app,
+                &api_key,
+                &bucket_id,
+                &format!("file-{i}.txt"),
+                content.as_bytes(),
+            )
+            .await;
+        }
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+
+        let status = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status");
+
+        assert_eq!(status.blob_count, 3, "three distinct blobs registered");
+        assert_eq!(
+            status.used_encoded_bytes as i64, state.used_encoded_bytes,
+            "DB and on-chain used_encoded_bytes should agree",
+        );
+        assert!(
+            status.reserved_encoded_capacity_bytes >= status.used_encoded_bytes,
+            "reserved >= used",
+        );
+    });
+}
+
+/// Test C — the extension task advances `pool_end_epoch` both on-chain and in DB.
+#[test]
+fn e2e_extension_task_extends_pool() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-extend-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "extend-bucket").await;
+
+        put_blob(app, &api_key, &bucket_id, "extend.txt", b"extension test").await;
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+
+        let before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status before");
+
+        let (extended, errors) = harness.trigger_extension_cycle(7, 1).await;
+        assert_eq!(extended, 1, "exactly one pool should have been extended");
+        assert_eq!(errors, 0, "no errors during extension cycle");
+
+        let after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after");
+
+        assert_eq!(
+            after.end_epoch,
+            before.end_epoch + 1,
+            "on-chain end_epoch should advance by 1 extend_epoch",
+        );
+
+        let state_after = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        assert_eq!(
+            state_after.end_epoch as u32, after.end_epoch,
+            "DB end_epoch should match on-chain end_epoch after extension",
+        );
+    });
+}
+
+/// Test D — deleting one of two references to the same content does not free
+/// pool capacity; deleting the last reference calls `delete_pooled_blob` and
+/// brings `used_encoded_bytes` to zero on both chain and DB.
+#[test]
+fn e2e_refcounted_delete_frees_pool_capacity() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-refcount-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "refcount-bucket").await;
+
+        let data = b"shared content for refcounted delete";
+        let a = put_blob(app, &api_key, &bucket_id, "copy-a", data).await;
+        let b = put_blob(app, &api_key, &bucket_id, "copy-b", data).await;
+        assert_eq!(
+            a["blob_id"].as_str().unwrap(),
+            b["blob_id"].as_str().unwrap(),
+            "same content should dedup to the same blob_id",
+        );
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+
+        let before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status before");
+        assert_eq!(before.blob_count, 1, "dedup should produce one pooled blob");
+        assert!(
+            before.used_encoded_bytes > 0,
+            "pool should have non-zero used bytes",
+        );
+
+        // DELETE copy-a — ref-count drops 2 → 1, no on-chain delete yet.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/v1/buckets/{bucket_id}/blobs/copy-a"))
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
+
+        let mid = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status mid");
+        assert_eq!(
+            mid.blob_count, 1,
+            "ref-count > 0 should not free the pooled blob",
+        );
+        assert_eq!(
+            mid.used_encoded_bytes, before.used_encoded_bytes,
+            "used_encoded_bytes unchanged while a reference remains",
+        );
+
+        // DELETE copy-b — ref-count drops 1 → 0, on-chain delete_pooled_blob fires.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/v1/buckets/{bucket_id}/blobs/copy-b"))
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
+
+        let after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after");
+        assert_eq!(after.blob_count, 0, "last ref dropped → pooled blob freed");
+        assert_eq!(
+            after.used_encoded_bytes, 0,
+            "used_encoded_bytes should be zero",
+        );
+
+        let state_after = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        assert_eq!(
+            state_after.used_encoded_bytes, 0,
+            "DB pool_used_encoded_bytes should track on-chain state",
+        );
     });
 }
