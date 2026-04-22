@@ -78,6 +78,7 @@ impl BlobStore for SpyBlobStore {
         &self,
         blob_id: &BlobId,
         pool_id: Option<&str>,
+        encoded_size: u64,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         self.delete_calls.lock().unwrap().push((
@@ -85,7 +86,8 @@ impl BlobStore for SpyBlobStore {
             pool_id.map(|s| s.to_string()),
             *account_id,
         ));
-        self.inner.delete(blob_id, pool_id, account_id)
+        self.inner
+            .delete(blob_id, pool_id, encoded_size, account_id)
     }
 
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
@@ -107,7 +109,6 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         pearl_service_secret: "test-secret".into(),
 
         walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -151,7 +152,6 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         pearl_service_secret: "test-secret".into(),
 
         walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -979,7 +979,6 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         pearl_service_secret: "test-secret".into(),
 
         walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -1149,7 +1148,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
         walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -1224,7 +1222,6 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
         walrus_aggregator_url: None,
-        walrus_default_epochs: 5,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,

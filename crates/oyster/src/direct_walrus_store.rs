@@ -280,6 +280,7 @@ impl DirectWalrusBlobStore {
             return Ok(StoreResult {
                 blob_id: BlobId(walrus_blob_id_str),
                 pooled_blob_object_id: Some(existing),
+                encoded_size: None,
             });
         }
 
@@ -429,6 +430,7 @@ impl DirectWalrusBlobStore {
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id_str),
             pooled_blob_object_id: Some(pooled_blob_object_id.to_string()),
+            encoded_size: Some(encoded_size),
         })
     }
 }
@@ -477,6 +479,7 @@ impl BlobStore for DirectWalrusBlobStore {
         &self,
         blob_id: &BlobId,
         pool_id: Option<&str>,
+        encoded_size: u64,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let blob_id = blob_id.clone();
@@ -522,11 +525,10 @@ impl BlobStore for DirectWalrusBlobStore {
                     }
                 })?;
 
-            // We intentionally do not decrement `pool_used_encoded_bytes` here:
-            // the caller doesn't pass the encoded size and we don't persist it.
-            // Over-reporting used capacity only causes future writes to
-            // over-grow the pool, which the Move contract accepts safely.
-            // Phase 4 reconciler can re-sync from on-chain pool state.
+            if encoded_size > 0 {
+                db::accounts::update_pool_after_delete(&self.db, &account_id, encoded_size as i64)
+                    .await?;
+            }
             Ok(())
         })
     }

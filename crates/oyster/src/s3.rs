@@ -378,6 +378,7 @@ impl s3s::S3 for OysterS3 {
             &md5_digest,
             &expires_at,
             result.pooled_blob_object_id.as_deref(),
+            result.encoded_size.map(|e| e as i64),
         )
         .await
         .map_err(internal_error)?;
@@ -502,7 +503,12 @@ impl s3s::S3 for OysterS3 {
                 let _ = self
                     .state
                     .blob_store
-                    .delete(&BlobId(info.blob_id), pool_id.as_deref(), &account_id)
+                    .delete(
+                        &BlobId(info.blob_id),
+                        pool_id.as_deref(),
+                        info.encoded_size.unwrap_or(0) as u64,
+                        &account_id,
+                    )
                     .await;
             }
         }

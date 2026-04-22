@@ -2,6 +2,22 @@ use sqlx::Row;
 
 use crate::{AccountId, AppId, models::Account};
 
+/// Minimal account-level pool state needed by the extension task to schedule
+/// an `extend_storage_pool` PTB.
+#[derive(Debug, Clone)]
+pub struct ExpiringPool {
+    /// Oyster account ID that owns the pool.
+    pub account_id: AccountId,
+    /// On-chain Sui `ObjectID` of the `StoragePool`.
+    pub storage_pool_object_id: String,
+    /// Epoch at which the current reservation expires.
+    pub pool_end_epoch: i64,
+    /// Total encoded bytes reserved on the pool.
+    pub pool_reserved_encoded_bytes: i64,
+    /// Optional webhook URL inherited from the owning app.
+    pub webhook_url: Option<String>,
+}
+
 /// Insert a new account belonging to the given app.
 pub async fn create_account(
     pool: &super::DbPool,
@@ -149,6 +165,59 @@ pub async fn update_pool_after_register(
     ))
     .bind(added_reserved_bytes)
     .bind(added_used_bytes)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// List accounts whose `StoragePool` expires before `cutoff_epoch`, joined
+/// with the owning app's `webhook_url`. Used by the background extension task
+/// to pick candidate pools for `extend_storage_pool`.
+pub async fn list_accounts_with_pools_expiring_before(
+    pool: &super::DbPool,
+    cutoff_epoch: i64,
+    limit: i64,
+) -> Result<Vec<ExpiringPool>, sqlx::Error> {
+    let rows = sqlx::query(&super::sql(
+        "SELECT acc.id, acc.storage_pool_object_id, acc.pool_end_epoch, \
+                acc.pool_reserved_encoded_bytes, a.webhook_url \
+         FROM accounts acc \
+         JOIN apps a ON acc.app_id = a.id \
+         WHERE acc.storage_pool_object_id IS NOT NULL \
+           AND acc.pool_end_epoch IS NOT NULL \
+           AND acc.pool_end_epoch < ? \
+         ORDER BY acc.pool_end_epoch \
+         LIMIT ?",
+    ))
+    .bind(cutoff_epoch)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| ExpiringPool {
+            account_id: r.get("id"),
+            storage_pool_object_id: r.get("storage_pool_object_id"),
+            pool_end_epoch: r.get("pool_end_epoch"),
+            pool_reserved_encoded_bytes: r.get("pool_reserved_encoded_bytes"),
+            webhook_url: r.get("webhook_url"),
+        })
+        .collect())
+}
+
+/// Bump only `pool_end_epoch` after a successful `extend_storage_pool` PTB.
+/// Leaves reserved/used byte counters untouched.
+pub async fn bump_pool_end_epoch(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    new_end_epoch: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&super::sql(
+        "UPDATE accounts SET pool_end_epoch = ? WHERE id = ?",
+    ))
+    .bind(new_end_epoch)
     .bind(account_id)
     .execute(pool)
     .await?;
@@ -314,5 +383,88 @@ mod tests {
             .expect("pool state must be present");
         assert_eq!(state.reserved_encoded_bytes, 1_000);
         assert_eq!(state.used_encoded_bytes, 150);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_with_pools_expiring_before_filters_by_cutoff() {
+        let pool = test_pool().await;
+        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let b = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &b.id, "0xbbb", 50, 1_000, 0)
+            .await
+            .unwrap();
+
+        let results = list_accounts_with_pools_expiring_before(&pool, 20, 100)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].account_id, a.id);
+        assert_eq!(results[0].storage_pool_object_id, "0xaaa");
+        assert_eq!(results[0].pool_end_epoch, 10);
+        assert_eq!(results[0].pool_reserved_encoded_bytes, 1_000);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_with_pools_expiring_before_skips_accounts_without_pool() {
+        let pool = test_pool().await;
+        let _unpooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let pooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &pooled.id, "0xccc", 5, 1_000, 0)
+            .await
+            .unwrap();
+
+        let results = list_accounts_with_pools_expiring_before(&pool, 100, 100)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].account_id, pooled.id);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_with_pools_expiring_before_includes_webhook_url() {
+        let pool = test_pool().await;
+        let app = crate::db::apps::create_app(
+            &pool,
+            "webhook-app",
+            "wh@example.com",
+            Some("https://example.com/hook"),
+        )
+        .await
+        .unwrap();
+        let account = create_account(&pool, &app.id, None).await.unwrap();
+        set_storage_pool(&pool, &account.id, "0xddd", 10, 1_000, 0)
+            .await
+            .unwrap();
+
+        let results = list_accounts_with_pools_expiring_before(&pool, 100, 100)
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].webhook_url.as_deref(),
+            Some("https://example.com/hook")
+        );
+    }
+
+    #[tokio::test]
+    async fn bump_pool_end_epoch_updates_only_end_epoch() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 400)
+            .await
+            .unwrap();
+
+        bump_pool_end_epoch(&pool, &account.id, 99).await.unwrap();
+
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 99);
+        assert_eq!(state.reserved_encoded_bytes, 1_000);
+        assert_eq!(state.used_encoded_bytes, 400);
     }
 }

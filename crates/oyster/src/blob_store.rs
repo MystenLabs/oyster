@@ -15,6 +15,10 @@ pub struct StoreResult {
     pub blob_id: BlobId,
     /// On-chain Sui object ID of the `PooledBlob`, if the blob was registered on Walrus.
     pub pooled_blob_object_id: Option<String>,
+    /// Walrus-encoded size in bytes, when the blob was freshly registered
+    /// on-chain. `None` for `LocalBlobStore` and for the dedup short-circuit
+    /// path (the original registering row already carries the encoded size).
+    pub encoded_size: Option<u64>,
 }
 
 impl BlobId {
@@ -81,11 +85,15 @@ pub trait BlobStore: Send + Sync + 'static {
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>>;
     /// Delete a blob by its ID. `pool_id` is the on-chain `StoragePool`
     /// ObjectID owning the `PooledBlob`; `None` when the backing store has
-    /// no on-chain integration (e.g. `LocalBlobStore`).
+    /// no on-chain integration (e.g. `LocalBlobStore`). `encoded_size` is
+    /// the Walrus-encoded byte count of the blob being deleted; passing 0
+    /// tells the backend to skip pool-accounting updates (used by legacy
+    /// rows and by backends that don't track encoded size).
     fn delete(
         &self,
         blob_id: &BlobId,
         pool_id: Option<&str>,
+        encoded_size: u64,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>>;
     /// Check whether a blob exists.
@@ -135,6 +143,7 @@ impl BlobStore for LocalBlobStore {
                 return Ok(StoreResult {
                     blob_id,
                     pooled_blob_object_id: None,
+                    encoded_size: None,
                 });
             }
             let parent = path.parent().expect("blob path must have parent");
@@ -143,6 +152,7 @@ impl BlobStore for LocalBlobStore {
             Ok(StoreResult {
                 blob_id,
                 pooled_blob_object_id: None,
+                encoded_size: None,
             })
         })
     }
@@ -162,6 +172,7 @@ impl BlobStore for LocalBlobStore {
         &self,
         blob_id: &BlobId,
         _pool_id: Option<&str>,
+        _encoded_size: u64,
         _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
         let path = self.blob_path(blob_id);

@@ -187,7 +187,6 @@ impl OysterTestHarness {
             pearl_service_secret: PEARL_SECRET.into(),
 
             walrus_aggregator_url: None,
-            walrus_default_epochs: 1,
             sui_rpc_url: None,
             walrus_system_object: None,
             walrus_staking_object: None,

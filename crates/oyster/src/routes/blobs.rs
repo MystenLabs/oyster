@@ -164,6 +164,7 @@ pub async fn store_blob(
         &md5_digest,
         &expires_at,
         result.pooled_blob_object_id.as_deref(),
+        result.encoded_size.map(|e| e as i64),
     )
     .await?;
 
@@ -416,7 +417,12 @@ pub async fn delete_blob(
             .map(|s| s.object_id);
         match state
             .blob_store
-            .delete(&BlobId(info.blob_id), pool_id.as_deref(), &auth.account_id)
+            .delete(
+                &BlobId(info.blob_id),
+                pool_id.as_deref(),
+                info.encoded_size.unwrap_or(0) as u64,
+                &auth.account_id,
+            )
             .await
         {
             Ok(()) => {

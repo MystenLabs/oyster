@@ -1,37 +1,40 @@
-use std::{collections::HashMap, sync::Arc, time::Instant};
+use std::{collections::HashMap, time::Instant};
 
 use metrics::{counter, gauge, histogram};
 use sui_types::base_types::{ObjectID, SuiAddress};
-use walrus_sui::client::{SuiReadClient, transaction_builder::WalrusPtbBuilder};
+use walrus_sui::client::{ReadClient as _, transaction_builder::WalrusPtbBuilder};
 
 use crate::{
     AccountId,
-    db::{self, DbPool},
+    db::{self, DbPool, accounts::ExpiringPool},
     metrics::{
-        EXTENSION_BLOBS_EXPIRING,
-        EXTENSION_BLOBS_EXTENDED_TOTAL,
-        EXTENSION_CYCLE_BLOBS_PROCESSED,
         EXTENSION_CYCLE_DURATION_SECONDS,
+        EXTENSION_CYCLE_POOLS_PROCESSED,
         EXTENSION_CYCLES_TOTAL,
         EXTENSION_ERRORS_TOTAL,
+        EXTENSION_POOLS_EXPIRING,
+        EXTENSION_POOLS_EXTENDED_TOTAL,
     },
     pearl_client::PearlConnection,
     sui_transaction,
     webhook::{self, InsufficientFundsPayload, WebhookClient},
 };
 
-/// Configuration for the background blob extension task.
+/// Configuration for the background `StoragePool` extension task.
 #[derive(Clone, Debug)]
 pub struct ExtensionConfig {
-    /// How often to check for expiring blobs.
+    /// How often to check for expiring pools.
     pub check_interval: std::time::Duration,
-    /// How many days ahead to look for expiring blobs.
-    pub lookahead_days: u32,
-    /// Number of Walrus epochs to extend blobs by.
+    /// Select pools whose `pool_end_epoch` is less than
+    /// `current_epoch + lookahead_epochs` (treated as ~days in config
+    /// but named by epoch unit here to match the on-chain model).
+    pub lookahead_epochs: u32,
+    /// Number of Walrus epochs to extend pools by.
     pub extend_epochs: u32,
 }
 
-/// Run the background loop that periodically extends expiring blobs on Walrus.
+/// Run the background loop that periodically extends expiring
+/// `StoragePool` objects on Walrus.
 pub async fn run_extension_loop(
     db: DbPool,
     pearl: PearlConnection,
@@ -41,9 +44,9 @@ pub async fn run_extension_loop(
     config: ExtensionConfig,
 ) {
     tracing::info!(
-        "blob extension task started (interval={}s, lookahead={}d, epochs={})",
+        "pool extension task started (interval={}s, lookahead={}e, epochs={})",
         config.check_interval.as_secs(),
-        config.lookahead_days,
+        config.lookahead_epochs,
         config.extend_epochs,
     );
 
@@ -63,52 +66,60 @@ pub async fn run_extension_loop(
         counter!(EXTENSION_CYCLES_TOTAL).increment(1);
         let cycle_start = Instant::now();
 
-        let cutoff = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(config.lookahead_days as u64))
-            .expect("valid date")
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
-        let blobs = match db::blobs::get_expiring_blobs_with_accounts(&db, &cutoff, 100).await {
-            Ok(b) => b,
+        let current_epoch = match read_client.current_epoch().await {
+            Ok(e) => e,
             Err(e) => {
-                tracing::error!("failed to query expiring blobs: {e}");
+                tracing::error!("failed to query current_epoch: {e}");
+                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "current_epoch").increment(1);
                 continue;
             }
         };
 
-        gauge!(EXTENSION_BLOBS_EXPIRING).set(blobs.len() as f64);
+        let cutoff_epoch = (current_epoch as i64) + (config.lookahead_epochs as i64);
 
-        if blobs.is_empty() {
-            tracing::debug!("no blobs need extension");
-            gauge!(EXTENSION_CYCLE_BLOBS_PROCESSED).set(0.0);
+        let pools =
+            match db::accounts::list_accounts_with_pools_expiring_before(&db, cutoff_epoch, 100)
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::error!("failed to query expiring pools: {e}");
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_query").increment(1);
+                    continue;
+                }
+            };
+
+        gauge!(EXTENSION_POOLS_EXPIRING).set(pools.len() as f64);
+
+        if pools.is_empty() {
+            tracing::debug!("no pools need extension");
+            gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(0.0);
             histogram!(EXTENSION_CYCLE_DURATION_SECONDS)
                 .record(cycle_start.elapsed().as_secs_f64());
             continue;
         }
 
-        tracing::info!("{} blob(s) approaching expiry, extending", blobs.len());
+        tracing::info!("{} pool(s) approaching expiry, extending", pools.len());
 
         let mut extended = 0u32;
         let mut errors = 0u32;
         let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
         let mut webhook_clients: HashMap<String, WebhookClient> = HashMap::new();
 
-        for blob in &blobs {
-            // Resolve sender address (cached per account per cycle).
-            let sender_address = match address_cache.get(&blob.account_id) {
+        for pool in &pools {
+            let sender_address = match address_cache.get(&pool.account_id) {
                 Some(&addr) => addr,
                 None => {
-                    match sui_transaction::resolve_sender_address(&pearl, &blob.account_id).await {
+                    match sui_transaction::resolve_sender_address(&pearl, &pool.account_id).await {
                         Ok(addr) => {
-                            address_cache.insert(blob.account_id, addr);
+                            address_cache.insert(pool.account_id, addr);
                             addr
                         }
                         Err(e) => {
                             tracing::warn!(
-                                account_id = %blob.account_id,
+                                account_id = %pool.account_id,
                                 error = %e,
-                                "failed to resolve sender address, skipping blob"
+                                "failed to resolve sender address, skipping pool"
                             );
                             counter!(EXTENSION_ERRORS_TOTAL, "stage" => "resolve_address")
                                 .increment(1);
@@ -119,89 +130,83 @@ pub async fn run_extension_loop(
                 }
             };
 
-            if let Err(e) = extend_single_blob(
+            match extend_single_pool(
                 &read_client,
                 &pearl,
-                &blob.account_id,
+                &pool.account_id,
                 &rpc_url,
                 sender_address,
-                &blob.sui_object_id,
-                blob.size as u64,
+                pool,
                 config.extend_epochs,
             )
             .await
             {
-                tracing::warn!(
-                    sui_object_id = %blob.sui_object_id,
-                    error = %e,
-                    "failed to extend blob"
-                );
-                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_blob").increment(1);
-                errors += 1;
-
-                if let Some(ref url) = blob.webhook_url
-                    && webhook::is_insufficient_funds_error(e.as_ref())
-                {
-                    let wh = webhook_clients
-                        .entry(url.clone())
-                        .or_insert_with(|| WebhookClient::new(url.clone()));
-                    wh.notify_insufficient_funds(&InsufficientFundsPayload {
-                        account_id: blob.account_id,
-                        address: sender_address.to_string(),
-                        error: e.to_string(),
-                    })
-                    .await;
+                Ok(()) => {
+                    let new_end = pool.pool_end_epoch + config.extend_epochs as i64;
+                    if let Err(e) =
+                        db::accounts::bump_pool_end_epoch(&db, &pool.account_id, new_end).await
+                    {
+                        tracing::warn!(
+                            account_id = %pool.account_id,
+                            error = %e,
+                            "failed to bump pool_end_epoch in DB"
+                        );
+                        counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                    }
+                    counter!(EXTENSION_POOLS_EXTENDED_TOTAL).increment(1);
+                    extended += 1;
                 }
-
-                continue;
-            }
-
-            // Compute new expiry (approximate: current expires_at + extend_epochs * ~epoch_duration).
-            // The actual on-chain expiry is authoritative.
-            if let Ok(parsed) =
-                chrono::NaiveDateTime::parse_from_str(&blob.expires_at, "%Y-%m-%d %H:%M:%S")
-            {
-                let new_expires = parsed + chrono::Duration::days(config.extend_epochs as i64);
-                let new_expires_str = new_expires.format("%Y-%m-%d %H:%M:%S").to_string();
-                if let Err(e) =
-                    db::blobs::update_blob_expires_at(&db, &blob.sui_object_id, &new_expires_str)
-                        .await
-                {
+                Err(e) => {
                     tracing::warn!(
-                        sui_object_id = %blob.sui_object_id,
+                        account_id = %pool.account_id,
+                        storage_pool_object_id = %pool.storage_pool_object_id,
                         error = %e,
-                        "failed to update expires_at in DB"
+                        "failed to extend pool"
                     );
-                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
+                    errors += 1;
+
+                    if let Some(ref url) = pool.webhook_url
+                        && webhook::is_insufficient_funds_error(e.as_ref())
+                    {
+                        let wh = webhook_clients
+                            .entry(url.clone())
+                            .or_insert_with(|| WebhookClient::new(url.clone()));
+                        wh.notify_insufficient_funds(&InsufficientFundsPayload {
+                            account_id: pool.account_id,
+                            address: sender_address.to_string(),
+                            error: e.to_string(),
+                        })
+                        .await;
+                    }
                 }
             }
-
-            counter!(EXTENSION_BLOBS_EXTENDED_TOTAL).increment(1);
-            extended += 1;
         }
 
-        gauge!(EXTENSION_CYCLE_BLOBS_PROCESSED).set((extended + errors) as f64);
+        gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set((extended + errors) as f64);
         histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
         tracing::info!(extended, errors, "extension cycle complete");
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn extend_single_blob(
-    read_client: &Arc<SuiReadClient>,
+async fn extend_single_pool(
+    read_client: &std::sync::Arc<walrus_sui::client::SuiReadClient>,
     pearl: &PearlConnection,
     account_id: &AccountId,
     rpc_url: &str,
     sender_address: SuiAddress,
-    sui_object_id: &str,
-    encoded_size: u64,
+    pool: &ExpiringPool,
     extend_epochs: u32,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let object_id: ObjectID = sui_object_id.parse()?;
+    let pool_object_id: ObjectID = pool.storage_pool_object_id.parse()?;
 
     let mut ptb = WalrusPtbBuilder::new(read_client.clone(), sender_address);
-    ptb.extend_blob(object_id.into(), extend_epochs, encoded_size)
-        .await?;
+    ptb.extend_storage_pool(
+        pool_object_id,
+        extend_epochs,
+        pool.pool_reserved_encoded_bytes.max(0) as u64,
+    )
+    .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
     sui_transaction::sign_and_submit(pearl, account_id, rpc_url, tx_data).await?;

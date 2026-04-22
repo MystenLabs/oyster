@@ -24,16 +24,16 @@ pub const ACTIVE_BLOBS: &str = "oyster_active_blobs";
 
 /// Counter: total extension cycles run.
 pub const EXTENSION_CYCLES_TOTAL: &str = "oyster_extension_cycles_total";
-/// Counter: total blobs successfully extended.
-pub const EXTENSION_BLOBS_EXTENDED_TOTAL: &str = "oyster_extension_blobs_extended_total";
+/// Counter: total pools successfully extended.
+pub const EXTENSION_POOLS_EXTENDED_TOTAL: &str = "oyster_extension_pools_extended_total";
 /// Counter: total extension errors, labelled by stage.
 pub const EXTENSION_ERRORS_TOTAL: &str = "oyster_extension_errors_total";
 /// Histogram: extension cycle wall-clock duration in seconds.
 pub const EXTENSION_CYCLE_DURATION_SECONDS: &str = "oyster_extension_cycle_duration_seconds";
-/// Gauge: number of blobs found expiring in the current cycle.
-pub const EXTENSION_BLOBS_EXPIRING: &str = "oyster_extension_blobs_expiring";
-/// Gauge: number of blobs processed (extended + errored) in the current cycle.
-pub const EXTENSION_CYCLE_BLOBS_PROCESSED: &str = "oyster_extension_cycle_blobs_processed";
+/// Gauge: number of pools found expiring in the current cycle.
+pub const EXTENSION_POOLS_EXPIRING: &str = "oyster_extension_pools_expiring";
+/// Gauge: number of pools processed (extended + errored) in the current cycle.
+pub const EXTENSION_CYCLE_POOLS_PROCESSED: &str = "oyster_extension_cycle_pools_processed";
 
 // Webhook metrics
 

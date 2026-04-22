@@ -115,26 +115,14 @@ pub struct BlobMetadata {
     pub md5: String,
     /// On-chain Sui object ID of the `PooledBlob`, if stored on Walrus.
     pub pooled_blob_object_id: Option<String>,
+    /// Walrus-encoded size in bytes, if registered on-chain. `None` for
+    /// local-store blobs and for dedup-skipped duplicate rows (the original
+    /// registering row still carries the encoded size).
+    pub encoded_size: Option<i64>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 expiration timestamp, if applicable.
     pub expires_at: Option<String>,
-}
-
-/// Internal-only struct for the extension task — contains the minimal fields
-/// needed to extend a blob.
-#[derive(Debug, Clone, sqlx::FromRow)]
-pub struct ExpiringBlob {
-    /// Oyster account ID of the blob owner.
-    pub account_id: AccountId,
-    /// On-chain Sui object ID.
-    pub sui_object_id: String,
-    /// Blob size in bytes.
-    pub size: i64,
-    /// ISO 8601 expiration timestamp.
-    pub expires_at: String,
-    /// Optional webhook URL from the owning app.
-    pub webhook_url: Option<String>,
 }
 
 // Request types

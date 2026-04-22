@@ -23,8 +23,6 @@ pub struct Config {
     pub pearl_service_secret: String,
     /// Optional Walrus aggregator HTTP URL.
     pub walrus_aggregator_url: Option<String>,
-    /// Default number of Walrus storage epochs.
-    pub walrus_default_epochs: u32,
     /// Optional Sui RPC endpoint URL.
     pub sui_rpc_url: Option<String>,
     /// Optional Walrus system object ID on Sui.
@@ -72,10 +70,6 @@ impl Config {
                     "PEARL_SERVICE_SECRET is required (set env var or use --pearl-service-secret-file)",
                 ),
             walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
-            walrus_default_epochs: std::env::var("WALRUS_DEFAULT_EPOCHS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5),
             sui_rpc_url: std::env::var("SUI_RPC_URL").ok(),
             walrus_system_object: std::env::var("WALRUS_SYSTEM_OBJECT").ok(),
             walrus_staking_object: std::env::var("WALRUS_STAKING_OBJECT").ok(),
