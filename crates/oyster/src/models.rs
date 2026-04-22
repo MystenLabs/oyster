@@ -121,8 +121,6 @@ pub struct BlobMetadata {
     pub encoded_size: Option<i64>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
-    /// ISO 8601 expiration timestamp, if applicable.
-    pub expires_at: Option<String>,
 }
 
 // Request types
@@ -174,8 +172,6 @@ pub struct StoreBlobResponse {
     pub pooled_blob_object_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
-    /// ISO 8601 expiration timestamp, if applicable.
-    pub expires_at: Option<String>,
 }
 
 /// Response after creating a new account.

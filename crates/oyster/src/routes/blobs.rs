@@ -24,7 +24,6 @@ use crate::{
 };
 
 const MAX_BLOB_SIZE: usize = 1_073_741_824; // 1 GB
-const DEFAULT_DURATION_DAYS: i64 = 30;
 
 /// Check If-Match / If-None-Match headers against the current md5.
 fn check_json_conditions(
@@ -147,12 +146,6 @@ pub async fn store_blob(
         }
     };
 
-    let expires_at = chrono::Utc::now()
-        .checked_add_days(chrono::Days::new(DEFAULT_DURATION_DAYS as u64))
-        .expect("valid date")
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
-
     let metadata = db::blobs::insert_blob(
         &state.db,
         &key,
@@ -162,7 +155,6 @@ pub async fn store_blob(
         content_type,
         body.len() as i64,
         &md5_digest,
-        &expires_at,
         result.pooled_blob_object_id.as_deref(),
         result.encoded_size.map(|e| e as i64),
     )
@@ -179,7 +171,6 @@ pub async fn store_blob(
             md5: metadata.md5,
             pooled_blob_object_id: metadata.pooled_blob_object_id,
             created_at: metadata.created_at,
-            expires_at: metadata.expires_at,
         }),
     )
         .into_response())

@@ -231,8 +231,8 @@ async fn main() {
 
             let ext_config = oyster::extension_task::ExtensionConfig {
                 check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
-                lookahead_epochs: config.blob_extend_lookahead_days,
-                extend_epochs: config.blob_extend_epochs,
+                lookahead_epochs: config.pool_extend_lookahead_days,
+                extend_epochs: config.pool_extend_epochs,
             };
 
             oyster::extension_task::run_extension_loop(

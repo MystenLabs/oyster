@@ -14,11 +14,10 @@ fn row_to_blob(row: sqlx::any::AnyRow) -> BlobMetadata {
         pooled_blob_object_id: row.get("pooled_blob_object_id"),
         encoded_size: row.get("encoded_size"),
         created_at: row.get("created_at"),
-        expires_at: row.get("expires_at"),
     }
 }
 
-const BLOB_COLUMNS: &str = "key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, encoded_size, created_at, expires_at";
+const BLOB_COLUMNS: &str = "key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, encoded_size, created_at";
 
 /// Count the total number of blobs.
 pub async fn count_blobs(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
@@ -51,7 +50,6 @@ pub async fn insert_blob(
     content_type: &str,
     size: i64,
     md5: &str,
-    expires_at: &str,
     pooled_blob_object_id: Option<&str>,
     encoded_size: Option<i64>,
 ) -> Result<BlobMetadata, sqlx::Error> {
@@ -65,8 +63,8 @@ pub async fn insert_blob(
     .await?;
 
     let query = format!(
-        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, expires_at, pooled_blob_object_id, encoded_size) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, encoded_size) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
          RETURNING {BLOB_COLUMNS}",
     );
     let row = sqlx::query(&super::sql(&query))
@@ -77,7 +75,6 @@ pub async fn insert_blob(
         .bind(content_type)
         .bind(size)
         .bind(md5)
-        .bind(expires_at)
         .bind(pooled_blob_object_id)
         .bind(encoded_size)
         .fetch_one(pool)
@@ -279,7 +276,6 @@ mod tests {
             "text/plain",
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
-            "2026-12-01 00:00:00",
             Some("0xpool"),
             Some(123),
         )
@@ -307,7 +303,6 @@ mod tests {
             "text/plain",
             100,
             "d41d8cd98f00b204e9800998ecf8427e",
-            "2026-12-01 00:00:00",
             None,
             Some(123),
         )

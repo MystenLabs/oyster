@@ -185,11 +185,8 @@ async fn cmd_store(
         println!("  blob_id:        {}", r.blob_id);
         println!("  size:           {} bytes", r.size);
         println!("  md5:            {}", r.md5);
-        if let Some(ref sui) = r.sui_object_id {
-            println!("  sui_object_id:  {sui}");
-        }
-        if let Some(ref exp) = r.expires_at {
-            println!("  expires_at:     {exp}");
+        if let Some(ref id) = r.pooled_blob_object_id {
+            println!("  pooled_blob_object_id:  {id}");
         }
     });
     Ok(())

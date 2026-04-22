@@ -18,9 +18,8 @@ pub struct BlobMetadata {
     pub content_type: String,
     pub size: i64,
     pub md5: String,
-    pub sui_object_id: Option<String>,
+    pub pooled_blob_object_id: Option<String>,
     pub created_at: String,
-    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,9 +28,8 @@ pub struct StoreBlobResponse {
     pub blob_id: String,
     pub size: i64,
     pub md5: String,
-    pub sui_object_id: Option<String>,
+    pub pooled_blob_object_id: Option<String>,
     pub created_at: String,
-    pub expires_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

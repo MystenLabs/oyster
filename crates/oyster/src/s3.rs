@@ -361,12 +361,6 @@ impl s3s::S3 for OysterS3 {
             .await
             .map_err(blob_store_error)?;
 
-        let expires_at = chrono::Utc::now()
-            .checked_add_days(chrono::Days::new(30))
-            .expect("valid date")
-            .format("%Y-%m-%d %H:%M:%S")
-            .to_string();
-
         let metadata = db::blobs::insert_blob(
             &self.state.db,
             &key,
@@ -376,7 +370,6 @@ impl s3s::S3 for OysterS3 {
             &content_type,
             body_bytes.len() as i64,
             &md5_digest,
-            &expires_at,
             result.pooled_blob_object_id.as_deref(),
             result.encoded_size.map(|e| e as i64),
         )

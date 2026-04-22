@@ -191,8 +191,6 @@ impl OysterTestHarness {
             walrus_system_object: None,
             walrus_staking_object: None,
             blob_extend_interval_secs: 3600,
-            blob_extend_lookahead_days: 7,
-            blob_extend_epochs: 1,
             pool_initial_epochs_ahead: 1,
             pool_initial_encoded_capacity_bytes: 1,
             pool_extend_epochs: 1,

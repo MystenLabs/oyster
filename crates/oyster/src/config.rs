@@ -31,10 +31,6 @@ pub struct Config {
     pub walrus_staking_object: Option<String>,
     /// Interval in seconds between blob extension checks.
     pub blob_extend_interval_secs: u64,
-    /// Number of days to look ahead for expiring blobs.
-    pub blob_extend_lookahead_days: u32,
-    /// Number of epochs to extend blobs by.
-    pub blob_extend_epochs: u32,
     /// Initial epoch window for newly-created `StoragePool` objects.
     pub pool_initial_epochs_ahead: u32,
     /// Initial encoded capacity (bytes) reserved on a newly-created
@@ -77,14 +73,6 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600),
-            blob_extend_lookahead_days: std::env::var("BLOB_EXTEND_LOOKAHEAD_DAYS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(7),
-            blob_extend_epochs: std::env::var("BLOB_EXTEND_EPOCHS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(5),
             pool_initial_epochs_ahead: std::env::var("POOL_INITIAL_EPOCHS_AHEAD")
                 .ok()
                 .and_then(|v| v.parse().ok())
