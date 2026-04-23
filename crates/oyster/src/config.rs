@@ -1,5 +1,7 @@
 use std::path::PathBuf;
 
+use walrus_sui::utils::BYTES_PER_UNIT_SIZE;
+
 /// Secrets that can be provided via file instead of environment variable.
 pub struct SecretOverrides {
     /// Pearl service secret, if loaded from a file.
@@ -33,10 +35,11 @@ pub struct Config {
     pub blob_extend_interval_secs: u64,
     /// Initial epoch window for newly-created `StoragePool` objects.
     pub pool_initial_epochs_ahead: u32,
-    /// Initial encoded capacity (bytes) reserved on a newly-created
-    /// `StoragePool`. Must be non-zero because the Move contract rejects
-    /// zero-byte reservations; the first upload always bumps this via
-    /// `increase_storage_pool_capacity`.
+    /// Initial encoded capacity (bytes) reserved on a newly-created `StoragePool`.
+    /// Walrus bills storage in `BYTES_PER_UNIT_SIZE` (1 MiB) units regardless of
+    /// the stored value, so sub-MiB defaults pay the full MiB for a fractional
+    /// reservation. Default is one full unit; subsequent uploads round growth up
+    /// to the same quantum.
     pub pool_initial_encoded_capacity_bytes: u64,
     /// Number of epochs to extend `StoragePool` objects by.
     pub pool_extend_epochs: u32,
@@ -82,7 +85,7 @@ impl Config {
             )
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(1),
+            .unwrap_or(BYTES_PER_UNIT_SIZE),
             pool_extend_epochs: std::env::var("POOL_EXTEND_EPOCHS")
                 .ok()
                 .and_then(|v| v.parse().ok())

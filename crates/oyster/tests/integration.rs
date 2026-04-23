@@ -25,6 +25,7 @@ use oyster::{
 use serde_json::Value;
 use tempfile::TempDir;
 use tower::ServiceExt;
+use walrus_sui::utils::BYTES_PER_UNIT_SIZE;
 
 // ---------------------------------------------------------------------------
 // SpyBlobStore – wraps LocalBlobStore and records account_id from store()
@@ -115,7 +116,7 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
 
         blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
-        pool_initial_encoded_capacity_bytes: 1,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
         pool_extend_lookahead_days: 7,
         extension_metrics_bind_addr: "unused".into(),
@@ -156,7 +157,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
 
         blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
-        pool_initial_encoded_capacity_bytes: 1,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
         pool_extend_lookahead_days: 7,
         extension_metrics_bind_addr: "unused".into(),
@@ -980,7 +981,7 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         walrus_staking_object: None,
         blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
-        pool_initial_encoded_capacity_bytes: 1,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
         pool_extend_lookahead_days: 7,
         extension_metrics_bind_addr: "unused".into(),
@@ -1147,7 +1148,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         walrus_staking_object: None,
         blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
-        pool_initial_encoded_capacity_bytes: 1,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
         pool_extend_lookahead_days: 7,
         extension_metrics_bind_addr: "unused".into(),
@@ -1219,7 +1220,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         walrus_staking_object: None,
         blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
-        pool_initial_encoded_capacity_bytes: 1,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
         pool_extend_lookahead_days: 7,
         extension_metrics_bind_addr: "unused".into(),

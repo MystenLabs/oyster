@@ -560,6 +560,77 @@ fn e2e_pool_accounting_across_n_uploads() {
     });
 }
 
+/// After a first small upload, a second small upload that still fits in the
+/// already-reserved MiB MUST NOT trigger another `increase_storage_pool_capacity`
+/// PTB. We verify by asserting that on-chain `reserved_encoded_capacity_bytes`
+/// is unchanged between the two uploads.
+#[test]
+fn e2e_small_upload_reuses_reserved_capacity() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, jwt) = harness.create_app_jwt("e2e-reuse-capacity-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "reuse-capacity-bucket").await;
+
+        put_blob(
+            app,
+            &api_key,
+            &bucket_id,
+            "first.txt",
+            b"first small upload",
+        )
+        .await;
+
+        let state_after_first = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist after first upload");
+        let pool_id: oyster::sui_types::base_types::ObjectID = state_after_first
+            .object_id
+            .parse()
+            .expect("parse pool ObjectID");
+
+        let status_after_first = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status");
+
+        put_blob(
+            app,
+            &api_key,
+            &bucket_id,
+            "second.txt",
+            b"second small upload",
+        )
+        .await;
+
+        let status_after_second = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status");
+
+        assert_eq!(
+            status_after_second.reserved_encoded_capacity_bytes,
+            status_after_first.reserved_encoded_capacity_bytes,
+            "second small upload should not have triggered increase_storage_pool_capacity",
+        );
+        assert_eq!(status_after_second.blob_count, 2, "both blobs registered");
+        assert!(
+            status_after_second.used_encoded_bytes > status_after_first.used_encoded_bytes,
+            "used_encoded_bytes should grow even when reserved is unchanged",
+        );
+    });
+}
+
 /// Test C — the extension task advances `pool_end_epoch` both on-chain and in DB.
 #[test]
 fn e2e_extension_task_extends_pool() {

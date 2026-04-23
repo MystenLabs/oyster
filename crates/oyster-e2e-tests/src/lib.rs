@@ -60,7 +60,11 @@ use walrus_service::test_utils::{
     TestCluster,
     test_cluster::{AggregatorHandle, E2eTestSetupBuilder},
 };
-use walrus_sui::{client::SuiContractClient, test_utils::TestClusterHandle};
+use walrus_sui::{
+    client::SuiContractClient,
+    test_utils::TestClusterHandle,
+    utils::BYTES_PER_UNIT_SIZE,
+};
 use walrus_test_utils::WithTempDir;
 
 const PEARL_SECRET: &str = "e2e-test-pearl-secret";
@@ -177,8 +181,8 @@ impl OysterTestHarness {
             staking_object,
             pearl.clone(),
             oyster_db.clone(),
-            1, // pool_initial_encoded_capacity_bytes
-            1, // pool_initial_epochs_ahead (1 epoch for tests)
+            BYTES_PER_UNIT_SIZE, // pool_initial_encoded_capacity_bytes
+            1,                   // pool_initial_epochs_ahead (1 epoch for tests)
         )
         .await
         .expect("failed to create DirectWalrusBlobStore");
@@ -196,7 +200,7 @@ impl OysterTestHarness {
             walrus_staking_object: None,
             blob_extend_interval_secs: 3600,
             pool_initial_epochs_ahead: 1,
-            pool_initial_encoded_capacity_bytes: 1,
+            pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
             pool_extend_epochs: 1,
             pool_extend_lookahead_days: 7,
             extension_metrics_bind_addr: "unused".into(),

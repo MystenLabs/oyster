@@ -1,3 +1,14 @@
+//! Direct Walrus blob store: writes to Walrus via on-chain Sui PTBs against a
+//! per-account `StoragePool`.
+//!
+//! Walrus bills storage in `walrus_sui::utils::BYTES_PER_UNIT_SIZE` (1 MiB)
+//! units — the `storage_units_from_size!` macro in the Move contract rounds
+//! every reservation's payment up to the nearest unit, while the stored
+//! `reserved_encoded_capacity_bytes` is kept at literal byte granularity. We
+//! round our own reservation requests up to the unit so the stored and billed
+//! views agree and subsequent small uploads don't trigger redundant
+//! `increase_storage_pool_capacity` PTBs.
+
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use sui_sdk::rpc_types::ObjectChange;
@@ -13,6 +24,7 @@ use walrus_sui::{
         transaction_builder::WalrusPtbBuilder,
     },
     types::PooledBlob,
+    utils::{BYTES_PER_UNIT_SIZE, storage_units_from_size},
 };
 
 use crate::{
@@ -100,6 +112,21 @@ where
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Bytes to request from `increase_storage_pool_capacity`, rounded up to the
+/// Walrus accounting unit. Returns 0 when the encoded blob already fits.
+///
+/// Walrus bills storage in whole `BYTES_PER_UNIT_SIZE` units
+/// (see `walrus_sui::utils::BYTES_PER_UNIT_SIZE`); rounding up costs the same
+/// as rounding down and leaves usable headroom for subsequent small uploads.
+fn grow_by_bytes(remaining: i64, encoded_size: u64) -> u64 {
+    let needed: i64 = (encoded_size as i64) - remaining;
+    if needed > 0 {
+        storage_units_from_size(needed as u64) * BYTES_PER_UNIT_SIZE
+    } else {
+        0
+    }
+}
 
 /// Blob store that writes directly to Walrus via on-chain Sui transactions.
 pub struct DirectWalrusBlobStore {
@@ -309,16 +336,12 @@ impl DirectWalrusBlobStore {
 
         // 3. Register PTB: optional capacity bump + register_pooled_blobs.
         let remaining = pool_state.reserved_encoded_bytes - pool_state.used_encoded_bytes;
-        let grow_by: i64 = if (encoded_size as i64) > remaining {
-            (encoded_size as i64) - remaining
-        } else {
-            0
-        };
+        let grow_by: u64 = grow_by_bytes(remaining, encoded_size);
         let remaining_epochs = (pool_state.end_epoch - current_epoch as i64).max(1) as u32;
 
         let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
         if grow_by > 0 {
-            ptb.increase_storage_pool_capacity(pool_object_id, grow_by as u64, remaining_epochs)
+            ptb.increase_storage_pool_capacity(pool_object_id, grow_by, remaining_epochs)
                 .await
                 .map_err(|e| {
                     let msg = format!("increase_storage_pool_capacity error: {e}");
@@ -374,7 +397,7 @@ impl DirectWalrusBlobStore {
         db::accounts::update_pool_after_register(
             &self.db,
             account_id,
-            grow_by,
+            grow_by as i64,
             encoded_size as i64,
         )
         .await?;
@@ -556,5 +579,31 @@ impl BlobStore for DirectWalrusBlobStore {
                 }),
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MIB: u64 = BYTES_PER_UNIT_SIZE;
+
+    #[test]
+    fn grow_by_bytes_already_fits_returns_zero() {
+        assert_eq!(grow_by_bytes(1_000, 500), 0);
+        assert_eq!(grow_by_bytes(500, 500), 0); // exact fit
+        assert_eq!(grow_by_bytes(MIB as i64, MIB - 1), 0);
+    }
+
+    #[test]
+    fn grow_by_bytes_rounds_up_to_unit() {
+        // 500 KiB remaining, 600 KiB encoded → needs 100 KiB, rounds to 1 MiB.
+        assert_eq!(grow_by_bytes(500 * 1024, 600 * 1024), MIB);
+        // 0 remaining, exactly 1 MiB encoded → 1 MiB.
+        assert_eq!(grow_by_bytes(0, MIB), MIB);
+        // 0 remaining, 1 MiB + 1 byte → 2 MiB.
+        assert_eq!(grow_by_bytes(0, MIB + 1), 2 * MIB);
+        // Negative `remaining` (shouldn't happen in practice, but be defensive).
+        assert_eq!(grow_by_bytes(-10, 5), MIB);
     }
 }
