@@ -72,7 +72,7 @@ echo "  address:    $OPERATOR_ADDRESS"
 INTERNAL_APP_ID="00000000-0000-0000-0000-000000000000"
 echo "Signing admin JWT for internal app ($INTERNAL_APP_ID)..."
 ADMIN_JWT="$(./target/debug/oysterd app jwt "$INTERNAL_APP_ID")"
-echo "  JWT obtained (${#ADMIN_JWT} chars)"
+echo "  $ADMIN_JWT"
 
 # --- Create test user ---
 echo "Creating test user account..."
@@ -138,6 +138,7 @@ cat <<EOF
  Oyster Local Testbed Ready
 ========================================
  Oyster URL:       http://$OYSTER_BIND_ADDR
+ Admin JWT:        $ADMIN_JWT
  Bearer Token:     $USER_API_SECRET
  User Wallet:      $USER_WALLET ($((USER_SUI_BALANCE / 1000000000)) SUI, $((USER_WAL_BALANCE / 1000000000)) WAL)
  Operator Wallet:  $OPERATOR_ADDRESS
