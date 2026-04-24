@@ -2,7 +2,10 @@
 """Manual smoke-test script for the Oyster local testbed.
 
 Run after starting the local testbed (procman oyster.procman -- --walrus_dir ../walrus).
-Exercises core CRUD flows end-to-end against the live local stack.
+Exercises core CRUD flows end-to-end against the live local stack:
+account/wallet info, bucket CRUD, blob store/read/list/dedup, metadata,
+blob tag CRUD, blob delete, bucket delete, API key management,
+multi-account isolation, and error cases.
 
 Usage:
     # Non-interactive (recommended): scrapes the bearer token from setup.log
@@ -156,8 +159,12 @@ def scenario_3(base, auth, ctx):
     key = "test-blob.txt"
     payload = b"hello oyster"
 
-    # Store blob
-    hdrs = {**auth, "Content-Type": "text/plain"}
+    # Store blob with an initial tag via x-oyster-tag header.
+    hdrs = {
+        **auth,
+        "Content-Type": "text/plain",
+        "x-oyster-tag": "source=smoke",
+    }
     status, _, body = request(
         "PUT", f"{base}/api/v1/buckets/{bucket}/blobs/{key}", body=payload, headers=hdrs
     )
@@ -191,6 +198,21 @@ def scenario_3(base, auth, ctx):
         passed = False
     else:
         ok("read by blob_id matches")
+
+    # Initial x-oyster-tag header applied.
+    status, _, body = request(
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs/{key}/tags", headers=auth
+    )
+    if status != 200:
+        fail(f"GET initial tags returned {status}")
+        passed = False
+    else:
+        tags = (json_body(body) or {}).get("tags", {})
+        if tags != {"source": "smoke"}:
+            fail(f"initial tags mismatch: {tags!r}")
+            passed = False
+        else:
+            ok("initial x-oyster-tag applied on PUT")
 
     return passed
 
@@ -301,8 +323,214 @@ def scenario_6(base, auth, ctx):
     return True
 
 
+def scenario_tags(base, auth, ctx):
+    """Blob Tags CRUD + validation limits."""
+    heading("tags", "Blob Tags CRUD")
+    passed = True
+    bucket = ctx["bucket_name"]
+    key = ctx["key"]
+    tags_url = f"{base}/api/v1/buckets/{bucket}/blobs/{key}/tags"
+    json_hdrs = {**auth, "Content-Type": "application/json"}
+
+    # Reset: scenario_3 left source=smoke on this blob. Start clean
+    # so "GET empty" is deterministic regardless of upstream ordering.
+    status, _, _ = request("DELETE", tags_url, headers=auth)
+    if status != 204:
+        fail(f"DELETE /tags (reset) returned {status} (expected 204)")
+        return False
+
+    # 1) GET empty
+    status, _, body = request("GET", tags_url, headers=auth)
+    if status != 200 or json_body(body) != {"tags": {}}:
+        fail(f"GET empty tags returned {status} body={body!r}")
+        passed = False
+    else:
+        ok("GET empty tags -> 200 with empty map")
+
+    # 2) PUT full replace
+    status, _, _ = request(
+        "PUT", tags_url,
+        body={"tags": {"project": "demo", "env": "dev"}},
+        headers=json_hdrs,
+    )
+    if status != 204:
+        fail(f"PUT tags (replace) returned {status} (expected 204)")
+        passed = False
+    else:
+        status, _, body = request("GET", tags_url, headers=auth)
+        got = (json_body(body) or {}).get("tags", {})
+        if got != {"project": "demo", "env": "dev"}:
+            fail(f"tags after PUT replace: {got!r}")
+            passed = False
+        else:
+            ok("PUT replace persisted project+env")
+
+    # 3) PATCH merge
+    status, _, _ = request(
+        "PATCH", tags_url,
+        body={"tags": {"owner": "alice"}},
+        headers=json_hdrs,
+    )
+    if status != 204:
+        fail(f"PATCH tags returned {status} (expected 204)")
+        passed = False
+    else:
+        status, _, body = request("GET", tags_url, headers=auth)
+        got = (json_body(body) or {}).get("tags", {})
+        want = {"project": "demo", "env": "dev", "owner": "alice"}
+        if got != want:
+            fail(f"tags after PATCH merge: {got!r}")
+            passed = False
+        else:
+            ok("PATCH merge preserved prior tags + added owner")
+
+    # 4) Single-key upsert (text/plain body)
+    status, _, _ = request(
+        "PUT", f"{tags_url}/project",
+        body="new-demo",
+        headers={**auth, "Content-Type": "text/plain"},
+    )
+    if status != 204:
+        fail(f"PUT /tags/project returned {status} (expected 204)")
+        passed = False
+    else:
+        status, _, body = request("GET", tags_url, headers=auth)
+        if (json_body(body) or {}).get("tags", {}).get("project") != "new-demo":
+            fail("single-key upsert did not persist")
+            passed = False
+        else:
+            ok("single-key upsert persisted project=new-demo")
+
+    # 5) Single-key delete
+    status, _, _ = request("DELETE", f"{tags_url}/owner", headers=auth)
+    if status != 204:
+        fail(f"DELETE /tags/owner returned {status} (expected 204)")
+        passed = False
+    else:
+        status, _, body = request("GET", tags_url, headers=auth)
+        if "owner" in (json_body(body) or {}).get("tags", {}):
+            fail("owner tag still present after single-key delete")
+            passed = False
+        else:
+            ok("single-key delete removed owner")
+
+    # 6) Clear all
+    status, _, _ = request("DELETE", tags_url, headers=auth)
+    if status != 204:
+        fail(f"DELETE /tags returned {status} (expected 204)")
+        passed = False
+    else:
+        status, _, body = request("GET", tags_url, headers=auth)
+        if json_body(body) != {"tags": {}}:
+            fail(f"tags not empty after clear-all: {body!r}")
+            passed = False
+        else:
+            ok("clear-all left empty tag set")
+
+    # Limit / validation subtests. Each must 4xx (not 5xx).
+    def expect_4xx(label, method, url, body=None, headers=None):
+        nonlocal passed
+        status, _, resp = request(method, url, body=body, headers=headers)
+        if 400 <= status < 500:
+            ok(f"{label} -> {status}")
+        elif status >= 500:
+            fail(f"{label} returned 5xx {status}: {resp!r}")
+            passed = False
+        else:
+            fail(f"{label} returned {status} (expected 4xx)")
+            passed = False
+
+    # 11 tags in one PUT
+    too_many = {f"k{i}": "v" for i in range(11)}
+    expect_4xx(
+        "11 tags",
+        "PUT", tags_url,
+        body={"tags": too_many},
+        headers=json_hdrs,
+    )
+
+    # Tag key length 129
+    expect_4xx(
+        "key length 129",
+        "PUT", tags_url,
+        body={"tags": {"k" * 129: "v"}},
+        headers=json_hdrs,
+    )
+
+    # Tag value length 257
+    expect_4xx(
+        "value length 257",
+        "PUT", tags_url,
+        body={"tags": {"k": "v" * 257}},
+        headers=json_hdrs,
+    )
+
+    # Disallowed charset
+    expect_4xx(
+        "disallowed char '!'",
+        "PUT", tags_url,
+        body={"tags": {"bad!key": "v"}},
+        headers=json_hdrs,
+    )
+
+    # Duplicate-key-in-JSON: serde collapses to BTreeMap, so this
+    # actually ends up as a valid single-key PUT. Assert only "not 5xx"
+    # and log the observed status so regressions are obvious.
+    raw_dup = b'{"tags": {"a": "1", "a": "2"}}'
+    status, _, resp = request(
+        "PUT", tags_url, body=raw_dup, headers=json_hdrs,
+    )
+    if status >= 500:
+        fail(f"duplicate-JSON-key PUT returned 5xx {status}: {resp!r}")
+        passed = False
+    else:
+        ok(f"duplicate-JSON-key PUT -> {status} (no 5xx)")
+
+    # Auth subtest: GET /tags without Authorization -> 401
+    status, _, _ = request("GET", tags_url)
+    if status != 401:
+        fail(f"GET /tags w/o auth returned {status} (expected 401)")
+        passed = False
+    else:
+        ok("GET /tags without auth -> 401")
+
+    # Cross-account isolation: B can't read/write A's tags. Only if
+    # we have an admin JWT (so we can mint account B). Follows the
+    # pattern in scenario_isolation.
+    admin = ctx.get("admin")
+    if not admin or not admin.get("jwt"):
+        info("no --jwt; skipping cross-account isolation on tags")
+    else:
+        admin_auth = {"Authorization": f"Bearer {admin['jwt']}"}
+        status, _, body = request(
+            "POST", f"{base}/api/v1/accounts", body={}, headers=admin_auth
+        )
+        if status != 201:
+            fail(f"bootstrap account B returned {status}")
+            passed = False
+        else:
+            b_token = json_body(body)["api_key"]["bearer_token"]
+            auth_b = {"Authorization": f"Bearer {b_token}"}
+            for method, url, body_val, hdrs in [
+                ("GET", tags_url, None, auth_b),
+                ("PUT", tags_url, {"tags": {"evil": "v"}},
+                 {**auth_b, "Content-Type": "application/json"}),
+                ("DELETE", tags_url, None, auth_b),
+            ]:
+                status, _, _ = request(method, url, body=body_val, headers=hdrs)
+                if status != 404:
+                    fail(f"B {method} A's tags returned {status} (expected 404)")
+                    passed = False
+                else:
+                    ok(f"B {method} A's tags -> 404")
+
+    # Leave the blob tagless so subsequent scenarios are unaffected.
+    # clear-all already left us empty.
+    return passed
+
+
 def scenario_7(base, auth, ctx):
-    """Blob Delete."""
+    """Blob Delete (also asserts tag rows cascade on delete)."""
     heading(7, "Blob Delete")
     passed = True
     bucket = ctx["bucket_name"]
@@ -322,6 +550,16 @@ def scenario_7(base, auth, ctx):
         passed = False
     else:
         ok("deleted blob returns 404")
+
+    status, _, _ = request(
+        "GET", f"{base}/api/v1/buckets/{bucket}/blobs/{key}/tags",
+        headers=auth,
+    )
+    if status != 404:
+        fail(f"GET /tags on deleted blob returned {status} (expected 404)")
+        passed = False
+    else:
+        ok("GET /tags on deleted blob -> 404 (tag rows cascaded)")
 
     return passed
 
@@ -726,6 +964,8 @@ def main():
     print(f"{BOLD}Oyster Manual Smoke Test{RESET}\n")
     base, auth, admin = resolve_auth(args)
     ctx = {}  # shared state between scenarios
+    if admin:
+        ctx["admin"] = admin
 
     scenarios = [
         ("Account & Wallet Info", lambda: scenario_1(base, auth)),
@@ -734,6 +974,7 @@ def main():
         ("Blob Listing", lambda: scenario_4(base, auth, ctx)),
         ("Content-Addressed Dedup", lambda: scenario_5(base, auth, ctx)),
         ("Blob Metadata Update", lambda: scenario_6(base, auth, ctx)),
+        ("Blob Tags CRUD", lambda: scenario_tags(base, auth, ctx)),
         ("Blob Delete", lambda: scenario_7(base, auth, ctx)),
         ("Bucket Delete (drain then delete)", lambda: scenario_8(base, auth, ctx)),
         ("API Key Management", lambda: scenario_9(base, auth, ctx, admin)),
