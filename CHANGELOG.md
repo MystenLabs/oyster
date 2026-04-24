@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.4.0] - 2026-04-24
+
+### Breaking Changes
+- On-chain storage model migrated from per-blob `Blob` objects to pool-scoped `StoragePool` + `PooledBlob` objects. Oyster lazily creates one `StoragePool` per account on the first blob write and registers, extends, and deletes blobs at the pool level. Migration `009_storage_pools.sql` **truncates the `blobs` table**; existing on-chain `Blob` objects from v0.3.0 deployments become orphaned
+- Database schema: `blobs.sui_object_id`, `blobs.expires_at`, and `idx_blobs_expires_at` removed. New columns: `accounts.storage_pool_object_id`, `accounts.pool_end_epoch`, `accounts.pool_reserved_encoded_bytes`, `accounts.pool_used_encoded_bytes`, `blobs.pooled_blob_object_id`, `blobs.encoded_size`. New table: `blob_tags`
+- Config renamed/removed: `BLOB_EXTEND_LOOKAHEAD_DAYS` → `POOL_EXTEND_LOOKAHEAD_DAYS`, `BLOB_EXTEND_EPOCHS` → `POOL_EXTEND_EPOCHS`; `WALRUS_DEFAULT_EPOCHS` removed (superseded by `POOL_INITIAL_EPOCHS_AHEAD`). New: `POOL_INITIAL_EPOCHS_AHEAD` (default 5), `POOL_INITIAL_ENCODED_CAPACITY_BYTES` (default 1 MiB — Walrus `BYTES_PER_UNIT_SIZE`). `BLOB_EXTEND_INTERVAL_SECS` retained as the pool-extension cycle cadence
+- HTTP response fields renamed/removed: `BlobMetadata.sui_object_id` → `pooled_blob_object_id`; `StoreBlobResponse.sui_object_id` → `pooled_blob_object_id`. `expires_at` removed from both (expiration is now pool-scoped; surfaced as `pool_end_epoch` on the account). `BlobMetadata.encoded_size` added
+- CLI JSON output: `oyster store` / `oyster get-metadata` now emit `pooled_blob_object_id` instead of `sui_object_id`, and no longer emit `expires_at`
+- `DELETE /api/v1/buckets/{name}` status ordering fix: ownership is now checked before emptiness, so unauthorized callers see `404` instead of probing `409 Conflict` on a non-empty bucket owned by someone else
+- `BlobStore::delete` trait signature takes `pool_id: Option<&str>` and `encoded_size` in place of `sui_object_id`; out-of-tree implementations must update
+
+### Added
+- First-class blob tags (user-defined metadata): `GET/PUT/PATCH/DELETE /api/v1/buckets/{b}/blobs/{k}/tags` and `PUT/DELETE .../tags/{tag_key}`. `PUT /blobs/{k}` accepts repeated `x-oyster-tag: k=v` headers as the initial tag set. Limits: max 10 tags, key ≤128 B, value ≤256 B, total ≤2 KiB, charset `[A-Za-z0-9 +\-=._:/@]`, no duplicates. Cascaded on blob delete
+- S3 tagging compatibility: `PutObjectTagging`, `GetObjectTagging`, `DeleteObjectTagging`; `PutObject` parses `x-amz-tagging` (URL-form); `GetObject` populates `tag_count`
+- `oyster-cli`: `tags {list,set,rm,clear,replace,merge}` subcommand and repeatable `--tag k=v` on `store`
+- Per-pool background extension task: one `extend_storage_pool` PTB per account-pool per cycle. Metrics renamed to `EXTENSION_POOLS_*`. Public `run_extension_cycle_once` exposed for synchronous test drivers
+- E2E coverage for the full storage-pool lifecycle: lazy pool creation on first upload, multi-upload accounting (DB vs. on-chain agreement), background-task pool extension advancing `end_epoch`, and reference-counted deletes firing `delete_pooled_blob` and freeing on-chain capacity
+- `scripts/manual-test.py` coverage for the blob-tags REST surface (validation, auth, cross-account isolation); `scripts/testbed-setup.sh` now emits the admin JWT in setup output
+- `BlobStoreError::PoolCreationFailed` (HTTP 502) and `BlobStoreError::Database` variants
+
+### Changed
+- Pool capacity growth rounds up to Walrus's 1 MiB `BYTES_PER_UNIT_SIZE` quantum, so small uploads amortize the `increase_storage_pool_capacity` cost across many registrations instead of paying a fresh PTB per blob
+- Dependency bumps: `walrus-*` → `main` (for `pooled_blob_ops`); `sui-sdk` / `sui-types` / `shared-crypto` → `testnet-v1.70.1`; `fastcrypto` pinned to sui 1.70.1's rev; `chrono` pinned to `=0.4.39`. Added `[patch.crates-io]` for `s3s` → `wbbradley/s3s@oyster-chrono-relax` to relax its chrono requirement
+
+### Fixed
+- `DELETE /api/v1/buckets/{name}` information leak: the non-empty 409 check ran before the ownership check, letting an unauthorized caller distinguish "exists but non-empty" from "does not exist for me". Now checks ownership (→ 404) first, then emptiness (→ 409). Pinned by a new integration test
+- Dedup short-circuit on upload now populates `encoded_size` on the dedup'd blob row, so `pool_used_encoded_bytes` correctly decrements when the last reference to dedup'd content is deleted (previously it was `NULL` on dedup rows, silently skipping the decrement and causing DB/on-chain drift)
+
+### Removed
+- Per-blob expiration model: `ExpiringBlob`, `get_expiring_blobs*`, `update_blob_expires_at`, and the `DEFAULT_DURATION_DAYS` per-blob expiry computation in `routes/blobs.rs::store_blob` and the S3 `put_object` path
+- `WALRUS_DEFAULT_EPOCHS` and `Config::walrus_default_epochs` (superseded by `POOL_INITIAL_EPOCHS_AHEAD`)
+
 ## [0.3.0] - 2026-04-21
 
 ### Breaking Changes

@@ -73,8 +73,16 @@ API, and `oysterd extend` runs the blob extension background worker.
   per account.
 - **Bucket** -- Named container scoped to an account. Bucket names are unique per account.
 - **Blob** -- Content-addressed object stored in a bucket. Identified by `object_id` (unique
-  per upload) and `blob_id` (content hash, shared across deduplicates). Optionally has a
-  `sui_object_id` when stored on Walrus.
+  per upload) and `blob_id` (content hash, shared across deduplicates). When stored on Walrus,
+  has a `pooled_blob_object_id` pointing at the `PooledBlob` on-chain object registered under
+  the account's `StoragePool`.
+- **Blob tags** -- User-defined key/value metadata attached to a blob. Up to 10 tags per blob,
+  key ≤128 B, value ≤256 B, total ≤2 KiB; charset `[A-Za-z0-9 +\-=._:/@]`. Cascaded on blob
+  delete. Compatible with the S3 `x-amz-tagging` header and the `PutObjectTagging` /
+  `GetObjectTagging` / `DeleteObjectTagging` operations.
+- **Storage pool** -- One `StoragePool` Sui object per account, created lazily on the first
+  blob write. All of the account's `PooledBlob`s reserve capacity from and share the same
+  expiration epoch as this pool.
 
 ### API
 
@@ -104,6 +112,12 @@ API, and `oysterd extend` runs the blob extension background worker.
 | `GET` | `/api/v1/blobs/by-blob-id/{blob_id}` | No | Read blob by content hash |
 | `PATCH` | `/api/v1/buckets/{bucket_name}/blobs/{key}/metadata` | API Key | Update content type |
 | `DELETE` | `/api/v1/buckets/{bucket_name}/blobs/{key}` | API Key | Delete blob |
+| `GET` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags` | API Key | List blob tags |
+| `PUT` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags` | API Key | Replace all blob tags |
+| `PATCH` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags` | API Key | Merge blob tags |
+| `DELETE` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags` | API Key | Clear all blob tags |
+| `PUT` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}` | API Key | Upsert a single tag |
+| `DELETE` | `/api/v1/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}` | API Key | Delete a single tag |
 | `GET` | `/health` | No | Liveness probe |
 | `GET` | `/ready` | No | Readiness probe (checks DB and Pearl connectivity) |
 | `GET` | `/metrics` | No | Prometheus metrics |
@@ -125,19 +139,29 @@ Oyster selects a blob store at startup based on environment variables:
 `DirectWalrusBlobStore` is the production path. It:
 
 1. Encodes the blob with the Walrus encoding scheme.
-2. Builds a PTB (`reserve_space` + `register_blob`) and submits via Pearl.
-3. Uploads slivers to Walrus storage nodes and collects a certificate.
-4. Builds a `certify_blob` PTB and submits via Pearl.
-5. Returns both the content-addressed `blob_id` and the Sui `sui_object_id`.
+2. On the account's first blob write, bundles `create_storage_pool` into the upload PTB and
+   persists the resulting `StoragePool` `ObjectID` on the account row (lazy, first-writer wins).
+3. Builds the upload PTB — optionally prepending `increase_storage_pool_capacity` (rounded up
+   to Walrus's 1 MiB `BYTES_PER_UNIT_SIZE`) when the new blob would exceed the pool's remaining
+   capacity — and calls `register_pooled_blobs`. Submits via Pearl.
+4. Uploads slivers to Walrus storage nodes and collects a certificate.
+5. Builds a `certify_pooled_blobs` PTB and submits via Pearl.
+6. Returns the content-addressed `blob_id` and the `pooled_blob_object_id` of the registered
+   `PooledBlob` Sui object.
+
+Deletes are reference-counted: the on-chain `delete_pooled_blob` call fires only when the last
+reference to a given `blob_id` is removed from the account.
 
 ### Extension worker
 
 Run as a separate process with `oysterd extend`. When Walrus integration is active, it runs on
 a configurable interval:
 
-1. Queries the Oyster database for blobs expiring within a lookahead window.
-2. For each expiring blob, builds an `extend_blob` PTB, signs via Pearl, and submits to Sui.
-3. Updates the `expires_at` timestamp in the Oyster database.
+1. Queries the Oyster database for `StoragePool`s whose `end_epoch` falls within
+   `POOL_EXTEND_LOOKAHEAD_DAYS` of the current epoch.
+2. For each expiring pool, builds a single `extend_storage_pool` PTB (extending by
+   `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui.
+3. Updates the cached `pool_end_epoch` on the account row.
 
 When extension failures indicate insufficient funds and the blob's owning app has a
 `webhook_url` configured, Oyster notifies that URL with the account ID, wallet address, and
@@ -152,7 +176,7 @@ the `DATABASE_URL` connection string. Migrations are per backend under `crates/o
 - `migrations/sqlite/001_initial.sql`
 - `migrations/postgres/001_initial.sql`
 
-Tables: `accounts`, `api_keys`, `buckets`, `blobs`.
+Tables: `accounts`, `api_keys`, `s3_access_keys`, `apps`, `buckets`, `blobs`, `blob_tags`.
 
 ### Configuration
 
@@ -169,13 +193,14 @@ files to `/run/secrets/`).
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
 | `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
-| `WALRUS_DEFAULT_EPOCHS` | `5` | Storage epochs for new blobs |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |
 | `WALRUS_SYSTEM_OBJECT` | -- | Walrus system object ID on Sui |
 | `WALRUS_STAKING_OBJECT` | -- | Walrus staking object ID on Sui |
-| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension worker check interval |
-| `BLOB_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead to look for expiring blobs |
-| `BLOB_EXTEND_EPOCHS` | `5` | Epochs to extend by |
+| `POOL_INITIAL_EPOCHS_AHEAD` | `5` | Epochs ahead when creating a new `StoragePool` |
+| `POOL_INITIAL_ENCODED_CAPACITY_BYTES` | `1048576` | Initial reserved capacity for a new pool (1 MiB, Walrus `BYTES_PER_UNIT_SIZE`) |
+| `POOL_EXTEND_EPOCHS` | `5` | Epochs to extend a `StoragePool` by |
+| `POOL_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead of pool expiry to trigger an extension |
+| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension worker cycle cadence |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
 | `OYSTER_JWT_SECRET` | -- | Secret for signing/verifying admin JWTs (**required**) |
 
