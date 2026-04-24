@@ -785,6 +785,37 @@ async fn cross_account_isolation() {
 }
 
 #[tokio::test]
+async fn delete_bucket_hides_non_empty_from_other_accounts() {
+    // A caller who does not own a bucket must not be able to distinguish
+    // "exists but non-empty" (409) from "does not exist for me" (404).
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key1) = create_test_account(&pool).await;
+    let (_, key2) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key1, "leak-probe").await;
+    store_test_blob(
+        &app,
+        &key1,
+        &bucket_name,
+        "keep.bin",
+        "application/octet-stream",
+        b"keep me",
+    )
+    .await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket_name}"))
+                .header("authorization", format!("Bearer {key2}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn blob_content_type_preserved() {
     let (app, _tmp, pool) = test_app().await;
     let (_, key) = create_test_account(&pool).await;

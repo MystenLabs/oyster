@@ -118,6 +118,16 @@ pub async fn delete_bucket(
     auth: AuthenticatedAccount,
     Path(bucket_name): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    // Ownership check first so a caller who does not own the bucket cannot
+    // distinguish "bucket exists but is non-empty" (409) from "bucket does not
+    // exist for me" (404).
+    if db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
+        .await?
+        .is_none()
+    {
+        return Err(AppError::NotFound);
+    }
+
     let blob_count = db::blobs::count_blobs_in_bucket(&state.db, &bucket_name).await?;
     if blob_count > 0 {
         return Err(AppError::Conflict("bucket is not empty".to_string()));
