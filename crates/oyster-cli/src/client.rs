@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 // Model types mirrored from the server (without utoipa).
@@ -54,6 +56,11 @@ pub struct TokenRefreshResponse {
 #[derive(Debug, Deserialize)]
 pub struct ErrorResponse {
     pub error: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct BlobTagsResponse {
+    pub tags: BTreeMap<String, String>,
 }
 
 // Error type
@@ -175,18 +182,20 @@ impl OysterClient {
         key: &str,
         data: Vec<u8>,
         content_type: &str,
+        tags: &[(String, String)],
     ) -> Result<StoreBlobResponse, ApiError> {
-        let resp = self
+        let mut req = self
             .http
             .put(format!(
                 "{}/buckets/{bucket_name}/blobs/{key}",
                 self.base_url
             ))
             .header("Authorization", self.auth_header().unwrap_or_default())
-            .header("Content-Type", content_type)
-            .body(data)
-            .send()
-            .await?;
+            .header("Content-Type", content_type);
+        for (k, v) in tags {
+            req = req.header("x-oyster-tag", format!("{k}={v}"));
+        }
+        let resp = req.body(data).send().await?;
         let resp = self.check_error(resp).await?;
         Ok(resp.json().await?)
     }
@@ -273,6 +282,121 @@ impl OysterClient {
             return Err(ApiError::Server { status, message });
         }
         Ok(resp.json().await?)
+    }
+
+    // Tag operations
+
+    pub async fn list_blob_tags(
+        &self,
+        bucket_name: &str,
+        key: &str,
+    ) -> Result<BlobTagsResponse, ApiError> {
+        let resp = self
+            .http
+            .get(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    pub async fn set_blob_tags_full(
+        &self,
+        bucket_name: &str,
+        key: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .put(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .json(&serde_json::json!({ "tags": tags }))
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
+    }
+
+    pub async fn patch_blob_tags(
+        &self,
+        bucket_name: &str,
+        key: &str,
+        tags: &BTreeMap<String, String>,
+    ) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .patch(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .json(&serde_json::json!({ "tags": tags }))
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
+    }
+
+    pub async fn put_blob_tag(
+        &self,
+        bucket_name: &str,
+        key: &str,
+        tag_key: &str,
+        tag_value: &str,
+    ) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .put(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .header("Content-Type", "text/plain")
+            .body(tag_value.to_string())
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
+    }
+
+    pub async fn delete_blob_tag(
+        &self,
+        bucket_name: &str,
+        key: &str,
+        tag_key: &str,
+    ) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
+    }
+
+    pub async fn clear_blob_tags(&self, bucket_name: &str, key: &str) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/buckets/{bucket_name}/blobs/{key}/tags",
+                self.base_url
+            ))
+            .header("Authorization", self.auth_header().unwrap_or_default())
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
     }
 
     // Wallet operations

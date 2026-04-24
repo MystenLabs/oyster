@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -144,6 +146,27 @@ pub struct CreateBucketRequest {
 pub struct UpdateBlobMetadataRequest {
     /// New MIME content type.
     pub content_type: Option<String>,
+}
+
+/// Request body for a full tag-set replace.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PutTagsRequest {
+    /// Complete replacement set of tags.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// Request body for a partial tag-set merge.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PatchTagsRequest {
+    /// Tags to upsert onto the existing set.
+    pub tags: BTreeMap<String, String>,
+}
+
+/// Response body for listing a blob's tags.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BlobTagsResponse {
+    /// Tags for the blob. Deterministically ordered for stable responses.
+    pub tags: BTreeMap<String, String>,
 }
 
 // Response types

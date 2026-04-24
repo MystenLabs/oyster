@@ -2607,3 +2607,654 @@ async fn unmatched_api_v1_path_returns_404() {
         "unmatched /api/v1/... should 404, got body: {body}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Blob tags (REST)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn blob_tags_crud_happy_path() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-happy").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "a.txt", "text/plain", b"a").await;
+
+    // PUT full set
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"tags":{"env":"prod","team":"platform"}}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    // GET shows exactly that set
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["tags"]["env"], "prod");
+    assert_eq!(body["tags"]["team"], "platform");
+    assert_eq!(body["tags"].as_object().unwrap().len(), 2);
+
+    // PATCH merge
+    let (status, _) = json_response(
+        &app,
+        Request::builder()
+            .method("PATCH")
+            .uri(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"tags":{"team":"sre","owner":"alice"}}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (_, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["tags"]["env"], "prod");
+    assert_eq!(body["tags"]["team"], "sre");
+    assert_eq!(body["tags"]["owner"], "alice");
+
+    // PUT single tag
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::put(format!(
+                "/api/v1/buckets/{bucket}/blobs/{blob_key}/tags/env"
+            ))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "text/plain")
+            .body(Body::from("staging"))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let (_, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["tags"]["env"], "staging");
+
+    // DELETE single tag
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!(
+                "/api/v1/buckets/{bucket}/blobs/{blob_key}/tags/env"
+            ))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let (_, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert!(body["tags"].get("env").is_none());
+
+    // DELETE all
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+                .header("authorization", format!("Bearer {api_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let (_, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["tags"].as_object().unwrap().len(), 0);
+}
+
+#[tokio::test]
+async fn blob_tags_initial_set_via_header() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-hdr").await;
+
+    let req = Request::put(format!("/api/v1/buckets/{bucket}/blobs/hdr.txt"))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "text/plain")
+        .header("x-oyster-tag", "env=prod")
+        .header("x-oyster-tag", "team=platform")
+        .body(Body::from(b"payload".to_vec()))
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (_, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket}/blobs/hdr.txt/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(body["tags"]["env"], "prod");
+    assert_eq!(body["tags"]["team"], "platform");
+}
+
+#[tokio::test]
+async fn blob_tags_reject_over_limit() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-over").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "o.txt", "text/plain", b"x").await;
+
+    let mut entries = Vec::new();
+    for i in 0..11 {
+        entries.push(format!(r#""k{i}":"v""#));
+    }
+    let body_str = format!(r#"{{"tags":{{{}}}}}"#, entries.join(","));
+
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body_str))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_reject_long_key() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-lk").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "l.txt", "text/plain", b"x").await;
+
+    let long = "a".repeat(129);
+    let body_str = format!(r#"{{"tags":{{"{long}":"v"}}}}"#);
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body_str))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_reject_long_value() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-lv").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "l.txt", "text/plain", b"x").await;
+
+    let long = "a".repeat(257);
+    let body_str = format!(r#"{{"tags":{{"k":"{long}"}}}}"#);
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body_str))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_reject_total_bytes() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-tb").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "t.txt", "text/plain", b"x").await;
+
+    // 9 entries × ~240-byte values → >2 KiB total.
+    let mut entries = Vec::new();
+    for i in 0..9 {
+        entries.push(format!(r#""key{i:02}":"{}""#, "v".repeat(240)));
+    }
+    let body_str = format!(r#"{{"tags":{{{}}}}}"#, entries.join(","));
+
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body_str))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_reject_bad_char() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-bc").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "b.txt", "text/plain", b"x").await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"tags":{"bad!":"v"}}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_reject_duplicate_keys_via_header() {
+    // BTreeMap-based PUT body silently dedups duplicate JSON keys, so we
+    // drive this path through the `x-oyster-tag` multi-value header instead,
+    // which delivers duplicates verbatim to `validate_tag_set`.
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-dup").await;
+
+    let req = Request::put(format!("/api/v1/buckets/{bucket}/blobs/dup.txt"))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "text/plain")
+        .header("x-oyster-tag", "env=prod")
+        .header("x-oyster-tag", "env=staging")
+        .body(Body::from(b"x".to_vec()))
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn blob_tags_cascade_on_delete() {
+    use oyster::AccountId;
+
+    let (app, _tmp, pool) = test_app().await;
+    let (account_id_str, api_key) = create_test_account(&pool).await;
+    let account_id: AccountId = account_id_str.parse().unwrap();
+    let bucket = create_test_bucket(&app, &api_key, "tags-cascade").await;
+
+    let req = Request::put(format!("/api/v1/buckets/{bucket}/blobs/c.txt"))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "text/plain")
+        .header("x-oyster-tag", "env=prod")
+        .body(Body::from(b"x".to_vec()))
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    // Sanity: tag is stored.
+    let tags = db::blob_tags::list_tags(&pool, &account_id, &bucket, "c.txt")
+        .await
+        .unwrap();
+    assert_eq!(tags.get("env"), Some(&"prod".to_string()));
+
+    // Delete the blob; FK cascade should wipe tags.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket}/blobs/c.txt"))
+                .header("authorization", format!("Bearer {api_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    let tags_after = db::blob_tags::list_tags(&pool, &account_id, &bucket, "c.txt")
+        .await
+        .unwrap();
+    assert!(
+        tags_after.is_empty(),
+        "expected cascade to remove tags, got {tags_after:?}"
+    );
+}
+
+#[tokio::test]
+async fn blob_tags_public_get_unaffected() {
+    // The unauthenticated `read_blob` handler must never surface tag data
+    // or change content-type behaviour.
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-public").await;
+
+    let req = Request::put(format!("/api/v1/buckets/{bucket}/blobs/p.png"))
+        .header("authorization", format!("Bearer {api_key}"))
+        .header("content-type", "image/png")
+        .header("x-oyster-tag", "env=prod")
+        .body(Body::from(b"\x89PNG fake".to_vec()))
+        .unwrap();
+    let (status, _) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/buckets/{bucket}/blobs/p.png"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "image/png"
+    );
+    // No tag-related response header is added by the public path.
+    for name in resp.headers().keys() {
+        let n = name.as_str().to_lowercase();
+        assert!(
+            !n.starts_with("x-oyster-tag") && !n.starts_with("x-amz-tagging"),
+            "unexpected tag-related header on public GET: {n}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn blob_tags_auth_required() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, api_key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &api_key, "tags-auth").await;
+    let (blob_key, _) = store_test_blob(&app, &api_key, &bucket, "a.txt", "text/plain", b"x").await;
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::get(format!("/api/v1/buckets/{bucket}/blobs/{blob_key}/tags"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Blob tags (S3)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn s3_put_object_with_amz_tagging() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "tags".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"hello".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "tags".into(),
+            key: "obj.txt".into(),
+            body: Some(body),
+            content_type: Some("text/plain".into()),
+            tagging: Some("env=prod&team=platform".into()),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let resp = s3
+        .get_object_tagging(s3_req(
+            GetObjectTaggingInput {
+                bucket: "tags".into(),
+                key: "obj.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+
+    let mut got: Vec<(String, String)> = resp
+        .output
+        .tag_set
+        .into_iter()
+        .map(|t| (t.key.unwrap_or_default(), t.value.unwrap_or_default()))
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("env".to_string(), "prod".to_string()),
+            ("team".to_string(), "platform".to_string()),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn s3_put_get_delete_object_tagging() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "tags".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"hi".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "tags".into(),
+            key: "o.txt".into(),
+            body: Some(body),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // PutObjectTagging full replace
+    s3.put_object_tagging(s3_req(
+        PutObjectTaggingInput {
+            bucket: "tags".into(),
+            checksum_algorithm: None,
+            content_md5: None,
+            expected_bucket_owner: None,
+            key: "o.txt".into(),
+            request_payer: None,
+            tagging: Tagging {
+                tag_set: vec![
+                    Tag {
+                        key: Some("env".into()),
+                        value: Some("prod".into()),
+                    },
+                    Tag {
+                        key: Some("team".into()),
+                        value: Some("platform".into()),
+                    },
+                ],
+            },
+            version_id: None,
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let resp = s3
+        .get_object_tagging(s3_req(
+            GetObjectTaggingInput {
+                bucket: "tags".into(),
+                key: "o.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.output.tag_set.len(), 2);
+
+    s3.delete_object_tagging(s3_req(
+        DeleteObjectTaggingInput {
+            bucket: "tags".into(),
+            key: "o.txt".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let resp = s3
+        .get_object_tagging(s3_req(
+            GetObjectTaggingInput {
+                bucket: "tags".into(),
+                key: "o.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.output.tag_set.len(), 0);
+}
+
+#[tokio::test]
+async fn s3_get_object_tag_count() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "tags".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"hi".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "tags".into(),
+            key: "o.txt".into(),
+            body: Some(body),
+            tagging: Some("a=1&b=2&c=3".into()),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let resp = s3
+        .get_object(s3_req(
+            GetObjectInput {
+                bucket: "tags".into(),
+                key: "o.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.output.tag_count, Some(3));
+}
+
+#[tokio::test]
+async fn s3_put_object_tagging_rejects_invalid_charset() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "tags".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"hi".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "tags".into(),
+            key: "o.txt".into(),
+            body: Some(body),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let err = s3
+        .put_object_tagging(s3_req(
+            PutObjectTaggingInput {
+                bucket: "tags".into(),
+                checksum_algorithm: None,
+                content_md5: None,
+                expected_bucket_owner: None,
+                key: "o.txt".into(),
+                request_payer: None,
+                tagging: Tagging {
+                    tag_set: vec![Tag {
+                        key: Some("bad!".into()),
+                        value: Some("v".into()),
+                    }],
+                },
+                version_id: None,
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::InvalidTag);
+}

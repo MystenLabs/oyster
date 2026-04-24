@@ -6,6 +6,8 @@ pub mod accounts;
 pub mod api_keys;
 /// App database operations.
 pub mod apps;
+/// Blob tag database operations.
+pub mod blob_tags;
 /// Blob metadata database operations.
 pub mod blobs;
 /// Bucket database operations.

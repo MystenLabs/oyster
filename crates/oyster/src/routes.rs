@@ -130,6 +130,13 @@ pub fn build_router(state: AppState) -> Router {
         ))
         .routes(routes!(blobs::update_blob_metadata))
         .routes(routes!(blobs::read_blob_by_blob_id))
+        .routes(routes!(
+            blobs::list_blob_tags,
+            blobs::replace_blob_tags,
+            blobs::patch_blob_tags,
+            blobs::clear_blob_tags
+        ))
+        .routes(routes!(blobs::put_blob_tag, blobs::delete_blob_tag))
         .split_for_parts();
 
     Router::new()

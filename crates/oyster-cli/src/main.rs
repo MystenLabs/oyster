@@ -43,6 +43,9 @@ enum Command {
         /// Content type (guessed from extension if omitted)
         #[arg(long)]
         content_type: Option<String>,
+        /// Tag to attach (repeat for multiple), `key=value` form
+        #[arg(long = "tag", value_parser = parse_tag_kv)]
+        tags: Vec<(String, String)>,
     },
     /// Download a blob by bucket and key
     Read {
@@ -97,6 +100,90 @@ enum Command {
         #[command(subcommand)]
         command: AppCommand,
     },
+    /// Blob tag management
+    Tags {
+        #[command(subcommand)]
+        command: TagCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum TagCommand {
+    /// List tags on a blob
+    List {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+    },
+    /// Upsert a single tag (key=value)
+    Set {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+        /// Tag as key=value
+        #[arg(value_parser = parse_tag_kv)]
+        tag: (String, String),
+    },
+    /// Remove a single tag by key
+    Rm {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+        /// Tag key to remove
+        tag_key: String,
+    },
+    /// Remove all tags from a blob
+    Clear {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+    },
+    /// Replace the entire tag set (full replace)
+    Replace {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+        /// Tag as key=value (repeat)
+        #[arg(long = "tag", value_parser = parse_tag_kv)]
+        tags: Vec<(String, String)>,
+    },
+    /// Merge (upsert) a partial tag set into the existing tags
+    Merge {
+        /// Bucket name
+        #[arg(long)]
+        bucket: String,
+        /// Object key
+        #[arg(long)]
+        key: String,
+        /// Tag as key=value (repeat)
+        #[arg(long = "tag", value_parser = parse_tag_kv)]
+        tags: Vec<(String, String)>,
+    },
+}
+
+fn parse_tag_kv(s: &str) -> Result<(String, String), String> {
+    let (k, v) = s
+        .split_once('=')
+        .ok_or_else(|| format!("tag '{s}' must be in key=value form"))?;
+    if k.is_empty() {
+        return Err("tag key must be non-empty".into());
+    }
+    Ok((k.to_string(), v.to_string()))
 }
 
 #[derive(Subcommand)]
@@ -175,10 +262,11 @@ async fn cmd_store(
     bucket: &str,
     key: &str,
     content_type: Option<&str>,
+    tags: &[(String, String)],
 ) -> Result<(), CliError> {
     let data = std::fs::read(file)?;
     let ct = content_type.unwrap_or_else(|| guess_content_type(file));
-    let resp = client.store_blob(bucket, key, data, ct).await?;
+    let resp = client.store_blob(bucket, key, data, ct, tags).await?;
     out.print(&resp, |r| {
         println!("Stored blob:");
         println!("  key:            {}", r.key);
@@ -512,13 +600,23 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                     ref bucket,
                     ref key,
                     ref content_type,
+                    ref tags,
                 } => {
                     let default_key = file
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_else(|| "unnamed".to_string());
                     let key = key.as_deref().unwrap_or(&default_key);
-                    cmd_store(&client, out, file, bucket, key, content_type.as_deref()).await
+                    cmd_store(
+                        &client,
+                        out,
+                        file,
+                        bucket,
+                        key,
+                        content_type.as_deref(),
+                        tags,
+                    )
+                    .await
                 }
                 Command::Delete {
                     ref key,
@@ -531,8 +629,58 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
                 Command::ListBuckets { limit } => cmd_list_buckets(&client, out, limit).await,
                 Command::DeleteBucket { ref name } => cmd_delete_bucket(&client, out, name).await,
                 Command::Wallet => cmd_wallet(&client, out).await,
+                Command::Tags { ref command } => cmd_tags(&client, out, command).await,
                 Command::Read { .. } | Command::Info | Command::App { .. } => unreachable!(),
             }
         }
     }
+}
+
+async fn cmd_tags(client: &OysterClient, out: &Output, cmd: &TagCommand) -> Result<(), CliError> {
+    use std::collections::BTreeMap;
+
+    match cmd {
+        TagCommand::List { bucket, key } => {
+            let resp = client.list_blob_tags(bucket, key).await?;
+            out.print(&resp.tags, |tags| {
+                if tags.is_empty() {
+                    println!("(no tags)");
+                } else {
+                    for (k, v) in tags {
+                        println!("{k}={v}");
+                    }
+                }
+            });
+        }
+        TagCommand::Set { bucket, key, tag } => {
+            client.put_blob_tag(bucket, key, &tag.0, &tag.1).await?;
+            out.success(&format!("Set tag {}={} on {bucket}/{key}", tag.0, tag.1));
+        }
+        TagCommand::Rm {
+            bucket,
+            key,
+            tag_key,
+        } => {
+            client.delete_blob_tag(bucket, key, tag_key).await?;
+            out.success(&format!("Removed tag {tag_key} from {bucket}/{key}"));
+        }
+        TagCommand::Clear { bucket, key } => {
+            client.clear_blob_tags(bucket, key).await?;
+            out.success(&format!("Cleared tags on {bucket}/{key}"));
+        }
+        TagCommand::Replace { bucket, key, tags } => {
+            let map: BTreeMap<String, String> = tags.iter().cloned().collect();
+            client.set_blob_tags_full(bucket, key, &map).await?;
+            out.success(&format!(
+                "Replaced tags on {bucket}/{key} ({} tags)",
+                map.len()
+            ));
+        }
+        TagCommand::Merge { bucket, key, tags } => {
+            let map: BTreeMap<String, String> = tags.iter().cloned().collect();
+            client.patch_blob_tags(bucket, key, &map).await?;
+            out.success(&format!("Merged {} tag(s) into {bucket}/{key}", map.len()));
+        }
+    }
+    Ok(())
 }

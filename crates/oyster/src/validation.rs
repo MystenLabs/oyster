@@ -5,6 +5,80 @@
 /// `.merge`), so a shared list wouldn't simplify things.
 const RESERVED_BUCKET_NAMES: [&str; 4] = ["health", "ready", "metrics", "api"];
 
+/// Maximum number of tags allowed per blob.
+pub const MAX_TAGS: usize = 10;
+/// Maximum UTF-8 byte length of a tag key.
+pub const MAX_TAG_KEY_LEN: usize = 128;
+/// Maximum UTF-8 byte length of a tag value.
+pub const MAX_TAG_VALUE_LEN: usize = 256;
+/// Maximum combined UTF-8 byte size across all tag keys and values in a set.
+pub const MAX_TAG_SET_BYTES: usize = 2 * 1024;
+
+// Note: S3 documents tag length limits in UTF-16 code units. We count UTF-8
+// bytes instead, which is strictly stricter for non-ASCII input and identical
+// for ASCII (the overwhelmingly common case).
+fn is_allowed_tag_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, ' ' | '+' | '-' | '=' | '.' | '_' | ':' | '/' | '@')
+}
+
+/// Validate a single tag key/value pair.
+pub fn validate_tag_kv(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() {
+        return Err("tag key must be non-empty".into());
+    }
+    if key.len() > MAX_TAG_KEY_LEN {
+        return Err(format!(
+            "tag key exceeds {MAX_TAG_KEY_LEN} bytes (got {})",
+            key.len()
+        ));
+    }
+    if value.len() > MAX_TAG_VALUE_LEN {
+        return Err(format!(
+            "tag value exceeds {MAX_TAG_VALUE_LEN} bytes (got {})",
+            value.len()
+        ));
+    }
+    for c in key.chars() {
+        if !is_allowed_tag_char(c) {
+            return Err(format!("tag key contains disallowed character: {c:?}"));
+        }
+    }
+    for c in value.chars() {
+        if !is_allowed_tag_char(c) {
+            return Err(format!("tag value contains disallowed character: {c:?}"));
+        }
+    }
+    Ok(())
+}
+
+/// Validate a complete set of tags applied together.
+///
+/// Enforces per-entry charset/length limits, an overall set-size cap, and
+/// rejects duplicate keys.
+pub fn validate_tag_set(tags: &[(String, String)]) -> Result<(), String> {
+    if tags.len() > MAX_TAGS {
+        return Err(format!(
+            "at most {MAX_TAGS} tags allowed (got {})",
+            tags.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut total = 0usize;
+    for (k, v) in tags {
+        validate_tag_kv(k, v)?;
+        if !seen.insert(k.as_str()) {
+            return Err(format!("duplicate tag key: {k}"));
+        }
+        total += k.len() + v.len();
+    }
+    if total > MAX_TAG_SET_BYTES {
+        return Err(format!(
+            "tag set exceeds {MAX_TAG_SET_BYTES} bytes (got {total})"
+        ));
+    }
+    Ok(())
+}
+
 /// Validate a bucket name against S3 naming rules.
 ///
 /// Rules:
@@ -125,5 +199,67 @@ mod tests {
                 "expected '{name}' to be allowed"
             );
         }
+    }
+
+    #[test]
+    fn tag_set_valid() {
+        let tags = vec![
+            ("env".into(), "prod".into()),
+            ("team".into(), "platform".into()),
+        ];
+        assert!(validate_tag_set(&tags).is_ok());
+    }
+
+    #[test]
+    fn tag_set_empty_valid() {
+        assert!(validate_tag_set(&[]).is_ok());
+    }
+
+    #[test]
+    fn tag_set_rejects_too_many() {
+        let tags: Vec<_> = (0..11).map(|i| (format!("k{i}"), "v".into())).collect();
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_set_rejects_long_key() {
+        let tags = vec![("a".repeat(MAX_TAG_KEY_LEN + 1), "v".into())];
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_set_rejects_long_value() {
+        let tags = vec![("k".into(), "v".repeat(MAX_TAG_VALUE_LEN + 1))];
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_set_rejects_total_bytes() {
+        let tags: Vec<_> = (0..9)
+            .map(|i| (format!("key{i:02}"), "v".repeat(240)))
+            .collect();
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_set_rejects_bad_char() {
+        let tags = vec![("bad!".into(), "v".into())];
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_set_rejects_duplicate() {
+        let tags = vec![("a".into(), "1".into()), ("a".into(), "2".into())];
+        assert!(validate_tag_set(&tags).is_err());
+    }
+
+    #[test]
+    fn tag_kv_allows_empty_value() {
+        assert!(validate_tag_kv("k", "").is_ok());
+    }
+
+    #[test]
+    fn tag_kv_rejects_empty_key() {
+        assert!(validate_tag_kv("", "v").is_err());
     }
 }

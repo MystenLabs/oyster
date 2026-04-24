@@ -103,6 +103,37 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
     }
 }
 
+/// Parse an `x-amz-tagging` URL-form value into a validated tag list.
+fn parse_amz_tagging(s: &str) -> S3Result<Vec<(String, String)>> {
+    let pairs: Vec<(String, String)> = form_urlencoded::parse(s.as_bytes()).into_owned().collect();
+    validation::validate_tag_set(&pairs)
+        .map_err(|msg| S3Error::with_message(S3ErrorCode::InvalidTag, msg))?;
+    Ok(pairs)
+}
+
+/// Convert a `Tagging` dto into a validated (key, value) vec.
+fn tagging_to_pairs(tagging: &Tagging) -> S3Result<Vec<(String, String)>> {
+    let mut out = Vec::with_capacity(tagging.tag_set.len());
+    for tag in &tagging.tag_set {
+        let k = tag.key.clone().unwrap_or_default();
+        let v = tag.value.clone().unwrap_or_default();
+        out.push((k, v));
+    }
+    validation::validate_tag_set(&out)
+        .map_err(|msg| S3Error::with_message(S3ErrorCode::InvalidTag, msg))?;
+    Ok(out)
+}
+
+fn pairs_to_tag_set(pairs: impl IntoIterator<Item = (String, String)>) -> Vec<Tag> {
+    pairs
+        .into_iter()
+        .map(|(k, v)| Tag {
+            key: Some(k),
+            value: Some(v),
+        })
+        .collect()
+}
+
 fn parse_timestamp(s: &str) -> Option<Timestamp> {
     chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S")
         .ok()
@@ -361,6 +392,13 @@ impl s3s::S3 for OysterS3 {
             .await
             .map_err(blob_store_error)?;
 
+        // Validate tagging header before we write anything, so a malformed
+        // tag set fails fast without side effects.
+        let initial_tags = match req.input.tagging.as_deref() {
+            Some(raw) if !raw.is_empty() => parse_amz_tagging(raw)?,
+            _ => Vec::new(),
+        };
+
         let metadata = db::blobs::insert_blob(
             &self.state.db,
             &key,
@@ -372,6 +410,16 @@ impl s3s::S3 for OysterS3 {
             &md5_digest,
             result.pooled_blob_object_id.as_deref(),
             result.encoded_size.map(|e| e as i64),
+        )
+        .await
+        .map_err(internal_error)?;
+
+        db::blob_tags::replace_all_tags(
+            &self.state.db,
+            &account_id,
+            &bucket_name,
+            &key,
+            &initial_tags,
         )
         .await
         .map_err(internal_error)?;
@@ -417,12 +465,17 @@ impl s3s::S3 for OysterS3 {
 
         let body = StreamingBlob::from(s3s::Body::from(data));
 
+        let tag_count = db::blob_tags::count_tags(&self.state.db, bucket_name, key)
+            .await
+            .map_err(internal_error)? as i32;
+
         Ok(S3Response::new(GetObjectOutput {
             body: Some(body),
             content_length: Some(metadata.size),
             content_type: Some(metadata.content_type),
             e_tag: Some(etag_from_md5(&metadata.md5)),
             last_modified: parse_timestamp(&metadata.created_at),
+            tag_count: Some(tag_count),
             ..Default::default()
         }))
     }
@@ -618,6 +671,92 @@ impl s3s::S3 for OysterS3 {
                 ..Default::default()
             }))
         }
+    }
+
+    async fn get_object_tagging(
+        &self,
+        req: S3Request<GetObjectTaggingInput>,
+    ) -> S3Result<S3Response<GetObjectTaggingOutput>> {
+        let account_id = self.account_id(&req).await?;
+        let bucket_name = &req.input.bucket;
+        let key = &req.input.key;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 get_object_tagging");
+
+        db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchBucket))?;
+
+        db::blobs::get_blob_by_key(&self.state.db, bucket_name, key)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchKey))?;
+
+        let tags = db::blob_tags::list_tags(&self.state.db, &account_id, bucket_name, key)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(S3Response::new(GetObjectTaggingOutput {
+            tag_set: pairs_to_tag_set(tags),
+            ..Default::default()
+        }))
+    }
+
+    async fn put_object_tagging(
+        &self,
+        req: S3Request<PutObjectTaggingInput>,
+    ) -> S3Result<S3Response<PutObjectTaggingOutput>> {
+        let account_id = self.account_id(&req).await?;
+        let bucket_name = req.input.bucket.clone();
+        let key = req.input.key.clone();
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 put_object_tagging");
+
+        db::buckets::get_bucket(&self.state.db, &bucket_name, &account_id)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchBucket))?;
+
+        db::blobs::get_blob_by_key(&self.state.db, &bucket_name, &key)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchKey))?;
+
+        let tags = tagging_to_pairs(&req.input.tagging)?;
+        db::blob_tags::replace_all_tags(&self.state.db, &account_id, &bucket_name, &key, &tags)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(S3Response::new(PutObjectTaggingOutput {
+            ..Default::default()
+        }))
+    }
+
+    async fn delete_object_tagging(
+        &self,
+        req: S3Request<DeleteObjectTaggingInput>,
+    ) -> S3Result<S3Response<DeleteObjectTaggingOutput>> {
+        let account_id = self.account_id(&req).await?;
+        let bucket_name = &req.input.bucket;
+        let key = &req.input.key;
+        tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, "s3 delete_object_tagging");
+
+        db::buckets::get_bucket(&self.state.db, bucket_name, &account_id)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchBucket))?;
+
+        db::blobs::get_blob_by_key(&self.state.db, bucket_name, key)
+            .await
+            .map_err(internal_error)?
+            .ok_or_else(|| S3Error::new(S3ErrorCode::NoSuchKey))?;
+
+        db::blob_tags::clear_tags(&self.state.db, &account_id, bucket_name, key)
+            .await
+            .map_err(internal_error)?;
+
+        Ok(S3Response::new(DeleteObjectTaggingOutput {
+            ..Default::default()
+        }))
     }
 }
 

@@ -14,16 +14,50 @@ use crate::{
     error::AppError,
     models::{
         BlobMetadata,
+        BlobTagsResponse,
         ErrorResponse,
         PaginatedResponse,
         PaginationParams,
+        PatchTagsRequest,
+        PutTagsRequest,
         StoreBlobResponse,
         UpdateBlobMetadataRequest,
     },
     pagination,
+    validation,
 };
 
 const MAX_BLOB_SIZE: usize = 1_073_741_824; // 1 GB
+
+/// Parse all `x-oyster-tag` header values into a tag list.
+///
+/// Each header value must be exactly one `key=value` pair (no `&`-joined
+/// sets). Keys and values are percent-decoded via `form_urlencoded`.
+fn parse_oyster_tag_headers(headers: &HeaderMap) -> Result<Vec<(String, String)>, AppError> {
+    let mut tags = Vec::new();
+    for value in headers.get_all("x-oyster-tag") {
+        let raw = value
+            .to_str()
+            .map_err(|_| AppError::BadRequest("invalid x-oyster-tag header".into()))?;
+        if raw.contains('&') {
+            return Err(AppError::BadRequest(
+                "x-oyster-tag must contain a single key=value pair (no '&')".into(),
+            ));
+        }
+        let pairs: Vec<(String, String)> = form_urlencoded::parse(raw.as_bytes())
+            .into_owned()
+            .collect();
+        match pairs.as_slice() {
+            [(k, v)] if !k.is_empty() => tags.push((k.clone(), v.clone())),
+            _ => {
+                return Err(AppError::BadRequest(
+                    "x-oyster-tag must be a single non-empty key=value pair".into(),
+                ));
+            }
+        }
+    }
+    Ok(tags)
+}
 
 /// Check If-Match / If-None-Match headers against the current md5.
 fn check_json_conditions(
@@ -104,6 +138,10 @@ pub async fn store_blob(
         return Err(AppError::PayloadTooLarge);
     }
 
+    // Parse + validate initial tags early so we fail fast without a store round-trip.
+    let initial_tags = parse_oyster_tag_headers(&headers)?;
+    validation::validate_tag_set(&initial_tags).map_err(AppError::BadRequest)?;
+
     // Verify bucket exists and belongs to the account
     let _bucket = db::buckets::get_bucket(&state.db, &bucket_name, &auth.account_id)
         .await?
@@ -157,6 +195,16 @@ pub async fn store_blob(
         &md5_digest,
         result.pooled_blob_object_id.as_deref(),
         result.encoded_size.map(|e| e as i64),
+    )
+    .await?;
+
+    // Replace tags on every PUT (including overwrite) so stale tags don't leak.
+    db::blob_tags::replace_all_tags(
+        &state.db,
+        &auth.account_id,
+        &bucket_name,
+        &key,
+        &initial_tags,
     )
     .await?;
 
@@ -431,5 +479,226 @@ pub async fn delete_blob(
         }
     }
 
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Ensure a blob exists for the account; returns `AppError::NotFound` otherwise.
+async fn ensure_blob_exists(
+    state: &AppState,
+    account_id: &crate::AccountId,
+    bucket_name: &str,
+    key: &str,
+) -> Result<(), AppError> {
+    let metadata = db::blobs::get_blob_by_key(&state.db, bucket_name, key)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    if &metadata.account_id != account_id {
+        return Err(AppError::NotFound);
+    }
+    Ok(())
+}
+
+#[utoipa::path(
+    get,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
+    responses(
+        (status = 200, description = "Tags for the blob", body = BlobTagsResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// List all tags on a blob.
+pub async fn list_blob_tags(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key)): Path<(String, String)>,
+) -> Result<Json<BlobTagsResponse>, AppError> {
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    let tags = db::blob_tags::list_tags(&state.db, &auth.account_id, &bucket_name, &key).await?;
+    Ok(Json(BlobTagsResponse { tags }))
+}
+
+#[utoipa::path(
+    put,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
+    request_body = PutTagsRequest,
+    responses(
+        (status = 204, description = "Tag set replaced"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Replace the entire tag set on a blob (S3 `PutObjectTagging`-equivalent).
+pub async fn replace_blob_tags(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let req: PutTagsRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::BadRequest(format!("invalid JSON body: {e}")))?;
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    let tags: Vec<(String, String)> = req.tags.into_iter().collect();
+    validation::validate_tag_set(&tags).map_err(AppError::BadRequest)?;
+    db::blob_tags::replace_all_tags(&state.db, &auth.account_id, &bucket_name, &key, &tags).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    patch,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
+    request_body = PatchTagsRequest,
+    responses(
+        (status = 204, description = "Tags merged"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Merge a partial tag set into a blob's existing tags (upsert per key).
+pub async fn patch_blob_tags(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key)): Path<(String, String)>,
+    body: Bytes,
+) -> Result<StatusCode, AppError> {
+    let req: PatchTagsRequest = serde_json::from_slice(&body)
+        .map_err(|e| AppError::BadRequest(format!("invalid JSON body: {e}")))?;
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    let tags: Vec<(String, String)> = req.tags.into_iter().collect();
+    // Validate individual entries; full-set cap is enforced against the merged result.
+    for (k, v) in &tags {
+        validation::validate_tag_kv(k, v).map_err(AppError::BadRequest)?;
+    }
+    // Post-merge size check: fetch existing and compute the would-be resulting set.
+    let mut merged =
+        db::blob_tags::list_tags(&state.db, &auth.account_id, &bucket_name, &key).await?;
+    for (k, v) in &tags {
+        merged.insert(k.clone(), v.clone());
+    }
+    let merged_vec: Vec<(String, String)> = merged.into_iter().collect();
+    validation::validate_tag_set(&merged_vec).map_err(AppError::BadRequest)?;
+    db::blob_tags::merge_tags(&state.db, &auth.account_id, &bucket_name, &key, &tags).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    put,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+        ("tag_key" = String, Path, description = "Tag key"),
+    ),
+    request_body(content = String, content_type = "text/plain"),
+    responses(
+        (status = 204, description = "Tag upserted"),
+        (status = 400, description = "Bad request", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Upsert a single tag on a blob (body is the raw value).
+pub async fn put_blob_tag(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key, tag_key)): Path<(String, String, String)>,
+    body: String,
+) -> Result<StatusCode, AppError> {
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    validation::validate_tag_kv(&tag_key, &body).map_err(AppError::BadRequest)?;
+    // Ensure the post-upsert tag count doesn't exceed the per-blob cap.
+    let existing =
+        db::blob_tags::list_tags(&state.db, &auth.account_id, &bucket_name, &key).await?;
+    let would_add = !existing.contains_key(&tag_key);
+    if would_add && existing.len() >= validation::MAX_TAGS {
+        return Err(AppError::BadRequest(format!(
+            "at most {} tags allowed",
+            validation::MAX_TAGS
+        )));
+    }
+    db::blob_tags::upsert_tag(
+        &state.db,
+        &auth.account_id,
+        &bucket_name,
+        &key,
+        &tag_key,
+        &body,
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+        ("tag_key" = String, Path, description = "Tag key"),
+    ),
+    responses(
+        (status = 204, description = "Tag removed (or did not exist)"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Delete a single tag from a blob. Idempotent.
+pub async fn delete_blob_tag(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key, tag_key)): Path<(String, String, String)>,
+) -> Result<StatusCode, AppError> {
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    db::blob_tags::delete_tag(&state.db, &auth.account_id, &bucket_name, &key, &tag_key).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[utoipa::path(
+    delete,
+    path = "/buckets/{bucket_name}/blobs/{key}/tags",
+    tag = "Blobs",
+    security(("bearer" = [])),
+    params(
+        ("bucket_name" = String, Path, description = "Bucket name"),
+        ("key" = String, Path, description = "Object key"),
+    ),
+    responses(
+        (status = 204, description = "All tags removed"),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Blob not found", body = ErrorResponse),
+    ),
+)]
+/// Remove every tag from a blob (S3 `DeleteObjectTagging`-equivalent).
+pub async fn clear_blob_tags(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+    Path((bucket_name, key)): Path<(String, String)>,
+) -> Result<StatusCode, AppError> {
+    ensure_blob_exists(&state, &auth.account_id, &bucket_name, &key).await?;
+    db::blob_tags::clear_tags(&state.db, &auth.account_id, &bucket_name, &key).await?;
     Ok(StatusCode::NO_CONTENT)
 }
