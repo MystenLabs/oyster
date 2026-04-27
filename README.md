@@ -282,8 +282,87 @@ Configuration is read from `./client.yaml`, `$XDG_CONFIG_HOME/oyster/client.yaml
 with its own `url`, `api_key`, and managed app JWTs); pick one with `--context
 <name>`, `OYSTER_CONTEXT`, or the file's `active_context` field. CLI flags
 (`--url`, `--api-key`) override the selected context. Pass `--json` for
-machine-readable output. See `oyster app import` / `oyster app refresh-jwt` for
-managing per-app JWTs.
+machine-readable output.
+
+### Configuration: contexts and per-app JWTs
+
+Example `~/.config/oyster/client.yaml` with the public testnet deployment as
+the active context:
+
+```yaml
+active_context: testnet
+
+contexts:
+  testnet:
+    url: https://oyster.testnet.mystenlabs.com/api/v1
+    api_key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+    apps:
+      web-frontend:
+        jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        jwt_expiry: 2026-12-31T23:59:59Z
+
+  devnet:
+    url: https://oyster.devnet.mystenlabs.com/api/v1
+    api_key: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+```
+
+Notes:
+- `url` must point at the API root including `/api/v1`.
+- `api_key` is the raw 32-byte hex Bearer token returned by
+  `POST /api/v1/accounts/{account_id}/api-keys`.
+- The CLI picks a context using `--context`, then `OYSTER_CONTEXT`, then
+  `active_context`. With a single context in the file, that one is auto-selected.
+- The schema is strict (`deny_unknown_fields`); typos in keys fail to parse.
+- `jwt_expiry` is informational metadata. It is filled in automatically (decoded
+  from the JWT's `exp` claim) by `oyster app import` and `oyster app refresh-jwt`,
+  and never has to be edited by hand.
+
+#### Importing an app JWT
+
+`apps.<name>.jwt` is the admin JWT used by app management commands (currently
+`app refresh-jwt`). To get one, ask an Oyster operator with access to the
+target deployment to run:
+
+```bash
+oysterd app jwt <app_id>   # 24-hour JWT
+```
+
+Then store it in your active context without putting it on the command line or
+in shell history:
+
+```bash
+oyster app import web-frontend
+# JWT for web-frontend:    <- prompt; characters are hidden when stdin is a tty
+```
+
+The CLI decodes `exp`, writes the entry under
+`contexts.<active>.apps.web-frontend`, and replaces the config file
+atomically. When stdin is not a tty (CI, pipes), the JWT is read from a
+single line of stdin instead of an interactive prompt:
+
+```bash
+echo "$JWT" | oyster app import web-frontend
+```
+
+#### Rotating a JWT
+
+To swap the stored JWT for a fresh one, exchange it via the server's refresh
+endpoint:
+
+```bash
+oyster app refresh-jwt web-frontend
+# refreshed web-frontend in context testnet, expires at 2026-05-04T15:23:11Z
+# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...   <- new JWT to stdout
+```
+
+The old JWT is read from `apps.web-frontend.jwt`, posted to `/apps/token-refresh`
+as a Bearer token, and the response is written back into the same entry along
+with the refreshed `jwt_expiry`. Common errors:
+
+- **401** -- the stored JWT is no longer accepted (expired or revoked). Ask an
+  admin to re-issue (`oysterd app jwt <APP_ID>`) and `oyster app import` again.
+- **403** -- the app has `allow_refresh_jwt = false`. The operator must flip
+  that flag before rotation will work.
 
 ---
 
