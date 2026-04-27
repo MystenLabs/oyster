@@ -14,8 +14,6 @@ pub struct App {
     pub name: String,
     /// Contact email for the app owner.
     pub contact_email: String,
-    /// Whether the app is allowed to issue refresh JWTs.
-    pub allow_refresh_jwt: bool,
     /// Optional webhook URL for extension failure notifications.
     pub webhook_url: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -79,6 +77,36 @@ pub struct AccessKeyWithSecret {
 pub struct ApiKeyWithBearerToken {
     /// Unique identifier.
     pub id: String,
+    /// First 8 characters of the raw key.
+    pub prefix: String,
+    /// The Bearer token (shown only once).
+    pub bearer_token: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+/// An admin-key record (without the secret).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AdminKey {
+    /// Unique identifier.
+    pub id: String,
+    /// Owning app ID.
+    pub app_id: AppId,
+    /// First 8 characters of the raw key, for identification.
+    pub prefix: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 revocation timestamp, if revoked.
+    pub revoked_at: Option<String>,
+}
+
+/// A newly created admin key, including the Bearer token (shown only once).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct AdminKeyWithBearerToken {
+    /// Unique identifier.
+    pub id: String,
+    /// Owning app ID.
+    pub app_id: AppId,
     /// First 8 characters of the raw key.
     pub prefix: String,
     /// The Bearer token (shown only once).
@@ -204,17 +232,6 @@ pub struct CreateAccountResponse {
     pub account_id: AccountId,
     /// The initial API key (with bearer token).
     pub api_key: ApiKeyWithBearerToken,
-}
-
-/// Response from token refresh endpoint (RFC 6749 shape).
-#[derive(Debug, Serialize, ToSchema)]
-pub struct TokenRefreshResponse {
-    /// The new JWT.
-    pub access_token: String,
-    /// Always "Bearer".
-    pub token_type: String,
-    /// Token lifetime in seconds (86400 = 24h).
-    pub expires_in: i64,
 }
 
 /// Generic error response body.

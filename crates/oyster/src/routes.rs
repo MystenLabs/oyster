@@ -1,6 +1,6 @@
 /// Account and API key management endpoints.
 pub mod account;
-/// Admin API routes authenticated via JWT.
+/// Admin API routes authenticated via per-app admin keys.
 pub mod admin;
 /// Blob storage and retrieval endpoints.
 pub mod blobs;
@@ -37,7 +37,7 @@ use crate::AppState;
         (name = "Buckets", description = "Bucket CRUD operations"),
         (name = "Blobs", description = "Blob storage and retrieval"),
         (name = "Health", description = "Health and readiness probes"),
-        (name = "Admin", description = "Admin endpoints (JWT-authenticated)"),
+        (name = "Admin", description = "Admin endpoints (admin-key authenticated)"),
     ),
     modifiers(&SecurityAddon, &ServerAddon),
 )]
@@ -102,7 +102,7 @@ pub fn build_router(state: AppState) -> Router {
     };
 
     let (api_router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
-        // Admin (JWT-authenticated)
+        // Admin (admin-key authenticated)
         .routes(routes!(admin::create_account))
         .routes(routes!(admin::admin_create_api_key))
         .routes(routes!(admin::admin_revoke_api_key))
@@ -111,7 +111,6 @@ pub fn build_router(state: AppState) -> Router {
             admin::admin_list_access_keys
         ))
         .routes(routes!(admin::admin_delete_access_key))
-        .routes(routes!(admin::token_refresh))
         // Account
         .routes(routes!(account::get_wallet))
         // Stubs

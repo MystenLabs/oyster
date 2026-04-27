@@ -87,7 +87,7 @@ fn cli_e2e_full_lifecycle() {
 
         // Create account and fund wallet via admin JWT.
         eprintln!("[cli_e2e] creating test account...");
-        let (_app_id, jwt) = harness.create_app_jwt("cli-e2e-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("cli-e2e-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         eprintln!("[cli_e2e] funding test wallet...");
         fund_test_wallet(&harness, app, &api_key).await;

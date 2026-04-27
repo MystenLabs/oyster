@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use oyster::{
     AppId,
     AppState,
-    app_auth,
+    auth,
     blob_store::LocalBlobStore,
     config::Config,
     db,
@@ -26,10 +26,6 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     pearl_service_secret_file: Option<PathBuf>,
 
-    /// Read OYSTER_JWT_SECRET from this file instead of the environment.
-    #[arg(long, value_name = "PATH")]
-    oyster_jwt_secret_file: Option<PathBuf>,
-
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -40,7 +36,7 @@ enum Command {
     Serve,
     /// Run the blob extension background worker
     Extend,
-    /// Manage apps and JWTs.
+    /// Manage apps and admin keys.
     App {
         #[command(subcommand)]
         command: AppCommand,
@@ -49,7 +45,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Create a new app and print its UUID.
+    /// Create a new app, print its UUID, and (unless --no-key) issue and print
+    /// a fresh admin key.
     New {
         #[arg(long)]
         name: String,
@@ -57,18 +54,26 @@ enum AppCommand {
         contact_email: String,
         #[arg(long)]
         webhook_url: Option<String>,
-    },
-    /// Generate a 24-hour JWT for an existing app.
-    Jwt {
-        /// The app ID (UUID).
-        app_id: AppId,
+        /// Do not auto-issue an initial admin key.
+        #[arg(long)]
+        no_key: bool,
     },
     /// List all registered apps.
     List,
-    /// Revoke a JWT by adding its JTI to the blacklist.
-    RevokeJwt {
-        /// The JTI (JWT ID) to revoke.
-        jti: String,
+    /// Issue a new admin key for an existing app. Prints the raw bearer token to stdout.
+    IssueAdminKey {
+        /// The app ID (UUID).
+        app_id: AppId,
+    },
+    /// List admin keys for an app (TSV: id, prefix, created_at, revoked_at).
+    ListAdminKeys {
+        /// The app ID (UUID).
+        app_id: AppId,
+    },
+    /// Revoke an admin key by its id.
+    RevokeAdminKey {
+        /// The admin key id (UUID).
+        key_id: String,
     },
 }
 
@@ -78,7 +83,6 @@ async fn main() {
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
         .expect("failed to install default CryptoProvider");
-    app_auth::install_crypto_provider();
 
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -89,20 +93,14 @@ async fn main() {
         .init();
 
     let cli = Cli::parse();
-    let jwt_secret = cli
-        .oyster_jwt_secret_file
-        .as_ref()
-        .map(|p| read_secret_file(p.clone()))
-        .or_else(|| std::env::var("OYSTER_JWT_SECRET").ok());
 
     if let Some(Command::App { command }) = cli.command {
-        handle_app_command(command, jwt_secret).await;
+        handle_app_command(command).await;
         return;
     }
 
     let overrides = oyster::config::SecretOverrides {
         pearl_service_secret: cli.pearl_service_secret_file.map(read_secret_file),
-        oyster_jwt_secret: jwt_secret,
     };
     let config = Config::new(overrides);
 
@@ -248,7 +246,7 @@ async fn main() {
     }
 }
 
-async fn handle_app_command(command: AppCommand, jwt_secret: Option<String>) {
+async fn handle_app_command(command: AppCommand) {
     let database_url =
         std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:oyster.db?mode=rwc".to_string());
     let pool = db::create_pool(&database_url)
@@ -260,23 +258,16 @@ async fn handle_app_command(command: AppCommand, jwt_secret: Option<String>) {
             name,
             contact_email,
             webhook_url,
+            no_key,
         } => {
             let app = db::apps::create_app(&pool, &name, &contact_email, webhook_url.as_deref())
                 .await
                 .expect("failed to create app");
             println!("{}", app.id);
-        }
-        AppCommand::Jwt { app_id } => {
-            let secret = jwt_secret.expect("OYSTER_JWT_SECRET required");
-            let app = db::apps::get_app(&pool, &app_id)
-                .await
-                .expect("failed to query app");
-            let Some(_app) = app else {
-                eprintln!("app not found: {app_id}");
-                std::process::exit(1);
-            };
-            let token = app_auth::sign_jwt(&app_id, &secret).expect("failed to sign JWT");
-            println!("{token}");
+            if !no_key {
+                let key = issue_admin_key_for(&pool, &app.id).await;
+                println!("{}", key.bearer_token);
+            }
         }
         AppCommand::List => {
             let apps = db::apps::list_apps(&pool)
@@ -287,13 +278,55 @@ async fn handle_app_command(command: AppCommand, jwt_secret: Option<String>) {
                 println!("{}\t{}\t{}", app.id, app.name, app.contact_email);
             }
         }
-        AppCommand::RevokeJwt { jti } => {
-            let _secret = jwt_secret.expect("OYSTER_JWT_SECRET required");
-            db::jwt_blacklist::blacklist_jti(&pool, &jti, "2099-01-01 00:00:00")
+        AppCommand::IssueAdminKey { app_id } => {
+            let app = db::apps::get_app(&pool, &app_id)
                 .await
-                .expect("failed to blacklist JTI");
+                .expect("failed to query app");
+            if app.is_none() {
+                eprintln!("app not found: {app_id}");
+                std::process::exit(1);
+            }
+            let key = issue_admin_key_for(&pool, &app_id).await;
+            println!("{}", key.bearer_token);
+        }
+        AppCommand::ListAdminKeys { app_id } => {
+            let keys = db::app_admin_keys::list_admin_keys(&pool, &app_id)
+                .await
+                .expect("failed to list admin keys");
+            for k in keys {
+                println!(
+                    "{}\t{}\t{}\t{}",
+                    k.id,
+                    k.prefix,
+                    k.created_at,
+                    k.revoked_at.unwrap_or_default()
+                );
+            }
+        }
+        AppCommand::RevokeAdminKey { key_id } => {
+            let revoked = db::app_admin_keys::revoke_admin_key(&pool, &key_id)
+                .await
+                .expect("failed to revoke admin key");
+            if !revoked {
+                eprintln!("admin key not found or already revoked: {key_id}");
+                std::process::exit(1);
+            }
         }
     }
+}
+
+async fn issue_admin_key_for(
+    pool: &db::DbPool,
+    app_id: &AppId,
+) -> oyster::models::AdminKeyWithBearerToken {
+    let raw = auth::generate_api_key();
+    let hash = auth::hash_api_key(&raw);
+    let prefix = auth::key_prefix(&raw);
+    let key = db::app_admin_keys::create_admin_key(pool, app_id, &hash, &prefix, &raw)
+        .await
+        .expect("failed to create admin key");
+    tracing::info!(app_id = %app_id, key_id = %key.id, prefix = %key.prefix, "issued admin key");
+    key
 }
 
 fn read_secret_file(path: PathBuf) -> String {

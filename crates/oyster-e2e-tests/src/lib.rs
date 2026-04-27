@@ -104,8 +104,6 @@ impl OysterTestHarness {
     ///
     /// This is expensive (~10-30s) so tests should share a single harness where possible.
     pub async fn start() -> Self {
-        oyster::app_auth::install_crypto_provider();
-
         // 1. Boot the Walrus test cluster with an aggregator.
         eprintln!("[harness] building walrus e2e test cluster...");
         let (sui_cluster, walrus_cluster, walrus_client, system_ctx, aggregator) =
@@ -204,7 +202,6 @@ impl OysterTestHarness {
             pool_extend_epochs: 1,
             pool_extend_lookahead_days: 7,
             extension_metrics_bind_addr: "unused".into(),
-            jwt_secret: Some("e2e-test-jwt-secret".into()),
         };
 
         let state = AppState {
@@ -317,15 +314,20 @@ impl OysterTestHarness {
             .expect("failed to fund address");
     }
 
-    /// Create an app in the database and sign a JWT for it.
+    /// Create an app in the database and issue an admin key for it.
     ///
-    /// Returns `(app_id, jwt)`.
-    pub async fn create_app_jwt(&self, name: &str) -> (String, String) {
+    /// Returns `(app_id, admin_key)`.
+    pub async fn create_app_admin_key(&self, name: &str) -> (String, String) {
         let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"), None)
             .await
             .expect("create app");
-        let jwt = oyster::app_auth::sign_jwt(&app.id, "e2e-test-jwt-secret").expect("sign jwt");
-        (app.id.to_string(), jwt)
+        let raw = oyster::auth::generate_api_key();
+        let hash = oyster::auth::hash_api_key(&raw);
+        let prefix = oyster::auth::key_prefix(&raw);
+        db::app_admin_keys::create_admin_key(&self.db, &app.id, &hash, &prefix, &raw)
+            .await
+            .expect("create admin key");
+        (app.id.to_string(), raw)
     }
 
     /// Fund an address with both SUI (for gas) and WAL (for storage).

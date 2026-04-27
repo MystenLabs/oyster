@@ -67,7 +67,7 @@ fn e2e_blob_lifecycle() {
         let app = &harness.router;
 
         // 1. Create an account via admin JWT (provisions a Pearl wallet automatically).
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-blob-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-blob-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // 2. Fund the test account's wallet with SUI (gas) and WAL (storage).
@@ -175,7 +175,7 @@ fn e2e_content_dedup() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-dedup-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-dedup-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "dedup-bucket").await;
@@ -226,7 +226,7 @@ fn e2e_wallet_provisioning() {
         let app = &harness.router;
 
         // Create account via admin JWT — Pearl is connected so it should provision a wallet.
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-wallet-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-wallet-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // Check wallet endpoint.
@@ -258,7 +258,7 @@ fn reserved_bucket_names_rejected() {
 
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-reserved-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-reserved-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
 
         // Hardcoded — must stay in sync with RESERVED_BUCKET_NAMES in validation.rs.
@@ -297,7 +297,7 @@ fn e2e_deterministic_wallet_address() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-deterministic-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-deterministic-app").await;
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
         fund_test_wallet(&harness, app, &api_key).await;
 
@@ -376,7 +376,7 @@ fn e2e_admin_account_blob_lifecycle() {
         let app = &harness.router;
 
         // 1. Create an app + JWT via the harness.
-        let (_app_id, jwt) = harness.create_app_jwt("admin-e2e-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("admin-e2e-app").await;
 
         // 2. Create an account via the admin route.
         let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
@@ -444,7 +444,7 @@ fn e2e_pool_created_lazily_on_first_blob() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-lazy-pool-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-lazy-pool-app").await;
         let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
         let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
         fund_test_wallet(&harness, app, &api_key).await;
@@ -517,7 +517,7 @@ fn e2e_pool_accounting_across_n_uploads() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-n-uploads-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-n-uploads-app").await;
         let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
         let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
         fund_test_wallet(&harness, app, &api_key).await;
@@ -573,7 +573,7 @@ fn e2e_small_upload_reuses_reserved_capacity() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-reuse-capacity-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-reuse-capacity-app").await;
         let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
         let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
         fund_test_wallet(&harness, app, &api_key).await;
@@ -641,7 +641,7 @@ fn e2e_extension_task_extends_pool() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-extend-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-extend-app").await;
         let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
         let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
         fund_test_wallet(&harness, app, &api_key).await;
@@ -701,7 +701,7 @@ fn e2e_refcounted_delete_frees_pool_capacity() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_jwt("e2e-refcount-app").await;
+        let (_app_id, jwt) = harness.create_app_admin_key("e2e-refcount-app").await;
         let (account_id_str, api_key) = create_test_account_via_admin(app, &jwt).await;
         let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
         fund_test_wallet(&harness, app, &api_key).await;

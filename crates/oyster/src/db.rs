@@ -4,6 +4,8 @@ pub mod access_keys;
 pub mod accounts;
 /// API key database operations.
 pub mod api_keys;
+/// App admin-key database operations.
+pub mod app_admin_keys;
 /// App database operations.
 pub mod apps;
 /// Blob tag database operations.
@@ -12,8 +14,6 @@ pub mod blob_tags;
 pub mod blobs;
 /// Bucket database operations.
 pub mod buckets;
-/// JWT blacklist database operations.
-pub mod jwt_blacklist;
 
 use std::{borrow::Cow, fmt::Write, sync::OnceLock};
 

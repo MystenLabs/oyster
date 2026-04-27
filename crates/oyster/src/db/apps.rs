@@ -2,16 +2,6 @@ use sqlx::Row;
 
 use crate::{AppId, models::App};
 
-/// Decode `allow_refresh_jwt` from the database row.
-///
-/// SQLite stores booleans as integers (0/1) while PostgreSQL uses native booleans.
-/// The `sqlx::Any` driver cannot decode both with a single type, so we try `bool`
-/// first (PostgreSQL) and fall back to `i32` (SQLite).
-fn decode_allow_refresh_jwt(row: &sqlx::any::AnyRow) -> bool {
-    row.try_get::<bool, _>("allow_refresh_jwt")
-        .unwrap_or_else(|_| row.get::<i32, _>("allow_refresh_jwt") != 0)
-}
-
 /// Insert a new app.
 pub async fn create_app(
     pool: &super::DbPool,
@@ -21,7 +11,7 @@ pub async fn create_app(
 ) -> Result<App, sqlx::Error> {
     let id = AppId::new();
     let row = sqlx::query(&super::sql(
-        "INSERT INTO apps (id, name, contact_email, webhook_url) VALUES (?, ?, ?, ?) RETURNING id, name, contact_email, allow_refresh_jwt, webhook_url, created_at",
+        "INSERT INTO apps (id, name, contact_email, webhook_url) VALUES (?, ?, ?, ?) RETURNING id, name, contact_email, webhook_url, created_at",
     ))
     .bind(&id)
     .bind(name)
@@ -34,7 +24,6 @@ pub async fn create_app(
         id: row.get("id"),
         name: row.get("name"),
         contact_email: row.get("contact_email"),
-        allow_refresh_jwt: decode_allow_refresh_jwt(&row),
         webhook_url: row.get("webhook_url"),
         created_at: row.get("created_at"),
     })
@@ -43,7 +32,7 @@ pub async fn create_app(
 /// Fetch an app by ID, returning `None` if it does not exist.
 pub async fn get_app(pool: &super::DbPool, id: &AppId) -> Result<Option<App>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT id, name, contact_email, allow_refresh_jwt, webhook_url, created_at FROM apps WHERE id = ?",
+        "SELECT id, name, contact_email, webhook_url, created_at FROM apps WHERE id = ?",
     ))
     .bind(id)
     .fetch_optional(pool)
@@ -53,7 +42,6 @@ pub async fn get_app(pool: &super::DbPool, id: &AppId) -> Result<Option<App>, sq
         id: r.get("id"),
         name: r.get("name"),
         contact_email: r.get("contact_email"),
-        allow_refresh_jwt: decode_allow_refresh_jwt(&r),
         webhook_url: r.get("webhook_url"),
         created_at: r.get("created_at"),
     }))
@@ -62,7 +50,7 @@ pub async fn get_app(pool: &super::DbPool, id: &AppId) -> Result<Option<App>, sq
 /// List all apps.
 pub async fn list_apps(pool: &super::DbPool) -> Result<Vec<App>, sqlx::Error> {
     let rows = sqlx::query(&super::sql(
-        "SELECT id, name, contact_email, allow_refresh_jwt, webhook_url, created_at FROM apps ORDER BY created_at",
+        "SELECT id, name, contact_email, webhook_url, created_at FROM apps ORDER BY created_at",
     ))
     .fetch_all(pool)
     .await?;
@@ -73,7 +61,6 @@ pub async fn list_apps(pool: &super::DbPool) -> Result<Vec<App>, sqlx::Error> {
             id: r.get("id"),
             name: r.get("name"),
             contact_email: r.get("contact_email"),
-            allow_refresh_jwt: decode_allow_refresh_jwt(&r),
             webhook_url: r.get("webhook_url"),
             created_at: r.get("created_at"),
         })
@@ -97,7 +84,6 @@ mod tests {
             .unwrap();
         assert_eq!(app.name, "test-app");
         assert_eq!(app.contact_email, "test@example.com");
-        assert!(!app.allow_refresh_jwt);
         assert!(app.webhook_url.is_none());
     }
 

@@ -20,7 +20,6 @@ form_urlencoded = "1.2.2"
 futures = { workspace = true }
 hex = { workspace = true }
 hyper = "1.8.1"
-jsonwebtoken = { workspace = true }
 md5 = "0.8.0"
 metrics = { workspace = true }
 metrics-exporter-prometheus = { workspace = true }
@@ -54,7 +53,6 @@ walrus-utils = { workspace = true, features = ["backoff"] }
 
 [dev-dependencies]
 http-body-util = { workspace = true }
-jsonwebtoken.workspace = true
 pearl = { workspace = true }
 sqlx.workspace = true
 tempfile = { workspace = true }

@@ -6,8 +6,6 @@ use walrus_sui::utils::BYTES_PER_UNIT_SIZE;
 pub struct SecretOverrides {
     /// Pearl service secret, if loaded from a file.
     pub pearl_service_secret: Option<String>,
-    /// JWT signing secret, if loaded from a file.
-    pub oyster_jwt_secret: Option<String>,
 }
 
 /// Oyster server configuration, loaded from environment variables.
@@ -47,8 +45,6 @@ pub struct Config {
     pub pool_extend_lookahead_days: u32,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
-    /// Optional JWT signing secret for app authentication.
-    pub jwt_secret: Option<String>,
 }
 
 impl Config {
@@ -96,9 +92,6 @@ impl Config {
                 .unwrap_or(7),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
-            jwt_secret: overrides
-                .oyster_jwt_secret
-                .or_else(|| std::env::var("OYSTER_JWT_SECRET").ok()),
         }
     }
 
@@ -106,7 +99,6 @@ impl Config {
     pub fn from_env() -> Self {
         Self::new(SecretOverrides {
             pearl_service_secret: None,
-            oyster_jwt_secret: None,
         })
     }
 }

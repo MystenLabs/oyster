@@ -1,4 +1,4 @@
-//! Admin API routes authenticated via JWT (AuthenticatedApp).
+//! Admin API routes authenticated via per-app admin keys (AuthenticatedApp).
 
 use axum::{
     Json,
@@ -10,7 +10,7 @@ use crate::{
     AccountId,
     AppId,
     AppState,
-    app_auth::{self, AuthenticatedApp, JWT_GRACE_SECS},
+    app_admin::AuthenticatedApp,
     auth,
     db,
     error::AppError,
@@ -21,7 +21,6 @@ use crate::{
         CreateAccountRequest,
         CreateAccountResponse,
         ErrorResponse,
-        TokenRefreshResponse,
     },
 };
 
@@ -232,94 +231,4 @@ pub async fn admin_delete_access_key(
     } else {
         Err(AppError::NotFound)
     }
-}
-
-#[utoipa::path(
-    post,
-    path = "/apps/token-refresh",
-    tag = "Admin",
-    security(("bearer" = [])),
-    responses(
-        (status = 200, description = "Token refreshed", body = TokenRefreshResponse),
-        (status = 401, description = "Unauthorized", body = ErrorResponse),
-        (status = 403, description = "Refresh not allowed", body = ErrorResponse),
-    ),
-)]
-/// Refresh a JWT token. Accepts tokens up to 48h past expiry.
-pub async fn token_refresh(
-    State(state): State<AppState>,
-    req: axum::http::request::Parts,
-) -> Result<Json<TokenRefreshResponse>, AppError> {
-    let auth_header = req
-        .headers
-        .get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            tracing::warn!("token refresh: missing or non-ASCII authorization header");
-            AppError::Unauthorized
-        })?;
-
-    let token = auth_header.strip_prefix("Bearer ").ok_or_else(|| {
-        tracing::warn!("token refresh: authorization header missing 'Bearer ' prefix");
-        AppError::Unauthorized
-    })?;
-
-    let secret = state.config.jwt_secret.as_deref().ok_or_else(|| {
-        tracing::error!("token refresh: OYSTER_JWT_SECRET is not configured");
-        AppError::Unauthorized
-    })?;
-
-    let claims =
-        app_auth::verify_jwt_with_grace(token, secret, &state.db, JWT_GRACE_SECS as u64).await?;
-
-    let now = jsonwebtoken::get_current_timestamp() as i64;
-    let expired_ago = now - claims.exp;
-    tracing::info!(
-        app_id = %claims.sub,
-        jti = %claims.jti,
-        exp = claims.exp,
-        expired_ago_secs = expired_ago,
-        "token refresh: JWT verified"
-    );
-
-    let app_id: AppId = claims.sub.parse().map_err(|_| {
-        tracing::warn!(sub = %claims.sub, "token refresh: invalid app_id in sub claim");
-        AppError::Unauthorized
-    })?;
-
-    let app = db::apps::get_app(&state.db, &app_id)
-        .await?
-        .ok_or_else(|| {
-            tracing::warn!(%app_id, "token refresh: app not found");
-            AppError::Unauthorized
-        })?;
-
-    if !app.allow_refresh_jwt {
-        tracing::warn!(%app_id, "token refresh: refresh not allowed for app");
-        return Err(AppError::Forbidden(
-            "token refresh is not allowed for this app".into(),
-        ));
-    }
-
-    // Blacklist the old JTI.
-    let not_after = chrono::DateTime::from_timestamp(claims.exp + JWT_GRACE_SECS, 0)
-        .ok_or_else(|| AppError::Internal("invalid expiry timestamp".into()))?
-        .format("%Y-%m-%d %H:%M:%S")
-        .to_string();
-    db::jwt_blacklist::blacklist_jti(&state.db, &claims.jti, &not_after).await?;
-
-    let access_token =
-        app_auth::sign_jwt(&app_id, secret).map_err(|e| AppError::Internal(e.to_string()))?;
-
-    tracing::info!(
-        %app_id,
-        old_jti = %claims.jti,
-        "token refresh: issued new token, old JTI blacklisted"
-    );
-
-    Ok(Json(TokenRefreshResponse {
-        access_token,
-        token_type: "Bearer".into(),
-        expires_in: 86400,
-    }))
 }
