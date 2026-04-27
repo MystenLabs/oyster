@@ -284,85 +284,158 @@ with its own `url`, `api_key`, and managed app JWTs); pick one with `--context
 (`--url`, `--api-key`) override the selected context. Pass `--json` for
 machine-readable output.
 
-### Configuration: contexts and per-app JWTs
+### Setting up the CLI from scratch
 
-Example `~/.config/oyster/client.yaml` with the public testnet deployment as
-the active context:
+Step-by-step walkthrough for a fresh machine, using the public testnet
+deployment.
 
-```yaml
+#### 1. Create a minimal config file
+
+The CLI has no config file by default. Create
+`~/.config/oyster/client.yaml` with just an active context and a URL:
+
+```bash
+mkdir -p ~/.config/oyster
+cat > ~/.config/oyster/client.yaml <<'YAML'
 active_context: testnet
 
 contexts:
   testnet:
     url: https://oyster.testnet.mystenlabs.com/api/v1
-    api_key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-    apps:
-      web-frontend:
-        jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-        jwt_expiry: 2026-12-31T23:59:59Z
-
-  devnet:
-    url: https://oyster.devnet.mystenlabs.com/api/v1
-    api_key: fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+YAML
 ```
 
-Notes:
-- `url` must point at the API root including `/api/v1`.
-- `api_key` is the raw 32-byte hex Bearer token returned by
-  `POST /api/v1/accounts/{account_id}/api-keys`.
-- The CLI picks a context using `--context`, then `OYSTER_CONTEXT`, then
-  `active_context`. With a single context in the file, that one is auto-selected.
-- The schema is strict (`deny_unknown_fields`); typos in keys fail to parse.
-- `jwt_expiry` is informational metadata. It is filled in automatically (decoded
-  from the JWT's `exp` claim) by `oyster app import` and `oyster app refresh-jwt`,
-  and never has to be edited by hand.
-
-#### Importing an app JWT
-
-`apps.<name>.jwt` is the admin JWT used by app management commands (currently
-`app refresh-jwt`). To get one, ask an Oyster operator with access to the
-target deployment to run:
+Verify the CLI picks it up:
 
 ```bash
+oyster info
+# config: /Users/you/.config/oyster/client.yaml
+# url:    https://oyster.testnet.mystenlabs.com/api/v1
+# key:    (not set)
+```
+
+Notes on the schema:
+- `url` must include `/api/v1`.
+- `active_context` selects which context's settings are used. You can override
+  per invocation with `--context <name>` or `OYSTER_CONTEXT=<name>`. With a
+  single context in the file, that one is auto-selected even without
+  `active_context`.
+- The schema is strict (`deny_unknown_fields`) — typos in keys fail to parse.
+
+#### 2. (Optional) Add an `api_key` for data-plane calls
+
+`api_key` authenticates the per-account data routes (`buckets`, `blobs`,
+`wallet`, …). Skip this step if you only need to manage app JWTs. Otherwise,
+have an admin issue a key for your account and add it to the context:
+
+```yaml
+contexts:
+  testnet:
+    url: https://oyster.testnet.mystenlabs.com/api/v1
+    api_key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+The value is the raw 64-char hex Bearer token returned by
+`POST /api/v1/accounts/{account_id}/api-keys`.
+
+#### 3. Get an app JWT from an operator
+
+App JWTs are separate from `api_key` — they authenticate admin app-management
+calls (currently just `app refresh-jwt`). The first JWT for a given app must be
+issued by an Oyster operator with access to the target deployment. Ask them to
+run, against the **testnet** deployment:
+
+```bash
+# operator runs this and shares the output with you
 oysterd app jwt <app_id>   # 24-hour JWT
 ```
 
-Then store it in your active context without putting it on the command line or
-in shell history:
+If your app doesn't exist yet, the operator first creates it:
 
 ```bash
-oyster app import web-frontend
-# JWT for web-frontend:    <- prompt; characters are hidden when stdin is a tty
+oysterd app new --name my-app --contact-email me@example.com
+# prints: <app_id>
 ```
 
-The CLI decodes `exp`, writes the entry under
-`contexts.<active>.apps.web-frontend`, and replaces the config file
-atomically. When stdin is not a tty (CI, pipes), the JWT is read from a
-single line of stdin instead of an interactive prompt:
+#### 4. Import the JWT into your config
+
+Pick a local nickname for the app — it's just a key under `apps:` in your
+config file, so use anything you'll remember (it does not have to match the
+server-side app name). Then paste the JWT at the prompt:
 
 ```bash
-echo "$JWT" | oyster app import web-frontend
+oyster app import my-app
+# JWT for my-app:         <- prompt; characters are hidden when stdin is a tty
+# imported my-app into context testnet
 ```
 
-#### Rotating a JWT
+The CLI decodes the JWT's `exp` claim, writes the entry into the active
+context, and replaces the config file atomically. Your `client.yaml` now
+looks like:
 
-To swap the stored JWT for a fresh one, exchange it via the server's refresh
-endpoint:
+```yaml
+active_context: testnet
+contexts:
+  testnet:
+    url: https://oyster.testnet.mystenlabs.com/api/v1
+    apps:
+      my-app:
+        jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+        jwt_expiry: 2026-04-28T10:46:23Z
+```
+
+`jwt_expiry` is informational — it's stored for visibility, not checked
+pre-flight, and never needs to be edited by hand.
+
+For non-interactive use (CI, scripts), pipe the JWT on stdin instead of
+typing it:
 
 ```bash
-oyster app refresh-jwt web-frontend
-# refreshed web-frontend in context testnet, expires at 2026-05-04T15:23:11Z
-# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...   <- new JWT to stdout
+echo "$JWT" | oyster app import my-app
 ```
 
-The old JWT is read from `apps.web-frontend.jwt`, posted to `/apps/token-refresh`
-as a Bearer token, and the response is written back into the same entry along
-with the refreshed `jwt_expiry`. Common errors:
+#### 5. Rotate the JWT before it expires
 
-- **401** -- the stored JWT is no longer accepted (expired or revoked). Ask an
-  admin to re-issue (`oysterd app jwt <APP_ID>`) and `oyster app import` again.
-- **403** -- the app has `allow_refresh_jwt = false`. The operator must flip
+JWTs from `oysterd app jwt` are 24-hour tokens. To swap the stored JWT for a
+fresh one without going back to an operator, exchange it via the server's
+refresh endpoint:
+
+```bash
+oyster app refresh-jwt my-app
+# refreshed my-app in context testnet, expires at 2026-04-29T10:46:23Z
+# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...    <- new JWT also printed to stdout
+```
+
+The CLI reads the old JWT from `apps.my-app.jwt`, posts it as a Bearer token
+to `POST /apps/token-refresh`, and writes the response back into the same
+entry with a refreshed `jwt_expiry`. Common errors:
+
+- **401** — the stored JWT is no longer accepted (expired or revoked). Ask an
+  admin to re-issue (`oysterd app jwt <APP_ID>`) and re-run `oyster app import`.
+- **403** — the app has `allow_refresh_jwt = false`. The operator must flip
   that flag before rotation will work.
+
+#### 6. (Optional) Talk to multiple deployments
+
+Add more contexts to the same file and switch between them with `--context`
+or `OYSTER_CONTEXT`:
+
+```yaml
+active_context: testnet
+contexts:
+  testnet:
+    url: https://oyster.testnet.mystenlabs.com/api/v1
+    apps:
+      my-app:
+        jwt: ...
+  devnet:
+    url: https://oyster.devnet.mystenlabs.com/api/v1
+```
+
+```bash
+oyster --context devnet info
+OYSTER_CONTEXT=devnet oyster info
+```
 
 ---
 
