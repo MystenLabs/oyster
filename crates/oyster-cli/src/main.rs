@@ -95,7 +95,7 @@ enum Command {
     Wallet,
     /// Show resolved configuration
     Info,
-    /// App JWT management
+    /// App admin-key management
     App {
         #[command(subcommand)]
         command: AppCommand,
@@ -188,14 +188,9 @@ fn parse_tag_kv(s: &str) -> Result<(String, String), String> {
 
 #[derive(Subcommand)]
 enum AppCommand {
-    /// Rotate the stored JWT for an app via the server's token-refresh endpoint.
-    RefreshJwt {
-        /// Name of the app as stored in the active context's `apps` map.
-        app_name: String,
-    },
-    /// Import a JWT for an app (read interactively, hidden input when tty).
+    /// Import an admin key for an app (read interactively, hidden input when tty).
     Import {
-        /// Name of the app to store the JWT under in the active context.
+        /// Name of the app to store the admin key under in the active context.
         app_name: String,
     },
 }
@@ -385,82 +380,8 @@ async fn cmd_wallet(client: &OysterClient, out: &Output) -> Result<(), CliError>
     Ok(())
 }
 
-/// Refresh the stored JWT for an app via the server's token-refresh endpoint.
-///
-/// Invariant: the old JWT is always sourced from the active context's
-/// `apps.<app_name>` entry (this subcommand takes only `app_name`, never a
-/// raw token). Because of that, we always write the refreshed JWT back to
-/// the same entry. If a future flag adds an alternate input source
-/// (`--jwt <val>` etc.), that code path MUST NOT write back.
-async fn cmd_app_refresh_jwt(
-    cli_config: Option<&std::path::Path>,
-    cli_context: Option<&str>,
-    app_name: &str,
-) -> Result<(), CliError> {
-    let (mut file, config_path) = config::load_file_config(cli_config)?;
-    let ctx_name = config::require_context_name(cli_context, &file)?;
-
-    let (old_jwt, base_url) = {
-        let ctx = file
-            .contexts
-            .get(&ctx_name)
-            .ok_or_else(|| CliError::Message(format!("context '{ctx_name}' not found")))?;
-        let entry = ctx
-            .apps
-            .get(app_name)
-            .ok_or_else(|| ConfigError::MissingAppJwt(app_name.to_string()))?;
-        let url = ctx.url.clone().ok_or(ConfigError::MissingUrl)?;
-        (entry.jwt.clone(), url)
-    };
-
-    let refresh = match OysterClient::refresh_app_jwt(&base_url, &old_jwt).await {
-        Ok(r) => r,
-        Err(ApiError::Server { status: 401, .. }) => {
-            eprintln!(
-                "error: token refresh rejected; ask an admin to re-issue via 'oysterd app jwt <APP_ID>'"
-            );
-            return Err(CliError::Api(ApiError::Server {
-                status: 401,
-                message: "unauthorized".to_string(),
-            }));
-        }
-        Err(ApiError::Server { status: 403, .. }) => {
-            eprintln!("error: token refresh not allowed for this app (allow_refresh_jwt=false)");
-            return Err(CliError::Api(ApiError::Server {
-                status: 403,
-                message: "forbidden".to_string(),
-            }));
-        }
-        Err(e) => return Err(CliError::Api(e)),
-    };
-
-    let new_expiry = config::decode_exp(&refresh.access_token)
-        .or_else(|| Some(chrono::Utc::now() + chrono::Duration::seconds(refresh.expires_in)));
-
-    let path = config_path.ok_or(ConfigError::NoConfigFile)?;
-    let ctx = file
-        .contexts
-        .get_mut(&ctx_name)
-        .ok_or_else(|| CliError::Message(format!("context '{ctx_name}' not found")))?;
-    ctx.apps.insert(
-        app_name.to_string(),
-        AppEntry {
-            jwt: refresh.access_token.clone(),
-            jwt_expiry: new_expiry,
-        },
-    );
-    config::save_config(&path, &file)?;
-
-    let expiry_str = new_expiry
-        .map(|e| e.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_else(|| "(unknown)".to_string());
-    eprintln!("refreshed {app_name} in context {ctx_name}, expires at {expiry_str}");
-    println!("{}", refresh.access_token);
-    Ok(())
-}
-
-/// Import a JWT for an app, reading interactively (no echo when stdin is a
-/// tty). Persists to the active context via atomic write.
+/// Import an admin key for an app, reading interactively (no echo when stdin
+/// is a tty). Persists to the active context via atomic write.
 fn cmd_app_import(
     cli_config: Option<&std::path::Path>,
     cli_context: Option<&str>,
@@ -470,8 +391,8 @@ fn cmd_app_import(
     let ctx_name = config::require_context_name(cli_context, &file)?;
     let path = config_path.ok_or(ConfigError::NoConfigFile)?;
 
-    let prompt = format!("JWT for {app_name}: ");
-    let jwt = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    let prompt = format!("Admin key for {app_name}: ");
+    let admin_key = if std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         rpassword::prompt_password(&prompt)?
     } else {
         use std::io::BufRead;
@@ -480,16 +401,14 @@ fn cmd_app_import(
         stdin.lock().read_line(&mut line)?;
         line
     };
-    let jwt = jwt.trim().to_string();
-    if jwt.is_empty() {
-        return Err(CliError::Message("empty JWT input".to_string()));
+    let admin_key = admin_key.trim().to_string();
+    if admin_key.is_empty() {
+        return Err(CliError::Message("empty admin-key input".to_string()));
     }
-
-    let jwt_expiry = config::decode_exp(&jwt);
 
     let ctx = file.contexts.entry(ctx_name.clone()).or_default();
     ctx.apps
-        .insert(app_name.to_string(), AppEntry { jwt, jwt_expiry });
+        .insert(app_name.to_string(), AppEntry { admin_key });
     config::save_config(&path, &file)?;
     eprintln!("imported {app_name} into context {ctx_name}");
     Ok(())
@@ -576,9 +495,6 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
         }
 
         Command::App { ref command } => match command {
-            AppCommand::RefreshJwt { app_name } => {
-                cmd_app_refresh_jwt(cli.config.as_deref(), cli.context.as_deref(), app_name).await
-            }
             AppCommand::Import { app_name } => {
                 cmd_app_import(cli.config.as_deref(), cli.context.as_deref(), app_name)
             }

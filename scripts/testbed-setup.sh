@@ -68,16 +68,16 @@ OPERATOR_ADDRESS="$(echo "$operator_json" | jq -r '.address')"
 echo "  account_id: $OPERATOR_ACCOUNT_ID"
 echo "  address:    $OPERATOR_ADDRESS"
 
-# --- Sign admin JWT ---
+# --- Issue admin key for internal app ---
 INTERNAL_APP_ID="00000000-0000-0000-0000-000000000000"
-echo "Signing admin JWT for internal app ($INTERNAL_APP_ID)..."
-ADMIN_JWT="$(./target/debug/oysterd app jwt "$INTERNAL_APP_ID")"
-echo "  $ADMIN_JWT"
+echo "Issuing admin key for internal app ($INTERNAL_APP_ID)..."
+ADMIN_KEY="$(./target/debug/oysterd app issue-admin-key "$INTERNAL_APP_ID")"
+echo "  $ADMIN_KEY"
 
 # --- Create test user ---
 echo "Creating test user account..."
 user_json="$(
-  curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+  curl -sf -X POST -H "Authorization: Bearer $ADMIN_KEY" \
     "http://$OYSTER_BIND_ADDR/api/v1/accounts"
 )"
 USER_ACCOUNT_ID="$(echo "$user_json" | jq -r '.account_id')"
@@ -96,7 +96,7 @@ echo "  wallet: $USER_WALLET"
 # --- Create S3 access key ---
 echo "Creating S3 access key..."
 access_key_json="$(
-  curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+  curl -sf -X POST -H "Authorization: Bearer $ADMIN_KEY" \
     "http://$OYSTER_BIND_ADDR/api/v1/accounts/$USER_ACCOUNT_ID/access-keys"
 )"
 S3_ACCESS_KEY="$(echo "$access_key_json" | jq -r '.access_key_id')"
@@ -138,7 +138,7 @@ cat <<EOF
  Oyster Local Testbed Ready
 ========================================
  Oyster URL:       http://$OYSTER_BIND_ADDR
- Admin JWT:        $ADMIN_JWT
+ Admin Key:        $ADMIN_KEY
  Bearer Token:     $USER_API_SECRET
  User Wallet:      $USER_WALLET ($((USER_SUI_BALANCE / 1000000000)) SUI, $((USER_WAL_BALANCE / 1000000000)) WAL)
  Operator Wallet:  $OPERATOR_ADDRESS

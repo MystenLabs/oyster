@@ -70,7 +70,6 @@ service oyster {
   env {
     BIND_ADDR = "127.0.0.1:3000"
     DATABASE_URL = "sqlite:oyster.db?mode=rwc"
-    OYSTER_JWT_SECRET = "testbed-jwt-secret"
     PEARL_GRPC_URL = "http://127.0.0.1:50051"
     PEARL_SERVICE_SECRET = "testbed-secret"
     WALRUS_AGGREGATOR_URL = "http://127.0.0.1:31415"
@@ -97,7 +96,6 @@ job setup {
     PEARL_BIND_ADDR = "127.0.0.1:50051"
     PEARL_SERVICE_SECRET = "testbed-secret"
     OYSTER_BIND_ADDR = "127.0.0.1:3000"
-    OYSTER_JWT_SECRET = "testbed-jwt-secret"
     DATABASE_URL = "sqlite:oyster.db?mode=rwc"
     WALRUS_WORKING_DIR = args.working_dir
     SUI_RPC_URL = sui_rpc_url

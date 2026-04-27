@@ -15,8 +15,6 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-base64.workspace = true
-chrono.workspace = true
 clap = { workspace = true }
 reqwest = { workspace = true }
 rpassword = "7.4.0"

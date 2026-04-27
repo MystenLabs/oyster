@@ -264,7 +264,6 @@ main() {
     "cd '$REPO_ROOT' && \
      BIND_ADDR='$OYSTER_BIND_ADDR' \
      DATABASE_URL='sqlite:oyster.db?mode=rwc' \
-     OYSTER_JWT_SECRET='testbed-jwt-secret' \
      PEARL_GRPC_URL='http://$PEARL_BIND_ADDR' \
      PEARL_SERVICE_SECRET='$PEARL_SERVICE_SECRET' \
      SUI_RPC_URL='$SUI_RPC_URL' \
@@ -277,20 +276,19 @@ main() {
 
   wait_for_oyster
 
-  # --- Sign admin JWT ---
-  local ADMIN_JWT
-  ADMIN_JWT="$(
-    OYSTER_JWT_SECRET='testbed-jwt-secret' \
+  # --- Issue admin key ---
+  local ADMIN_KEY
+  ADMIN_KEY="$(
     DATABASE_URL='sqlite:oyster.db?mode=rwc' \
-    ./target/debug/oysterd app jwt "00000000-0000-0000-0000-000000000000"
+    ./target/debug/oysterd app issue-admin-key "00000000-0000-0000-0000-000000000000"
   )"
-  echo "  Admin JWT obtained (${#ADMIN_JWT} chars)"
+  echo "  Admin key obtained (${#ADMIN_KEY} chars)"
 
   # --- Create test user ---
   echo "Creating test user account..."
   local user_json
   user_json="$(
-    curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+    curl -sf -X POST -H "Authorization: Bearer $ADMIN_KEY" \
       -H "Content-Type: application/json" \
       "http://$OYSTER_BIND_ADDR/api/v1/accounts"
   )"
@@ -312,7 +310,7 @@ main() {
   echo "Creating S3 access key..."
   local access_key_json
   access_key_json="$(
-    curl -sf -X POST -H "Authorization: Bearer $ADMIN_JWT" \
+    curl -sf -X POST -H "Authorization: Bearer $ADMIN_KEY" \
       "http://$OYSTER_BIND_ADDR/api/v1/accounts/$USER_ACCOUNT_ID/access-keys"
   )"
   S3_ACCESS_KEY="$(echo "$access_key_json" | jq -r '.access_key_id')"

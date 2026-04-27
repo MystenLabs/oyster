@@ -3,8 +3,6 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use base64::Engine;
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, thiserror::Error)]
@@ -21,8 +19,6 @@ pub enum ConfigError {
     UnknownContext { name: String, known: String },
     #[error("no config file found; create ~/.config/oyster/client.yaml first")]
     NoConfigFile,
-    #[error("app '{0}' has no stored JWT in the active context")]
-    MissingAppJwt(String),
     #[error("failed to read config file {path}: {source}")]
     ReadError {
         path: PathBuf,
@@ -65,9 +61,7 @@ pub struct Context {
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct AppEntry {
-    pub jwt: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub jwt_expiry: Option<DateTime<Utc>>,
+    pub admin_key: String,
 }
 
 #[derive(Debug)]
@@ -212,7 +206,7 @@ pub fn resolve_url_only(
 
 /// Resolve a named context, erroring with `NoActiveContext` if none is
 /// selected. Used by subcommands that operate on a specific context (e.g.
-/// `app refresh-jwt`, `app import`).
+/// `app import`).
 pub fn require_context_name(
     cli_context: Option<&str>,
     file: &FileConfig,
@@ -247,23 +241,8 @@ pub fn save_config(path: &Path, config: &FileConfig) -> Result<(), ConfigError> 
     Ok(())
 }
 
-/// Decode the `exp` claim from a JWT without verifying the signature.
-/// Returns `None` on any parse error — callers treat decode failure as
-/// "no known expiry".
-pub fn decode_exp(jwt: &str) -> Option<DateTime<Utc>> {
-    let payload = jwt.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let v: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
-    let exp = v.get("exp")?.as_i64()?;
-    DateTime::from_timestamp(exp, 0)
-}
-
 #[cfg(test)]
 mod tests {
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-
     use super::*;
 
     fn sample_config() -> FileConfig {
@@ -273,17 +252,15 @@ mod tests {
             apps: BTreeMap::new(),
         };
         testnet.apps.insert(
-            "app-with-exp".to_string(),
+            "app-one".to_string(),
             AppEntry {
-                jwt: "jwt-1".to_string(),
-                jwt_expiry: Some(DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap()),
+                admin_key: "admin-key-1".to_string(),
             },
         );
         testnet.apps.insert(
-            "app-no-exp".to_string(),
+            "app-two".to_string(),
             AppEntry {
-                jwt: "jwt-2".to_string(),
-                jwt_expiry: None,
+                admin_key: "admin-key-2".to_string(),
             },
         );
 
@@ -371,17 +348,11 @@ mod tests {
     }
 
     #[test]
-    fn decode_exp_returns_some_for_valid_jwt() {
-        let header = URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#);
-        let payload = URL_SAFE_NO_PAD.encode(br#"{"exp":1700000000}"#);
-        let jwt = format!("{header}.{payload}.signature");
-        let exp = decode_exp(&jwt).unwrap();
-        assert_eq!(exp.timestamp(), 1_700_000_000);
-    }
-
-    #[test]
-    fn decode_exp_returns_none_for_garbage() {
-        assert!(decode_exp("not a jwt").is_none());
+    fn old_jwt_schema_yaml_fails_to_parse() {
+        let old = "active_context: testnet\n\
+                   contexts:\n  testnet:\n    apps:\n      legacy:\n        jwt: abc\n        jwt_expiry: 2030-01-01T00:00:00Z\n";
+        let result: Result<FileConfig, _> = serde_yaml::from_str(old);
+        assert!(result.is_err(), "old jwt schema must not parse anymore");
     }
 
     #[test]

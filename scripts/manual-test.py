@@ -9,9 +9,10 @@ multi-account isolation, and error cases.
 
 Usage:
     # Non-interactive (recommended): scrapes the bearer token from setup.log
-    # and bootstraps additional accounts via the JWT for isolation coverage.
-    python3 scripts/manual-test.py --jwt "$(./target/debug/oysterd app jwt \\
-        00000000-0000-0000-0000-000000000000)"
+    # and bootstraps additional accounts via an admin key for isolation
+    # coverage.
+    python3 scripts/manual-test.py --admin-key "$(./target/debug/oysterd app \\
+        issue-admin-key 00000000-0000-0000-0000-000000000000)"
 
     # Single-account mode with an explicit pre-funded bearer token.
     python3 scripts/manual-test.py --bearer-token $BEARER
@@ -495,13 +496,13 @@ def scenario_tags(base, auth, ctx):
         ok("GET /tags without auth -> 401")
 
     # Cross-account isolation: B can't read/write A's tags. Only if
-    # we have an admin JWT (so we can mint account B). Follows the
+    # we have an admin key (so we can mint account B). Follows the
     # pattern in scenario_isolation.
     admin = ctx.get("admin")
-    if not admin or not admin.get("jwt"):
-        info("no --jwt; skipping cross-account isolation on tags")
+    if not admin or not admin.get("admin_key"):
+        info("no --admin-key; skipping cross-account isolation on tags")
     else:
-        admin_auth = {"Authorization": f"Bearer {admin['jwt']}"}
+        admin_auth = {"Authorization": f"Bearer {admin['admin_key']}"}
         status, _, body = request(
             "POST", f"{base}/api/v1/accounts", body={}, headers=admin_auth
         )
@@ -619,18 +620,18 @@ def scenario_8(base, auth, ctx):
 
 
 def scenario_9(base, auth, ctx, admin):
-    """API Key Management (JWT-bootstrapped admin flow)."""
+    """API Key Management (admin-key-bootstrapped admin flow)."""
     heading("9", "API Key Management")
-    if not admin or not admin.get("jwt") or not admin.get("account_id"):
+    if not admin or not admin.get("admin_key") or not admin.get("account_id"):
         info(
-            "no --jwt / account_id bootstrap available — skipping. "
-            "Re-run with --jwt to exercise admin api-key create/revoke."
+            "no --admin-key / account_id bootstrap available — skipping. "
+            "Re-run with --admin-key to exercise admin api-key create/revoke."
         )
         return True
 
-    jwt = admin["jwt"]
+    admin_key = admin["admin_key"]
     account_id = admin["account_id"]
-    admin_auth = {"Authorization": f"Bearer {jwt}"}
+    admin_auth = {"Authorization": f"Bearer {admin_key}"}
 
     # Mint a fresh API key via the admin route.
     status, _, body = request(
@@ -678,15 +679,15 @@ def scenario_9(base, auth, ctx, admin):
 def scenario_isolation(base, auth_a, admin):
     """Multi-account isolation: account B can't read/write account A's bucket."""
     heading("isolation", "Multi-account Isolation")
-    if not admin or not admin.get("jwt"):
+    if not admin or not admin.get("admin_key"):
         info(
-            "no --jwt available — skipping isolation scenario. "
-            "Re-run with --jwt to bootstrap a second account from the admin JWT."
+            "no --admin-key available — skipping isolation scenario. "
+            "Re-run with --admin-key to bootstrap a second account from the admin key."
         )
         return True
 
-    jwt = admin["jwt"]
-    admin_auth = {"Authorization": f"Bearer {jwt}"}
+    admin_key = admin["admin_key"]
+    admin_auth = {"Authorization": f"Bearer {admin_key}"}
 
     # Bootstrap account B (fresh, unfunded — read-only role in this scenario).
     status, _, body = request(
@@ -873,9 +874,9 @@ def scrape_bearer_from_setup_log(path):
     return last
 
 
-def bootstrap_account(base, jwt):
+def bootstrap_account(base, admin_key):
     """Create a new account via the admin API. Returns (account_id, bearer_token)."""
-    admin_auth = {"Authorization": f"Bearer {jwt}"}
+    admin_auth = {"Authorization": f"Bearer {admin_key}"}
     status, _, body = request(
         "POST", f"{base}/api/v1/accounts", body={}, headers=admin_auth
     )
@@ -888,18 +889,18 @@ def bootstrap_account(base, jwt):
 
 
 def resolve_auth(args):
-    """Pick the primary bearer token and (optionally) a JWT bootstrap handle.
+    """Pick the primary bearer token and (optionally) an admin-key bootstrap handle.
 
     Returns (base_url, primary_auth_headers, admin_dict).
-    admin_dict = {'jwt': <str>, 'account_id': <str>} when JWT bootstrap is in
-    effect; None otherwise.
+    admin_dict = {'admin_key': <str>, 'account_id': <str>} when admin-key
+    bootstrap is in effect; None otherwise.
     """
     base = args.url.rstrip("/")
 
     if args.bearer_token:
         return base, {"Authorization": f"Bearer {args.bearer_token}"}, None
 
-    if args.jwt:
+    if args.admin_key:
         # Prefer the pre-funded testbed bearer for PUT-heavy scenarios, fall
         # back to a freshly-bootstrapped account if no setup.log is present
         # (reads will pass but PUTs will fail against an unfunded wallet).
@@ -907,7 +908,7 @@ def resolve_auth(args):
         if primary_token:
             print(f"  using pre-funded bearer scraped from {args.setup_log}")
         else:
-            account_id, primary_token = bootstrap_account(base, args.jwt)
+            account_id, primary_token = bootstrap_account(base, args.admin_key)
             print(
                 f"  no setup.log bearer found; bootstrapped account "
                 f"{account_id} (PUT scenarios may fail against unfunded wallet)"
@@ -916,11 +917,11 @@ def resolve_auth(args):
         # Also resolve an account_id we own for scenario 9. If we can bootstrap
         # a fresh account, use its ID (so api-key mint/revoke doesn't touch the
         # pre-funded testbed account).
-        admin_account_id, _ = bootstrap_account(base, args.jwt)
+        admin_account_id, _ = bootstrap_account(base, args.admin_key)
         return (
             base,
             {"Authorization": f"Bearer {primary_token}"},
-            {"jwt": args.jwt, "account_id": admin_account_id},
+            {"admin_key": args.admin_key, "account_id": admin_account_id},
         )
 
     # Interactive fallback.
@@ -939,11 +940,11 @@ def parse_args():
     p.add_argument("--url", default="http://127.0.0.1:3000", help="Oyster base URL")
     auth_group = p.add_mutually_exclusive_group()
     auth_group.add_argument(
-        "--bearer-token", help="API bearer token (skips JWT bootstrap)"
+        "--bearer-token", help="API bearer token (skips admin-key bootstrap)"
     )
     auth_group.add_argument(
-        "--jwt",
-        help="Admin JWT for bootstrapping accounts via POST /api/v1/accounts",
+        "--admin-key",
+        help="App admin key for bootstrapping accounts via POST /api/v1/accounts",
     )
     p.add_argument(
         "--setup-log",
@@ -982,7 +983,7 @@ def main():
         ("Error Cases", lambda: scenario_10(base, auth)),
     ]
 
-    non_interactive = args.non_interactive or args.bearer_token or args.jwt
+    non_interactive = args.non_interactive or args.bearer_token or args.admin_key
     results = []
     for i, (name, fn) in enumerate(scenarios):
         try:
