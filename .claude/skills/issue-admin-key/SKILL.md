@@ -1,5 +1,5 @@
 ---
-name: issue-jwt
+name: issue-admin-key
 description: Steps to issue a new admin key for an app
 allowed-tools: ""
 ---
@@ -9,10 +9,6 @@ Do NOT run any commands. Simply print the following instructions for the admin t
 ---
 
 # Issue an Admin Key for an App
-
-> Historical note: this skill was originally `/issue-jwt`; admin auth has
-> moved from short-lived JWTs to long-lived per-app **admin keys**. The
-> path stays so existing `/issue-jwt` invocations still work.
 
 ## Prerequisites
 
