@@ -160,6 +160,45 @@ pub struct BlobMetadata {
 pub struct CreateAccountRequest {
     /// Human-readable account name. Defaults to the account ID if omitted.
     pub name: Option<String>,
+    /// Optional note attached to the auto-issued initial API key.
+    /// Defaults to "api" when omitted.
+    pub note: Option<String>,
+}
+
+/// Request body for `POST /accounts/{id}/api-keys`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateApiKeyRequest {
+    /// Optional note attached to the new API key. Defaults to "api"
+    /// when omitted.
+    pub note: Option<String>,
+}
+
+/// One-row summary of an account, returned by `GET /accounts`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct AccountSummary {
+    /// Unique identifier.
+    pub id: AccountId,
+    /// Human-readable account name.
+    pub name: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// Number of active (non-revoked) API keys on this account.
+    pub active_api_key_count: i64,
+}
+
+/// Public API key metadata. Never includes the bearer secret.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ApiKeyMetadata {
+    /// Unique identifier.
+    pub id: String,
+    /// First 8 characters of the raw key.
+    pub prefix: String,
+    /// Human-readable note (defaults to "api").
+    pub note: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 revocation timestamp, if revoked.
+    pub revoked_at: Option<String>,
 }
 
 /// Request body for creating a new bucket.

@@ -103,8 +103,11 @@ pub fn build_router(state: AppState) -> Router {
 
     let (api_router, api) = OpenApiRouter::with_openapi(ApiDoc::openapi())
         // Admin (admin-key authenticated)
-        .routes(routes!(admin::create_account))
-        .routes(routes!(admin::admin_create_api_key))
+        .routes(routes!(admin::create_account, admin::list_accounts))
+        .routes(routes!(
+            admin::admin_create_api_key,
+            admin::list_api_keys_for_account
+        ))
         .routes(routes!(admin::admin_revoke_api_key))
         .routes(routes!(
             admin::admin_create_access_key,

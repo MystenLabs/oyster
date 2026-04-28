@@ -212,7 +212,7 @@ async fn create_test_account(pool: &db::DbPool) -> (String, String) {
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
-    db::api_keys::create_api_key(pool, &account.id, &key_hash, &prefix, &raw_key)
+    db::api_keys::create_api_key(pool, &account.id, &key_hash, &prefix, &raw_key, "api")
         .await
         .unwrap();
     (account.id.to_string(), raw_key)
@@ -2473,6 +2473,328 @@ async fn admin_revoke_one_keeps_other_live() {
 
     // Cleanup variable use.
     let _ = key_b_id;
+}
+
+#[tokio::test]
+async fn admin_list_accounts_returns_summaries() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    // Account 1: default name, just the auto-issued initial API key.
+    let (account1_id, _api_key1) = create_admin_account(&app, &admin_key).await;
+
+    // Account 2: custom name + an extra API key (so 2 active keys).
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name": "two-keys"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account2_id = body["account_id"].as_str().unwrap().to_string();
+
+    let (status, _) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account2_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = json_response(
+        &app,
+        Request::get("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let summaries = body.as_array().unwrap();
+    assert_eq!(summaries.len(), 2);
+    // Look up by id rather than relying on created_at order — SQLite stores
+    // timestamps at second resolution so two accounts created back-to-back
+    // can tie on created_at.
+    let s1 = summaries
+        .iter()
+        .find(|s| s["id"].as_str() == Some(&account1_id))
+        .expect("account1 summary present");
+    let s2 = summaries
+        .iter()
+        .find(|s| s["id"].as_str() == Some(&account2_id))
+        .expect("account2 summary present");
+    assert_eq!(s1["active_api_key_count"].as_i64().unwrap(), 1);
+    assert_eq!(s2["name"].as_str().unwrap(), "two-keys");
+    assert_eq!(s2["active_api_key_count"].as_i64().unwrap(), 2);
+}
+
+#[tokio::test]
+async fn admin_list_accounts_unauthorized() {
+    let (app, _tmp, _pool) = test_app().await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::get("/api/v1/accounts")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_list_api_keys_returns_metadata() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    // Mint an extra key.
+    let (status, _) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        assert!(entry.get("id").and_then(|v| v.as_str()).is_some());
+        assert!(entry.get("prefix").and_then(|v| v.as_str()).is_some());
+        assert!(entry.get("note").and_then(|v| v.as_str()).is_some());
+        assert!(entry.get("created_at").and_then(|v| v.as_str()).is_some());
+        // Wire format must never expose the secret or hash.
+        assert!(entry.get("bearer_token").is_none());
+        assert!(entry.get("key_hash").is_none());
+    }
+}
+
+#[tokio::test]
+async fn admin_list_api_keys_foreign_account() {
+    let (app, _tmp, pool) = test_app().await;
+
+    let (_app_a_id, admin_key_a) = create_test_app_admin_key(&pool).await;
+
+    let app_b = db::apps::create_app(&pool, "list-app-b", "lb@example.com", None)
+        .await
+        .unwrap();
+    let raw_b = auth::generate_api_key();
+    let hash_b = auth::hash_api_key(&raw_b);
+    let prefix_b = auth::key_prefix(&raw_b);
+    db::app_admin_keys::create_admin_key(&pool, &app_b.id, &hash_b, &prefix_b, &raw_b)
+        .await
+        .unwrap();
+    let admin_key_b = raw_b;
+
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key_a).await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key_b}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn admin_list_api_keys_missing_account() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let bogus_id = AccountId::new();
+
+    let (status, _) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{bogus_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn admin_api_key_limit() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    // Account is auto-created with 1 key. Mint 2 more for a total of 3.
+    for _ in 0..2 {
+        let (status, _) = json_response(
+            &app,
+            Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+                .header("authorization", format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+    }
+
+    // 4th should be rejected with 409.
+    let (status, body) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(body["error"].as_str().unwrap().contains("limit"));
+}
+
+#[tokio::test]
+async fn admin_api_key_limit_excludes_revoked() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    // Saturate to the cap (1 from account creation + 2 here = 3).
+    let mut last_id = String::new();
+    for _ in 0..2 {
+        let (status, body) = json_response(
+            &app,
+            Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+                .header("authorization", format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        last_id = body["id"].as_str().unwrap().to_string();
+    }
+
+    // Revoke one — opens up a slot.
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/accounts/{account_id}/api-keys/{last_id}"))
+                .header("authorization", format!("Bearer {admin_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // Mint should now succeed with 201.
+    let (status, _) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn admin_create_account_with_note() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"note": "ci-key"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id = body["account_id"].as_str().unwrap().to_string();
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["note"].as_str().unwrap(), "ci-key");
+}
+
+#[tokio::test]
+async fn admin_create_api_key_with_note() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::post(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"note": "deploy"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    let notes: Vec<_> = entries
+        .iter()
+        .map(|e| e["note"].as_str().unwrap().to_string())
+        .collect();
+    assert!(notes.contains(&"deploy".to_string()));
+}
+
+#[tokio::test]
+async fn admin_default_note_is_api() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/accounts/{account_id}/api-keys"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let entries = body.as_array().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["note"].as_str().unwrap(), "api");
 }
 
 /// Unreachable blob-store errors (connect/timeout to the Walrus aggregator)

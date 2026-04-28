@@ -17,15 +17,21 @@ use crate::{
     models::{
         AccessKey,
         AccessKeyWithSecret,
+        AccountSummary,
+        ApiKeyMetadata,
         ApiKeyWithBearerToken,
         CreateAccountRequest,
         CreateAccountResponse,
+        CreateApiKeyRequest,
         ErrorResponse,
     },
 };
 
 /// Maximum number of active access keys per account.
 const MAX_ACCESS_KEYS: i64 = 3;
+
+/// Maximum number of active API keys per account.
+const MAX_API_KEYS_PER_ACCOUNT: i64 = 3;
 
 /// Fetch an account and verify it belongs to the authenticated app.
 async fn verify_account_ownership(
@@ -61,7 +67,9 @@ pub async fn create_account(
     auth: AuthenticatedApp,
     body: Option<Json<CreateAccountRequest>>,
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
-    let name = body.and_then(|b| b.0.name);
+    let body = body.map(|b| b.0);
+    let name = body.as_ref().and_then(|b| b.name.clone());
+    let note = body.and_then(|b| b.note).unwrap_or_else(|| "api".into());
     let account = db::accounts::create_account(&state.db, &auth.app_id, name.as_deref()).await?;
 
     let raw_key = auth::generate_api_key();
@@ -69,7 +77,8 @@ pub async fn create_account(
     let prefix = auth::key_prefix(&raw_key);
 
     let api_key =
-        db::api_keys::create_api_key(&state.db, &account.id, &key_hash, &prefix, &raw_key).await?;
+        db::api_keys::create_api_key(&state.db, &account.id, &key_hash, &prefix, &raw_key, &note)
+            .await?;
 
     Ok((
         StatusCode::CREATED,
@@ -86,11 +95,13 @@ pub async fn create_account(
     tag = "Admin",
     security(("bearer" = [])),
     params(("account_id" = AccountId, Path, description = "Account ID")),
+    request_body(content = CreateApiKeyRequest, content_type = "application/json"),
     responses(
         (status = 201, description = "API key created", body = ApiKeyWithBearerToken),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Account not found", body = ErrorResponse),
+        (status = 409, description = "API key limit reached", body = ErrorResponse),
     ),
 )]
 /// Create a new API key for an account owned by the authenticated app.
@@ -98,17 +109,71 @@ pub async fn admin_create_api_key(
     State(state): State<AppState>,
     auth: AuthenticatedApp,
     Path(account_id): Path<AccountId>,
+    body: Option<Json<CreateApiKeyRequest>>,
 ) -> Result<(StatusCode, Json<ApiKeyWithBearerToken>), AppError> {
     verify_account_ownership(&state.db, &account_id, &auth.app_id).await?;
 
+    let count = db::api_keys::count_active_api_keys(&state.db, &account_id).await?;
+    if count >= MAX_API_KEYS_PER_ACCOUNT {
+        return Err(AppError::Conflict(format!(
+            "api key limit reached ({MAX_API_KEYS_PER_ACCOUNT})"
+        )));
+    }
+
+    let note = body.and_then(|b| b.0.note).unwrap_or_else(|| "api".into());
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
 
     let api_key =
-        db::api_keys::create_api_key(&state.db, &account_id, &key_hash, &prefix, &raw_key).await?;
+        db::api_keys::create_api_key(&state.db, &account_id, &key_hash, &prefix, &raw_key, &note)
+            .await?;
 
     Ok((StatusCode::CREATED, Json(api_key)))
+}
+
+#[utoipa::path(
+    get,
+    path = "/accounts",
+    tag = "Admin",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Accounts owned by the authenticated app", body = Vec<AccountSummary>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// List accounts owned by the authenticated app, with active API key counts.
+pub async fn list_accounts(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+) -> Result<Json<Vec<AccountSummary>>, AppError> {
+    let summaries = db::accounts::list_account_summaries_by_app(&state.db, &auth.app_id).await?;
+    Ok(Json(summaries))
+}
+
+#[utoipa::path(
+    get,
+    path = "/accounts/{account_id}/api-keys",
+    tag = "Admin",
+    security(("bearer" = [])),
+    params(("account_id" = AccountId, Path, description = "Account ID")),
+    responses(
+        (status = 200, description = "API keys for the account", body = Vec<ApiKeyMetadata>),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Account not found", body = ErrorResponse),
+    ),
+)]
+/// List API key metadata for an account owned by the authenticated app.
+/// Never returns the bearer secret.
+pub async fn list_api_keys_for_account(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+    Path(account_id): Path<AccountId>,
+) -> Result<Json<Vec<ApiKeyMetadata>>, AppError> {
+    verify_account_ownership(&state.db, &account_id, &auth.app_id).await?;
+    let keys = db::api_keys::list_api_keys_by_account(&state.db, &account_id).await?;
+    Ok(Json(keys))
 }
 
 #[utoipa::path(

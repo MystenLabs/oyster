@@ -1,6 +1,10 @@
 use sqlx::Row;
 
-use crate::{AccountId, AppId, models::Account};
+use crate::{
+    AccountId,
+    AppId,
+    models::{Account, AccountSummary},
+};
 
 /// Minimal account-level pool state needed by the extension task to schedule
 /// an `extend_storage_pool` PTB.
@@ -203,6 +207,37 @@ pub async fn list_accounts_with_pools_expiring_before(
             pool_end_epoch: r.get("pool_end_epoch"),
             pool_reserved_encoded_bytes: r.get("pool_reserved_encoded_bytes"),
             webhook_url: r.get("webhook_url"),
+        })
+        .collect())
+}
+
+/// List one-row summaries of all accounts belonging to `app_id`, including
+/// the count of active (non-revoked) API keys per account. The count is
+/// computed in a single LEFT JOIN + GROUP BY to avoid N+1 round-trips.
+pub async fn list_account_summaries_by_app(
+    pool: &super::DbPool,
+    app_id: &AppId,
+) -> Result<Vec<AccountSummary>, sqlx::Error> {
+    let rows = sqlx::query(&super::sql(
+        "SELECT acc.id, acc.name, acc.created_at, \
+                CAST(COALESCE(SUM(CASE WHEN ak.id IS NOT NULL AND ak.revoked_at IS NULL THEN 1 ELSE 0 END), 0) AS BIGINT) AS active_count \
+         FROM accounts acc \
+         LEFT JOIN api_keys ak ON ak.account_id = acc.id \
+         WHERE acc.app_id = ? \
+         GROUP BY acc.id, acc.name, acc.created_at \
+         ORDER BY acc.created_at",
+    ))
+    .bind(app_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|r| AccountSummary {
+            id: r.get("id"),
+            name: r.get("name"),
+            created_at: r.get("created_at"),
+            active_api_key_count: r.get::<i64, _>("active_count"),
         })
         .collect())
 }
@@ -466,5 +501,87 @@ mod tests {
         assert_eq!(state.end_epoch, 99);
         assert_eq!(state.reserved_encoded_bytes, 1_000);
         assert_eq!(state.used_encoded_bytes, 400);
+    }
+
+    async fn mint_key(pool: &super::super::DbPool, account_id: &AccountId, note: &str) -> String {
+        let raw = crate::auth::generate_api_key();
+        let hash = crate::auth::hash_api_key(&raw);
+        let prefix = crate::auth::key_prefix(&raw);
+        let k = crate::db::api_keys::create_api_key(pool, account_id, &hash, &prefix, &raw, note)
+            .await
+            .unwrap();
+        k.id
+    }
+
+    #[tokio::test]
+    async fn list_account_summaries_by_app_returns_zero_count_for_no_keys() {
+        let pool = test_pool().await;
+        let acc = create_account(&pool, &AppId::INTERNAL, Some("alpha"))
+            .await
+            .unwrap();
+
+        let summaries = list_account_summaries_by_app(&pool, &AppId::INTERNAL)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, acc.id);
+        assert_eq!(summaries[0].name, "alpha");
+        assert_eq!(summaries[0].active_api_key_count, 0);
+    }
+
+    #[tokio::test]
+    async fn list_account_summaries_by_app_counts_active_keys() {
+        let pool = test_pool().await;
+        let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        mint_key(&pool, &acc.id, "api").await;
+        mint_key(&pool, &acc.id, "api").await;
+
+        let summaries = list_account_summaries_by_app(&pool, &AppId::INTERNAL)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].active_api_key_count, 2);
+    }
+
+    #[tokio::test]
+    async fn list_account_summaries_by_app_excludes_revoked_keys() {
+        let pool = test_pool().await;
+        let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let id1 = mint_key(&pool, &acc.id, "api").await;
+        mint_key(&pool, &acc.id, "api").await;
+
+        crate::db::api_keys::revoke_api_key(&pool, &id1, &acc.id)
+            .await
+            .unwrap();
+
+        let summaries = list_account_summaries_by_app(&pool, &AppId::INTERNAL)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].active_api_key_count, 1);
+    }
+
+    #[tokio::test]
+    async fn list_account_summaries_by_app_filters_by_app_id() {
+        let pool = test_pool().await;
+        let app_a = crate::db::apps::create_app(&pool, "app-a", "a@example.com", None)
+            .await
+            .unwrap();
+        let app_b = crate::db::apps::create_app(&pool, "app-b", "b@example.com", None)
+            .await
+            .unwrap();
+        let acc_a = create_account(&pool, &app_a.id, Some("for-a"))
+            .await
+            .unwrap();
+        let _acc_b = create_account(&pool, &app_b.id, Some("for-b"))
+            .await
+            .unwrap();
+
+        let summaries = list_account_summaries_by_app(&pool, &app_a.id)
+            .await
+            .unwrap();
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, acc_a.id);
+        assert_eq!(summaries[0].name, "for-a");
     }
 }
