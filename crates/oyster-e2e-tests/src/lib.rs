@@ -21,7 +21,11 @@ static E2E_LOCK: Mutex<()> = Mutex::new(());
 /// A global mutex ([`E2E_LOCK`]) serialises execution so parallel test threads
 /// don't race on the shared Sui cluster.
 pub fn run_e2e<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
-    let _guard = E2E_LOCK.lock().expect("e2e lock poisoned");
+    // The lock guards no shared state — it only serialises harness builds.
+    // Recover from poison so a panic in one test (e.g., transient
+    // `git ls-remote` failure inside `E2eTestSetupBuilder::build`) does not
+    // cascade-fail every subsequent test with `PoisonError`.
+    let _guard = E2E_LOCK.lock().unwrap_or_else(|p| p.into_inner());
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .thread_stack_size(32 * 1024 * 1024)
