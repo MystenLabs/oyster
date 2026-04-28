@@ -15,10 +15,10 @@ async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusC
     (status, body)
 }
 
-/// Helper: create a test account via the admin (JWT) endpoint.
-async fn create_test_account_via_admin(app: &Router, jwt: &str) -> (String, String) {
+/// Helper: create a test account via the admin endpoint.
+async fn create_test_account_via_admin(app: &Router, admin_key: &str) -> (String, String) {
     let req = Request::post("/api/v1/accounts")
-        .header("authorization", format!("Bearer {jwt}"))
+        .header("authorization", format!("Bearer {admin_key}"))
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -47,9 +47,9 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
 }
 
 /// Helper: create an S3 access key for the given account via admin route.
-async fn create_access_key(app: &Router, jwt: &str, account_id: &str) -> (String, String) {
+async fn create_access_key(app: &Router, admin_key: &str, account_id: &str) -> (String, String) {
     let req = Request::post(format!("/api/v1/accounts/{account_id}/access-keys"))
-        .header("authorization", format!("Bearer {jwt}"))
+        .header("authorization", format!("Bearer {admin_key}"))
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -83,11 +83,12 @@ fn s3_e2e_full_lifecycle() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        // Create account + access key via admin JWT.
-        let (_app_id, jwt) = harness.create_app_admin_key("s3-e2e-lifecycle-app").await;
-        let (account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+        // Create account + access key via admin key.
+        let (_app_id, admin_key) = harness.create_app_admin_key("s3-e2e-lifecycle-app").await;
+        let (account_id, api_key) = create_test_account_via_admin(app, &admin_key).await;
         fund_test_wallet(&harness, app, &api_key).await;
-        let (access_key_id, secret_access_key) = create_access_key(app, &jwt, &account_id).await;
+        let (access_key_id, secret_access_key) =
+            create_access_key(app, &admin_key, &account_id).await;
 
         // Start S3 server and build client.
         let s3_url = harness.serve_on_random_port().await;
@@ -205,10 +206,11 @@ fn s3_e2e_list_with_prefix_and_delimiter() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_admin_key("s3-e2e-prefix-app").await;
-        let (account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let (_app_id, admin_key) = harness.create_app_admin_key("s3-e2e-prefix-app").await;
+        let (account_id, api_key) = create_test_account_via_admin(app, &admin_key).await;
         fund_test_wallet(&harness, app, &api_key).await;
-        let (access_key_id, secret_access_key) = create_access_key(app, &jwt, &account_id).await;
+        let (access_key_id, secret_access_key) =
+            create_access_key(app, &admin_key, &account_id).await;
 
         let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
@@ -279,10 +281,11 @@ fn s3_e2e_overwrite_object() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_admin_key("s3-e2e-overwrite-app").await;
-        let (account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let (_app_id, admin_key) = harness.create_app_admin_key("s3-e2e-overwrite-app").await;
+        let (account_id, api_key) = create_test_account_via_admin(app, &admin_key).await;
         fund_test_wallet(&harness, app, &api_key).await;
-        let (access_key_id, secret_access_key) = create_access_key(app, &jwt, &account_id).await;
+        let (access_key_id, secret_access_key) =
+            create_access_key(app, &admin_key, &account_id).await;
 
         let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
@@ -342,9 +345,10 @@ fn s3_reserved_bucket_names_rejected() {
 
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
-        let (_app_id, jwt) = harness.create_app_admin_key("s3-e2e-reserved-app").await;
-        let (account_id, _api_key) = create_test_account_via_admin(app, &jwt).await;
-        let (access_key_id, secret_access_key) = create_access_key(app, &jwt, &account_id).await;
+        let (_app_id, admin_key) = harness.create_app_admin_key("s3-e2e-reserved-app").await;
+        let (account_id, _api_key) = create_test_account_via_admin(app, &admin_key).await;
+        let (access_key_id, secret_access_key) =
+            create_access_key(app, &admin_key, &account_id).await;
         let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);
 
@@ -377,9 +381,10 @@ fn s3_e2e_error_cases() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        let (_app_id, jwt) = harness.create_app_admin_key("s3-e2e-error-app").await;
-        let (account_id, _api_key) = create_test_account_via_admin(app, &jwt).await;
-        let (access_key_id, secret_access_key) = create_access_key(app, &jwt, &account_id).await;
+        let (_app_id, admin_key) = harness.create_app_admin_key("s3-e2e-error-app").await;
+        let (account_id, _api_key) = create_test_account_via_admin(app, &admin_key).await;
+        let (access_key_id, secret_access_key) =
+            create_access_key(app, &admin_key, &account_id).await;
 
         let s3_url = harness.serve_on_random_port().await;
         let s3 = build_s3_client(&s3_url, &access_key_id, &secret_access_key);

@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.0] - 2026-04-28
+
+### Breaking Changes
+- Admin authentication migrated from short-lived JWTs to long-lived per-app **admin keys**. Both tiers continue to use `Authorization: Bearer <hex>` on the wire; the route prefix selects which credential table the bearer is looked up in (`api_keys` for data routes, `app_admin_keys` for admin routes). Existing JWTs are rejected immediately on upgrade
+- Removed: `OYSTER_JWT_SECRET` env var, `--oyster-jwt-secret-file` CLI flag, `POST /api/v1/apps/token-refresh`, `oysterd app jwt`, `oysterd app revoke-jwt`, `apps.allow_refresh_jwt` column, `jwt_blacklist` table
+- Added: `oysterd app issue-admin-key <APP_ID>`, `oysterd app list-admin-keys <APP_ID>`, `oysterd app revoke-admin-key <KEY_ID>`. `oysterd app new` auto-issues a first admin key by default; pass `--no-key` to opt out
+- `oyster-cli` `client.yaml` schema: `apps.<name>: { admin_key }` replaces `apps.<name>: { jwt, jwt_expiry }`. Old configs fail to parse under `deny_unknown_fields`. `oyster app refresh-jwt` removed (rotation is operator-driven via issue + revoke); `oyster app import` now prompts for an admin key
+- Migration `014_app_admin_keys.sql` (sqlite + postgres): creates `app_admin_keys`, drops `jwt_blacklist`, drops `apps.allow_refresh_jwt`. Operators must issue at least one admin key per app before its admin routes become reachable; the migration does not auto-issue
+- Supported SQLite floor raised to ≥ 3.35 (for `ALTER TABLE … DROP COLUMN`)
+
+### Added
+- AWS-style two-key rotation for admin auth: multiple admin keys per app are supported with no cap. Issue a new key, switch callers, then revoke the old key; revocation is immediate
+- E2E harness lock-poison recovery: `crates/oyster-e2e-tests/src/lib.rs::run_e2e` now recovers from `PoisonError` when acquiring `E2E_LOCK`, so a transient panic in one test (e.g., walrus's `git ls-remote` failure during Move-dep fetch) no longer cascade-fails every subsequent test in the suite
+
+### Removed
+- `crates/oyster/src/app_auth.rs` (entire file: `AppClaims`, `sign_jwt`, `verify_jwt`, `verify_jwt_with_grace`, `JWT_GRACE_SECS`, `install_crypto_provider`)
+- `crates/oyster/src/db/jwt_blacklist.rs`
+- `crates/oyster/src/routes/admin.rs::token_refresh` handler and OpenAPI wiring
+- `models::TokenRefreshResponse`, `models::App.allow_refresh_jwt` field, `decode_allow_refresh_jwt` helper
+- `Config::jwt_secret`, `SecretOverrides::oyster_jwt_secret`, `Cli::oyster_jwt_secret_file`
+- `jsonwebtoken` workspace dep (still pulled in transitively via walrus-sdk / walrus-service)
+- `base64` and `chrono` direct deps from `oyster-cli` (`decode_exp` and the JWT `exp` decoder are gone)
+
 ## [0.4.0] - 2026-04-24
 
 ### Breaking Changes

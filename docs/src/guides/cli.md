@@ -29,10 +29,9 @@ contexts:
     api_key: "your-api-key-here"
     apps:
       my-app-1:
-        jwt: "<app-jwt>"
-        jwt_expiry: 2026-04-22T18:00:00Z
+        admin_key: "<64-char hex admin key>"
       my-app-2:
-        jwt: "<app-jwt>"
+        admin_key: "<64-char hex admin key>"
   devnet:
     url: "http://localhost:3000/api/v1"
     api_key: "dev-key"
@@ -179,42 +178,46 @@ oyster info
 
 Shows which config file is loaded, the server URL, and the API key prefix.
 
-## App JWT Management
+## App Admin-Key Management
 
-Apps — first-class principals that scope uploads and rotate JWTs
-independently of end-user API keys — need a way to store and refresh their
-JWT without leaking the token through shell history. The CLI persists app
-JWTs under `contexts.<ctx>.apps.<app_name>` and offers two subcommands for
-managing them.
+Apps — first-class principals that authenticate admin app-management calls
+(creating accounts, issuing API keys / S3 access keys) independently of
+end-user API keys — need a way to store the per-app admin key without
+leaking it through shell history. The CLI persists admin keys under
+`contexts.<ctx>.apps.<app_name>.admin_key`.
 
-### Import a JWT
+### Import an Admin Key
 
 ```bash
 oyster app import my-app
 ```
 
-Prompts for the JWT without echoing it (when stdin is a tty), then writes
-it to the active context's `apps.my-app` entry. The JWT's `exp` claim is
-decoded (no signature check) to populate `jwt_expiry`. If stdin is a pipe,
-the JWT is read as a line instead — useful for scripts.
+Prompts for the admin key without echoing it (when stdin is a tty), then
+writes it to the active context's `apps.my-app` entry. If stdin is a pipe,
+the key is read as a line instead — useful for scripts. Requires that
+`client.yaml` already exists; the CLI does not auto-create it.
 
-Requires that `client.yaml` exists; the CLI does not auto-create it.
+### Rotation
 
-### Rotate a Stored JWT
+Admin keys do not expire. Rotation is operator-driven, AWS-style two-key
+overlap:
 
 ```bash
-oyster app refresh-jwt my-app
+# operator
+oysterd app issue-admin-key <APP_ID>
+# prints: <new admin_key>           (to stdout)
+# prints: <new key id>              (to stderr — needed later to revoke)
+
+# user — replace the local entry with the new key
+oyster app import my-app
+
+# operator — after confirming nothing still uses the old key
+oysterd app revoke-admin-key <OLD_KEY_ID>
 ```
 
-Calls the server's `POST /apps/token-refresh` endpoint using the stored
-JWT as the bearer token, writes the new JWT and expiry back to
-`apps.my-app`, and prints the new JWT on stdout (so it can be piped).
-Status messages go to stderr.
-
-- `401` → the stored JWT was rejected. Ask an admin to re-issue a JWT via
-  `oysterd app jwt <APP_ID>` and re-run `app import`.
-- `403` → the server has `allow_refresh_jwt = false` for this app; the
-  admin must re-issue a JWT instead.
+`oysterd app list-admin-keys <APP_ID>` shows all keys (active and
+revoked) so an operator can confirm what is live. Multiple admin keys per
+app are supported with no cap.
 
 ## JSON Output
 

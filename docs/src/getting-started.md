@@ -11,26 +11,30 @@ you'll have created a bucket, uploaded a blob, and downloaded it back.
 
 ## Obtaining Credentials
 
-Oyster uses a two-tier auth model: **operators** manage accounts via JWT,
-and **end users** authenticate data operations with API keys.
+Oyster uses a two-tier auth model: **operators** manage accounts with
+long-lived per-app **admin keys**, and **end users** authenticate data
+operations with API keys. Both tiers use `Authorization: Bearer <hex>` —
+the route prefix selects which credential table is consulted.
 
 ### For Operators
 
-The server operator creates an app, generates a JWT, and provisions
-accounts. See the [Admin API docs](json-api/admin.md) for full details.
+The server operator creates an app, gets back a first admin key, and
+provisions accounts. See the [Admin API docs](json-api/admin.md) for full
+details.
 
 ```bash
-# 1. Create an app (server operator runs this once)
+# 1. Create an app (server operator runs this once). `app new` auto-issues
+#    a first admin key by default; pass --no-key to opt out.
 oysterd app new --name my-app --contact_email admin@example.com
-# 550e8400-e29b-41d4-a716-446655440000
+# Prints: 550e8400-e29b-41d4-a716-446655440000   <- app id
+# Prints: <64-char hex admin key>                 <- save this
 
-# 2. Generate a JWT for the app (valid 24 hours)
-export JWT=$(oysterd app jwt 550e8400-e29b-41d4-a716-446655440000)
+export ADMIN_KEY="<64-char hex admin key from above>"
 
-# 3. Create an account using the JWT
+# 2. Create an account using the admin key
 export OYSTER_URL="http://localhost:3000"
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app-user"}' \
   "$OYSTER_URL/api/v1/accounts" | jq
@@ -178,12 +182,12 @@ Returns HTTP 204 (no content) on success.
 ## Create Additional API Keys (Operator)
 
 Additional API keys are created by the operator via the Admin API using
-JWT authentication. This requires the `$JWT` and `$ACCOUNT_ID` variables
-from the [Obtaining Credentials](#obtaining-credentials) section.
+admin-key authentication. This requires the `$ADMIN_KEY` and `$ACCOUNT_ID`
+variables from the [Obtaining Credentials](#obtaining-credentials) section.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/api-keys" | jq
 ```
 
@@ -207,12 +211,12 @@ details including error handling and key revocation.
 
 To use the AWS CLI or any S3-compatible SDK, the operator creates S3 access
 keys via the [Admin API](json-api/admin.md#create-access-key). This
-requires the `$JWT` and `$ACCOUNT_ID` variables from the
+requires the `$ADMIN_KEY` and `$ACCOUNT_ID` variables from the
 [Obtaining Credentials](#obtaining-credentials) section.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/access-keys" | jq
 ```
 

@@ -10,8 +10,8 @@ You can have up to **3 active access keys** per account.
 ## Managing Access Keys
 
 Access keys are provisioned through the [Admin API](admin.md#s3-access-keys).
-An app operator uses JWT authentication to create, list, and revoke keys
-for accounts they manage.
+An app operator uses admin-key authentication to create, list, and revoke
+keys for accounts they manage.
 
 | Operation | Endpoint | Description |
 |-----------|----------|-------------|

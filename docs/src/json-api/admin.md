@@ -1,8 +1,9 @@
 # Admin API
 
 The Admin API lets app operators manage accounts, API keys, and S3 access
-keys. All admin endpoints require JWT authentication (see
-[Authentication](authentication.md)).
+keys. All admin endpoints require **admin-key** authentication —
+long-lived per-app Bearer tokens issued via `oysterd app issue-admin-key`
+(see [Authentication](authentication.md)).
 
 An app can only manage accounts it created. Attempting to access another
 app's accounts returns **403 Forbidden**.
@@ -34,7 +35,7 @@ is generated automatically.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   -H "Content-Type: application/json" \
   -d '{"name": "my-app-user"}' \
   "$OYSTER_URL/api/v1/accounts" | jq
@@ -69,7 +70,7 @@ curl -s -X POST \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 
 ## API Keys
 
@@ -91,7 +92,7 @@ Creates a new API key for an existing account.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/api-keys" | jq
 ```
 
@@ -117,7 +118,7 @@ curl -s -X POST \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Account not found |
 
@@ -140,7 +141,7 @@ Revokes an API key. The key immediately stops working for authentication.
 
 ```bash
 curl -s -X DELETE \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/api-keys/b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e"
 ```
 
@@ -150,7 +151,7 @@ curl -s -X DELETE \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | API key not found or already revoked |
 
@@ -178,7 +179,7 @@ save it immediately. Each account can have up to **3 active access keys**.
 
 ```bash
 curl -s -X POST \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/access-keys" | jq
 ```
 
@@ -202,7 +203,7 @@ curl -s -X POST \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Account not found |
 | `409` | Access key limit reached (max 3 active keys) |
@@ -226,7 +227,7 @@ Secrets are **never** included in list responses.
 
 ```bash
 curl -s \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/access-keys" | jq
 ```
 
@@ -257,7 +258,7 @@ curl -s \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Account not found |
 
@@ -282,7 +283,7 @@ immediately stop working. Revoked keys no longer count toward the
 
 ```bash
 curl -s -X DELETE \
-  -H "Authorization: Bearer $JWT" \
+  -H "Authorization: Bearer $ADMIN_KEY" \
   "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/access-keys/OYAK1234567890ABCDEF"
 ```
 
@@ -292,56 +293,95 @@ curl -s -X DELETE \
 
 | Status | Condition |
 |--------|-----------|
-| `401` | Missing or invalid JWT |
+| `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Access key not found or already revoked |
 
 ## Server Commands
 
-The `oysterd app` subcommands let server operators manage apps and JWTs
-from the command line.
+The `oysterd app` subcommands let server operators manage apps and admin
+keys from the command line.
 
 ### Create App
 
 ```bash
-oysterd app new --name <NAME> --contact_email <EMAIL> [--webhook_url <URL>]
+oysterd app new --name <NAME> --contact_email <EMAIL> [--webhook_url <URL>] [--no-key]
 ```
 
-Creates a new app and prints its UUID.
+Creates a new app, prints its UUID, and (by default) auto-issues a first
+admin key alongside.
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--name` | yes | Human-readable app name |
 | `--contact_email` | yes | Contact email for the app owner |
 | `--webhook_url` | no | Webhook URL for extension failure notifications |
+| `--no-key` | no | Skip the auto-issued first admin key |
 
 **Example:**
 
 ```bash
 oysterd app new --name "my-app" --contact_email "admin@example.com"
 # 550e8400-e29b-41d4-a716-446655440000
+# 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-### Generate JWT
+### Issue Admin Key
 
 ```bash
-oysterd app jwt <app_id>
+oysterd app issue-admin-key <app_id>
 ```
 
-Generates a 24-hour JWT for the given app. Requires the
-`OYSTER_JWT_SECRET` environment variable.
+Generates a fresh admin key for the given app. Multiple admin keys per
+app are supported with no cap; use this for AWS-style two-key rotation.
+The raw key prints to stdout (a single line); the key id and 8-char
+prefix print to stderr.
 
 **Example:**
 
 ```bash
-oysterd app jwt 550e8400-e29b-41d4-a716-446655440000
-# eyJhbGciOiJIUzI1NiIs...
+oysterd app issue-admin-key 550e8400-e29b-41d4-a716-446655440000
+# stdout: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+# stderr: issued admin key id=<key_id> prefix=01234567 for app 550e8400-...
 ```
 
-The printed token can be used directly in the `Authorization` header:
+The printed key can be used directly in the `Authorization` header:
 
 ```bash
-curl -H "Authorization: Bearer $(oysterd app jwt $APP_ID)" ...
+curl -H "Authorization: Bearer $(oysterd app issue-admin-key $APP_ID)" ...
+```
+
+### List Admin Keys
+
+```bash
+oysterd app list-admin-keys <app_id>
+```
+
+Lists all admin keys for the given app in tab-separated format, including
+revoked ones (so an operator can confirm what is currently live).
+
+**Example output:**
+
+```
+ID	PREFIX	CREATED_AT	REVOKED_AT
+b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e	01234567	2026-04-15T10:30:00Z	-
+a1b2c3d4-e5f6-7890-abcd-ef0123456789	89abcdef	2026-03-01T08:00:00Z	2026-04-15T10:31:00Z
+```
+
+### Revoke Admin Key
+
+```bash
+oysterd app revoke-admin-key <key_id>
+```
+
+Marks an admin key as revoked. Subsequent requests using that key are
+rejected with `401`. Revocation is by `key_id` (globally unique), not by
+the raw key value.
+
+**Example:**
+
+```bash
+oysterd app revoke-admin-key b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e
 ```
 
 ### List Apps
@@ -357,19 +397,4 @@ Lists all registered apps in tab-separated format.
 ```
 ID	NAME	CONTACT_EMAIL
 550e8400-e29b-41d4-a716-446655440000	my-app	admin@example.com
-```
-
-### Revoke JWT
-
-```bash
-oysterd app revoke-jwt <jti>
-```
-
-Permanently blacklists a JWT by its token identifier (JTI). Any
-subsequent API requests using a token with this JTI will be rejected.
-
-**Example:**
-
-```bash
-oysterd app revoke-jwt f47ac10b-58cc-4372-a567-0e02b2c3d479
 ```

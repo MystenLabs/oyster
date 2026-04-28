@@ -86,17 +86,16 @@ API, and `oysterd extend` runs the blob extension background worker.
 
 ### API
 
-**Admin routes** (JWT-authenticated, for managing accounts and credentials):
+**Admin routes** (admin-key authenticated, for managing accounts and credentials):
 
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
-| `POST` | `/api/v1/accounts` | JWT | Create account |
-| `POST` | `/api/v1/accounts/{account_id}/api-keys` | JWT | Generate API key for account |
-| `DELETE` | `/api/v1/accounts/{account_id}/api-keys/{key_id}` | JWT | Revoke API key |
-| `POST` | `/api/v1/accounts/{account_id}/access-keys` | JWT | Create S3 access key |
-| `GET` | `/api/v1/accounts/{account_id}/access-keys` | JWT | List S3 access keys |
-| `DELETE` | `/api/v1/accounts/{account_id}/access-keys/{access_key_id}` | JWT | Revoke S3 access key |
-| `POST` | `/api/v1/apps/token-refresh` | JWT | Refresh a JWT token |
+| `POST` | `/api/v1/accounts` | Admin Key | Create account |
+| `POST` | `/api/v1/accounts/{account_id}/api-keys` | Admin Key | Generate API key for account |
+| `DELETE` | `/api/v1/accounts/{account_id}/api-keys/{key_id}` | Admin Key | Revoke API key |
+| `POST` | `/api/v1/accounts/{account_id}/access-keys` | Admin Key | Create S3 access key |
+| `GET` | `/api/v1/accounts/{account_id}/access-keys` | Admin Key | List S3 access keys |
+| `DELETE` | `/api/v1/accounts/{account_id}/access-keys/{access_key_id}` | Admin Key | Revoke S3 access key |
 
 **Data routes** (API key-authenticated):
 
@@ -122,7 +121,7 @@ API, and `oysterd extend` runs the blob extension background worker.
 | `GET` | `/ready` | No | Readiness probe (checks DB and Pearl connectivity) |
 | `GET` | `/metrics` | No | Prometheus metrics |
 
-Admin JWTs are issued via the `oysterd app` CLI commands (see below). Pagination is cursor-based
+Admin keys are issued via the `oysterd app` CLI commands (see below). Pagination is cursor-based
 -- pass `?limit=N&cursor=TOKEN` to paginate; the response includes `next_cursor` when more pages
 exist. Blob endpoints support `If-Match` / `If-None-Match` conditional headers for cache
 validation and safe concurrent writes.
@@ -202,12 +201,10 @@ files to `/run/secrets/`).
 | `POOL_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead of pool expiry to trigger an extension |
 | `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension worker cycle cadence |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
-| `OYSTER_JWT_SECRET` | -- | Secret for signing/verifying admin JWTs (**required**) |
 
 | CLI flag | Description |
 |----------|-------------|
 | `--pearl-service-secret-file PATH` | Read `PEARL_SERVICE_SECRET` from a file |
-| `--oyster-jwt-secret-file PATH` | Read `OYSTER_JWT_SECRET` from a file |
 
 ---
 
@@ -279,9 +276,9 @@ oyster wallet
 
 Configuration is read from `./client.yaml`, `$XDG_CONFIG_HOME/oyster/client.yaml`, or
 `~/.config/oyster/client.yaml`. The file holds a map of named **contexts** (each
-with its own `url`, `api_key`, and managed app JWTs); pick one with `--context
-<name>`, `OYSTER_CONTEXT`, or the file's `active_context` field. CLI flags
-(`--url`, `--api-key`) override the selected context. Pass `--json` for
+with its own `url`, `api_key`, and managed app admin keys); pick one with
+`--context <name>`, `OYSTER_CONTEXT`, or the file's `active_context` field. CLI
+flags (`--url`, `--api-key`) override the selected context. Pass `--json` for
 machine-readable output.
 
 ### Setting up the CLI from scratch
@@ -325,8 +322,9 @@ Notes on the schema:
 #### 2. (Optional) Add an `api_key` for data-plane calls
 
 `api_key` authenticates the per-account data routes (`buckets`, `blobs`,
-`wallet`, …). Skip this step if you only need to manage app JWTs. Otherwise,
-have an admin issue a key for your account and add it to the context:
+`wallet`, …). Skip this step if you only need to manage app admin keys.
+Otherwise, have an admin issue a key for your account and add it to the
+context:
 
 ```yaml
 contexts:
@@ -338,40 +336,43 @@ contexts:
 The value is the raw 64-char hex Bearer token returned by
 `POST /api/v1/accounts/{account_id}/api-keys`.
 
-#### 3. Get an app JWT from an operator
+#### 3. Get an admin key from an operator
 
-App JWTs are separate from `api_key` — they authenticate admin app-management
-calls (currently just `app refresh-jwt`). The first JWT for a given app must be
-issued by an Oyster operator with access to the target deployment. Ask them to
-run, against the **testnet** deployment:
+Admin keys are separate from `api_key` — they authenticate admin
+app-management calls (creating accounts, issuing API keys / S3 access keys).
+Each admin key is a long-lived 64-char hex Bearer token; rotation is
+operator-driven via issue-then-revoke. Ask an Oyster operator with access
+to the target deployment to run:
 
 ```bash
 # operator runs this and shares the output with you
-oysterd app jwt <app_id>   # 24-hour JWT
+oysterd app issue-admin-key <app_id>
+# prints: <64-char hex admin key>
 ```
 
-If your app doesn't exist yet, the operator first creates it:
+If your app doesn't exist yet, the operator creates it first — `oysterd app
+new` auto-issues a first admin key by default:
 
 ```bash
 oysterd app new --name my-app --contact-email me@example.com
 # prints: <app_id>
+# prints: <admin_key>     <- the first admin key for this app
 ```
 
-#### 4. Import the JWT into your config
+#### 4. Import the admin key into your config
 
 Pick a local nickname for the app — it's just a key under `apps:` in your
 config file, so use anything you'll remember (it does not have to match the
-server-side app name). Then paste the JWT at the prompt:
+server-side app name). Then paste the admin key at the prompt:
 
 ```bash
 oyster app import my-app
-# JWT for my-app:         <- prompt; characters are hidden when stdin is a tty
+# Admin key for my-app:    <- prompt; characters are hidden when stdin is a tty
 # imported my-app into context testnet
 ```
 
-The CLI decodes the JWT's `exp` claim, writes the entry into the active
-context, and replaces the config file atomically. Your `client.yaml` now
-looks like:
+The CLI writes the entry into the active context and replaces the config
+file atomically. Your `client.yaml` now looks like:
 
 ```yaml
 active_context: testnet
@@ -380,40 +381,37 @@ contexts:
     url: https://oyster.testnet.mystenlabs.com/api/v1
     apps:
       my-app:
-        jwt: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-        jwt_expiry: 2026-04-28T10:46:23Z
+        admin_key: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 ```
 
-`jwt_expiry` is informational — it's stored for visibility, not checked
-pre-flight, and never needs to be edited by hand.
-
-For non-interactive use (CI, scripts), pipe the JWT on stdin instead of
+For non-interactive use (CI, scripts), pipe the key on stdin instead of
 typing it:
 
 ```bash
-echo "$JWT" | oyster app import my-app
+echo "$ADMIN_KEY" | oyster app import my-app
 ```
 
-#### 5. Rotate the JWT before it expires
+#### 5. Rotate the admin key
 
-JWTs from `oysterd app jwt` are 24-hour tokens. To swap the stored JWT for a
-fresh one without going back to an operator, exchange it via the server's
-refresh endpoint:
+Admin keys are long-lived and do not expire — rotation is voluntary. The
+recommended pattern is AWS-style two-key overlap: issue a fresh key, swap
+it in, then revoke the old one once you're sure nothing is still using it.
 
 ```bash
-oyster app refresh-jwt my-app
-# refreshed my-app in context testnet, expires at 2026-04-29T10:46:23Z
-# eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...    <- new JWT also printed to stdout
+# operator (issues a new key alongside the old one)
+oysterd app issue-admin-key <app_id>
+# prints: <new admin_key>
+# prints: <new key id>     # to stderr — needed later to revoke
+
+# you (replace the local entry with the new key)
+oyster app import my-app
+
+# operator (after verifying no in-flight callers depend on the old key)
+oysterd app revoke-admin-key <OLD_KEY_ID>
 ```
 
-The CLI reads the old JWT from `apps.my-app.jwt`, posts it as a Bearer token
-to `POST /apps/token-refresh`, and writes the response back into the same
-entry with a refreshed `jwt_expiry`. Common errors:
-
-- **401** — the stored JWT is no longer accepted (expired or revoked). Ask an
-  admin to re-issue (`oysterd app jwt <APP_ID>`) and re-run `oyster app import`.
-- **403** — the app has `allow_refresh_jwt = false`. The operator must flip
-  that flag before rotation will work.
+`oysterd app list-admin-keys <app_id>` shows all issued keys (including
+revoked ones) so an operator can confirm what is live before revoking.
 
 #### 6. (Optional) Talk to multiple deployments
 
@@ -427,7 +425,7 @@ contexts:
     url: https://oyster.testnet.mystenlabs.com/api/v1
     apps:
       my-app:
-        jwt: ...
+        admin_key: ...
   devnet:
     url: https://oyster.devnet.mystenlabs.com/api/v1
 ```
@@ -471,25 +469,20 @@ cargo run -p pearl
 # Terminal 2: start Oyster
 PEARL_GRPC_URL=http://127.0.0.1:50051 \
 PEARL_SERVICE_SECRET=<shared-secret> \
-OYSTER_JWT_SECRET=<jwt-signing-secret> \
 cargo run -p oyster  # runs `oysterd serve` by default
 
-# Terminal 3: create an app, get a JWT, then use the admin API
-OYSTER_JWT_SECRET=<jwt-signing-secret> \
-  cargo run -p oyster -- app new --name dev --contact-email dev@example.com
+# Terminal 3: create an app (auto-issues a first admin key), then use the admin API
+cargo run -p oyster -- app new --name dev --contact-email dev@example.com
 # Prints: <app_id>
-
-OYSTER_JWT_SECRET=<jwt-signing-secret> \
-  cargo run -p oyster -- app jwt <app_id>
-# Prints: <jwt>
+# Prints: <admin_key>     <- first admin key, save it
 
 # Create an account and API key via the admin API
 curl -X POST http://localhost:3000/api/v1/accounts \
-  -H "Authorization: Bearer <jwt>"
+  -H "Authorization: Bearer <admin_key>"
 # Returns { "account_id": "...", ... }
 
 curl -X POST http://localhost:3000/api/v1/accounts/<account_id>/api-keys \
-  -H "Authorization: Bearer <jwt>"
+  -H "Authorization: Bearer <admin_key>"
 # Returns { "bearer_token": "...", ... }
 
 # Use the API key for data operations

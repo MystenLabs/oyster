@@ -18,10 +18,10 @@ async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusC
     (status, body)
 }
 
-/// Helper: create a test account via the admin (JWT) endpoint.
-async fn create_test_account_via_admin(app: &Router, jwt: &str) -> (String, String) {
+/// Helper: create a test account via the admin endpoint.
+async fn create_test_account_via_admin(app: &Router, admin_key: &str) -> (String, String) {
     let req = Request::post("/api/v1/accounts")
-        .header("authorization", format!("Bearer {jwt}"))
+        .header("authorization", format!("Bearer {admin_key}"))
         .body(Body::empty())
         .unwrap();
     let (status, body) = json_response(app, req).await;
@@ -85,10 +85,10 @@ fn cli_e2e_full_lifecycle() {
         let harness = OysterTestHarness::start().await;
         let app = &harness.router;
 
-        // Create account and fund wallet via admin JWT.
+        // Create account and fund wallet via admin key.
         eprintln!("[cli_e2e] creating test account...");
-        let (_app_id, jwt) = harness.create_app_admin_key("cli-e2e-app").await;
-        let (_account_id, api_key) = create_test_account_via_admin(app, &jwt).await;
+        let (_app_id, admin_key) = harness.create_app_admin_key("cli-e2e-app").await;
+        let (_account_id, api_key) = create_test_account_via_admin(app, &admin_key).await;
         eprintln!("[cli_e2e] funding test wallet...");
         fund_test_wallet(&harness, app, &api_key).await;
 

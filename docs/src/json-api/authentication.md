@@ -1,8 +1,9 @@
 # Authentication
 
-Oyster supports three authentication modes: **Bearer tokens** (API keys) for
-data operations, **JWTs** for admin operations, and **public access** for blob
-reads and infrastructure probes.
+Oyster uses **Bearer tokens** for authenticated routes plus **public access**
+for blob reads and infrastructure probes. There are two tiers of Bearer
+token, distinguished by which routes they unlock; both share the same
+`Authorization: Bearer <hex>` wire format.
 
 ## Authentication Modes at a Glance
 
@@ -10,13 +11,14 @@ reads and infrastructure probes.
 |---|---|---|
 | Bucket CRUD, blob write/list/delete, wallet | API Key | Data operations |
 | `GET .../blobs/{key}`, `GET /blobs/by-blob-id/...` | Public | Blob reads |
-| `POST /accounts`, key management under `/accounts/{id}/...` | JWT | Admin operations |
-| `POST /apps/token-refresh` | JWT (with grace) | Token refresh |
+| `POST /accounts`, key management under `/accounts/{id}/...` | Admin Key | Admin operations |
 | `/health`, `/ready`, `/metrics`, `/api/docs` | Public | Infrastructure |
 
-> **How Oyster tells them apart:** JWTs contain exactly two `.` separators;
-> hex-encoded API keys contain none. The server checks this before routing to
-> the appropriate auth handler.
+> **How Oyster tells them apart:** the URL prefix selects the credential
+> table. Admin routes look up the Bearer token in the `app_admin_keys`
+> table (one app per key); data routes look it up in the `api_keys` table
+> (one account per key). Both tokens are 64-char hex; the hash check
+> happens on whichever table the route is statically wired to.
 
 ## Bearer Token (API Key) Authentication
 
@@ -52,50 +54,59 @@ creation time — a lost key cannot be recovered.
 |---|---|
 | `401 Unauthorized` | Missing, malformed, or invalid API key |
 
-## JWT Authentication (for Apps)
+## Admin-Key Authentication (for Apps)
 
-Admin endpoints require a JWT issued by the server operator:
+Admin endpoints require a per-app **admin key** issued by the server
+operator:
 
 ```
-Authorization: Bearer <jwt>
+Authorization: Bearer <admin-key>
 ```
 
-JWTs are generated server-side with `oysterd app jwt <app_id>`. They are
-**not** available through a public API.
+Admin keys are generated server-side with
+`oysterd app issue-admin-key <app_id>`. They are **not** available through
+a public API. Multiple admin keys per app are supported (AWS-style two-key
+rotation, no cap).
 
-### Token properties
+### Key properties
 
 | Property | Value |
 |---|---|
-| Algorithm | HS256 |
-| Lifetime | 24 hours (86 400 s) |
-| Issuer | `oyster` |
-
-### Claims
-
-| Claim | Description |
-|---|---|
-| `sub` | App ID (UUID) |
-| `iat` | Issued-at (Unix timestamp) |
-| `exp` | Expiration (Unix timestamp) |
-| `iss` | Issuer — always `"oyster"` |
-| `jti` | Unique token identifier (UUID, used for blacklisting) |
+| Size | 32 bytes, hex-encoded (64 characters) |
+| Hash algorithm | BLAKE2s-256 (only the hash is stored) |
+| Prefix | First 8 characters — used to identify keys in listings without exposing the secret |
+| Lifetime | Long-lived; no expiry. Rotation is voluntary issue-then-revoke. |
 
 ### Account ownership enforcement
 
-An app can only manage accounts it created. Attempting to access another app's
-accounts returns **403 Forbidden**:
+An app can only manage accounts it created. Attempting to access another
+app's accounts returns **403 Forbidden**:
 
 ```json
 { "error": "forbidden: account does not belong to this app" }
 ```
 
+### Rotation
+
+Admin keys do not expire. The recommended pattern is AWS-style two-key
+overlap:
+
+1. Operator issues a new key alongside the old one
+   (`oysterd app issue-admin-key <APP_ID>`).
+2. Callers swap to the new key.
+3. After confirming nothing still uses the old key, the operator revokes
+   it (`oysterd app revoke-admin-key <OLD_KEY_ID>`). Revocation takes
+   effect immediately — there is no caching.
+
+`oysterd app list-admin-keys <APP_ID>` shows all keys (active and
+revoked) so an operator can audit before revoking.
+
 ### Errors
 
 | Status | Condition |
 |---|---|
-| `401 Unauthorized` | Missing, expired, or invalid JWT |
-| `403 Forbidden` | Valid JWT but accessing another app's resources |
+| `401 Unauthorized` | Missing, malformed, revoked, or unknown admin key |
+| `403 Forbidden` | Valid admin key but accessing another app's resources |
 
 ## Public Endpoints (No Authentication)
 
@@ -111,52 +122,13 @@ The following routes require no authentication:
 curl -s "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 ```
 
-## Token Refresh
-
-```
-POST /api/v1/apps/token-refresh
-```
-
-Exchanges an expired JWT for a fresh one. The server accepts tokens up to
-**48 hours** (172 800 s) past their expiry time.
-
-### Requirements
-
-- The app must have the `allow_refresh_jwt` flag enabled.
-- The expired token's JTI is blacklisted upon successful refresh — it cannot
-  be reused.
-
-**Example:**
-
-```bash
-curl -s -X POST \
-  -H "Authorization: Bearer $EXPIRED_JWT" \
-  "$OYSTER_URL/api/v1/apps/token-refresh"
-```
-
-**Response** (`200 OK`):
-
-```json
-{
-  "access_token": "<new-jwt>",
-  "token_type": "Bearer",
-  "expires_in": 86400
-}
-```
-
-### Errors
-
-| Status | Condition |
-|---|---|
-| `401 Unauthorized` | Token is more than 48 hours past expiry, or otherwise invalid |
-| `403 Forbidden` | App does not have `allow_refresh_jwt` enabled |
-
 ## Security Notes
 
-- **API keys** — Only the BLAKE2s-256 hash is stored. A lost key cannot be
-  recovered; create a new one instead.
-- **JWT secret** — Protect the `OYSTER_JWT_SECRET` environment variable. Anyone
-  with this secret can mint valid tokens for any app.
-- **JTI blacklisting** — Revoked token identifiers (via refresh or
-  `oysterd app revoke-jwt`) are permanently rejected.
+- **API keys** and **admin keys** — Only the BLAKE2s-256 hash is stored.
+  A lost key cannot be recovered; issue a new one instead.
+- **Admin-key compromise** — A leaked admin key gives full app-admin
+  access (account creation, key issuance, S3 access keys) until revoked.
+  Treat it like a long-lived service credential: rotate periodically and
+  on personnel changes via `oysterd app issue-admin-key` +
+  `oysterd app revoke-admin-key`.
 - **TLS** — Always terminate TLS in front of Oyster in production.

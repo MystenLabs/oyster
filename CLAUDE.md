@@ -34,7 +34,7 @@ Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev
 - **File layout**: `module.rs` + `module/submodule.rs` — never `mod.rs`
 - **Lint enforcement**: `missing_docs = "deny"` workspace-wide; all public APIs must be documented
 - **Error handling**: `AppError` (Oyster) and `Error` (Pearl) enums map to HTTP/gRPC status codes
-- **Auth**: Oyster uses Blake2s-256 hashed 32-byte random Bearer tokens for end-user API auth; JWT-authenticated admin routes for account/key management; Pearl uses a shared service secret
+- **Auth**: Oyster uses Blake2s-256 hashed 32-byte random Bearer tokens for end-user API auth; long-lived per-app admin-key Bearer auth (also Blake2s-256 hashed) for app admin routes; Pearl uses a shared service secret
 - **Adding dependencies**: always use `cargo add`, never edit `Cargo.toml` manually
 
 ## Testing Patterns
@@ -46,7 +46,7 @@ Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev
 ## Configuration
 
 Oyster and Pearl are configured via environment variables (see `crates/oyster/src/config.rs` and `crates/pearl/src/config.rs`). Key vars:
-- Oyster: `BIND_ADDR`, `DATABASE_URL`, `PEARL_GRPC_URL`, `PEARL_SERVICE_SECRET`, `WALRUS_AGGREGATOR_URL`, `SUI_RPC_URL`, `OYSTER_JWT_SECRET`
+- Oyster: `BIND_ADDR`, `DATABASE_URL`, `PEARL_GRPC_URL`, `PEARL_SERVICE_SECRET`, `WALRUS_AGGREGATOR_URL`, `SUI_RPC_URL`. Supported SQLite floor is ≥ 3.35 (for `ALTER TABLE … DROP COLUMN`).
 - Pearl: `PEARL_BIND_ADDR`, `PEARL_SERVICE_SECRET`, `PEARL_MASTER_SEED`, `PEARL_METRICS_BIND_ADDR`, optional TLS via `PEARL_TLS_CERT_PATH`/`PEARL_TLS_KEY_PATH`
 
 ## OpenAPI Docs
