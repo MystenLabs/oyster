@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — Server
+- `GET /api/v1/accounts` — list accounts owned by the authenticated app; returns `[AccountSummary]` with `active_api_key_count` per row
+- `GET /api/v1/accounts/{account_id}/api-keys` — list api-key metadata for an account (never returns the bearer secret)
+- Per-account active-api-key cap of **3** on `POST /api/v1/accounts/{account_id}/api-keys`: returns `409` with `"limit"` in the message when exceeded; revoking a key frees a slot
+- Optional `note` field on `POST /api/v1/accounts` and `POST /api/v1/accounts/{account_id}/api-keys` request bodies; defaults to `'api'` when omitted
+- Migration `015_api_keys_note.sql` (sqlite + postgres): adds `api_keys.note TEXT NOT NULL DEFAULT 'api'` plus a compound `(account_id, revoked_at)` index for the cap-count query
+
+### Added — CLI
+- `oyster app account list` — table over accounts (id, name, created_at, active_api_key_count)
+- `oyster app account create [--name NAME] [--note NOTE] [--activate]` — mints account + initial api-key; `--activate` saves the bearer to `context.api_key` atomically
+- `oyster app account use <id-or-name> [--revoke <key_id> | --revoke-oldest]` — mints a fresh api-key (note `oyster-cli: activate <id-or-name>`) and replaces `context.api_key` atomically; on `409` in a TTY, prompts via `inquire` (inline, never alt-screen) and retries
+- `oyster app account select` — TTY-only `inquire` picker over accounts; dispatches to `use`
+- `oyster app account keys <id-or-name>` — list api-key metadata for an account
+- Global `--app <name>` flag on `oyster app account` to disambiguate when the active context has multiple apps; auto-picked when there's exactly one
+
+### Changed — CLI security
+- `client.yaml` is now SSH-strict on Unix: load refuses any file with `mode & 0o077 != 0` (with a copy-pasteable `chmod 600 <path>` remediation message); save sets `0o600` on the temp file before the atomic rename. Windows behavior unchanged
+
+### Dependencies
+- `oyster-cli` adds `inquire = 0.9.4` for the inline TUI revoke picker
+
 ## [0.5.0] - 2026-04-28
 
 ### Breaking Changes

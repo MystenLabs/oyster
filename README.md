@@ -91,7 +91,9 @@ API, and `oysterd extend` runs the blob extension background worker.
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `POST` | `/api/v1/accounts` | Admin Key | Create account |
+| `GET` | `/api/v1/accounts` | Admin Key | List accounts with active api-key counts |
 | `POST` | `/api/v1/accounts/{account_id}/api-keys` | Admin Key | Generate API key for account |
+| `GET` | `/api/v1/accounts/{account_id}/api-keys` | Admin Key | List api-key metadata for an account |
 | `DELETE` | `/api/v1/accounts/{account_id}/api-keys/{key_id}` | Admin Key | Revoke API key |
 | `POST` | `/api/v1/accounts/{account_id}/access-keys` | Admin Key | Create S3 access key |
 | `GET` | `/api/v1/accounts/{account_id}/access-keys` | Admin Key | List S3 access keys |
@@ -433,6 +435,49 @@ contexts:
 ```bash
 oyster --context devnet info
 OYSTER_CONTEXT=devnet oyster info
+```
+
+### Account management (CLI)
+
+Once a context has at least one app with an `admin_key`, `oyster app account`
+gives you a four-verb workflow over the accounts owned by that app. Pass
+`--app <name>` to pick which app to act through; if the active context has
+exactly one app, it's auto-selected.
+
+```bash
+# list accounts owned by the app (id, name, created_at, active_api_key_count)
+oyster app account list
+
+# mint a new account + initial api-key, and immediately set it as the
+# context's active api_key (atomic save to client.yaml)
+oyster app account create --name alice --activate
+
+# rotate the context's api_key onto a different account in one shot —
+# mints a fresh key on the target account, writes it to context.api_key
+oyster app account use alice
+
+# list api-key metadata for an account (never returns the bearer secret)
+oyster app account keys alice
+```
+
+There's a server-side cap of **3 active api-keys per account**. When `use`
+hits `409 limit`, it pivots:
+
+- **TTY**: prompts inline via `inquire` to pick which existing key to
+  revoke, then retries the mint.
+- **Non-TTY** (CI, scripts, `--json`): you must pre-select the key to
+  revoke with `--revoke <key_id>` or `--revoke-oldest`.
+
+```bash
+oyster app account use alice --revoke-oldest
+oyster app account use alice --revoke 0123abcd...
+```
+
+For interactive switching, `select` is a TTY-only picker — it lists the
+accounts via `inquire` and dispatches to `use`:
+
+```bash
+oyster app account select
 ```
 
 ---
