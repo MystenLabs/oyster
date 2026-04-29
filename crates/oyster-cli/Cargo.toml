@@ -16,6 +16,7 @@ workspace = true
 
 [dependencies]
 clap = { workspace = true }
+inquire = "0.9.4"
 reqwest = { workspace = true }
 rpassword = "7.4.0"
 rustls = { workspace = true }

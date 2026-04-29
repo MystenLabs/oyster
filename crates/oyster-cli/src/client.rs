@@ -55,6 +55,57 @@ pub struct BlobTagsResponse {
     pub tags: BTreeMap<String, String>,
 }
 
+/// One-row summary of an account, returned by `GET /accounts`.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AccountSummary {
+    /// Unique identifier.
+    pub id: String,
+    /// Human-readable account name.
+    pub name: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// Number of active (non-revoked) API keys on this account.
+    pub active_api_key_count: i64,
+}
+
+/// Public API key metadata. Never includes the bearer secret.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiKeyMetadata {
+    /// Unique identifier.
+    pub id: String,
+    /// First 8 characters of the raw key.
+    pub prefix: String,
+    /// Human-readable note (defaults to "api").
+    pub note: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+    /// ISO 8601 revocation timestamp, if revoked.
+    pub revoked_at: Option<String>,
+}
+
+/// A newly minted API key, including the Bearer token (shown only once).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ApiKeyWithBearerToken {
+    /// Unique identifier.
+    pub id: String,
+    /// First 8 characters of the raw key.
+    pub prefix: String,
+    /// The Bearer token (shown only once).
+    pub bearer_token: String,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+/// Response after successfully creating a new account, including its
+/// initial API key.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CreateAccountResponse {
+    /// The new account's unique identifier.
+    pub account_id: String,
+    /// The initial API key (with bearer token).
+    pub api_key: ApiKeyWithBearerToken,
+}
+
 // Error type
 
 #[derive(Debug, thiserror::Error)]
@@ -83,6 +134,7 @@ pub struct OysterClient {
     http: reqwest::Client,
     base_url: String,
     api_key: Option<String>,
+    admin_key: Option<String>,
 }
 
 fn build_url(base: &str, path: &str, cursor: Option<&str>, limit: Option<u32>) -> String {
@@ -106,11 +158,33 @@ impl OysterClient {
             http: reqwest::Client::new(),
             base_url,
             api_key,
+            admin_key: None,
+        }
+    }
+
+    /// Construct an `OysterClient` configured with an app admin-key Bearer
+    /// token for admin-scoped routes (`/accounts`, `/accounts/{id}/api-keys`).
+    pub fn with_admin_key(base_url: String, admin_key: String) -> Self {
+        Self {
+            http: reqwest::Client::new(),
+            base_url,
+            api_key: None,
+            admin_key: Some(admin_key),
         }
     }
 
     fn auth_header(&self) -> Option<String> {
         self.api_key.as_ref().map(|key| format!("Bearer {key}"))
+    }
+
+    fn admin_auth_header(&self) -> Result<String, ApiError> {
+        self.admin_key
+            .as_ref()
+            .map(|k| format!("Bearer {k}"))
+            .ok_or_else(|| ApiError::Server {
+                status: 0,
+                message: "admin key not configured".into(),
+            })
     }
 
     async fn check_error(&self, resp: reqwest::Response) -> Result<reqwest::Response, ApiError> {
@@ -378,5 +452,93 @@ impl OysterClient {
             .await?;
         let resp = self.check_error(resp).await?;
         Ok(resp.json().await?)
+    }
+
+    // Admin-keyed account/key management
+
+    /// List every account owned by the admin-key's app.
+    pub async fn list_accounts(&self) -> Result<Vec<AccountSummary>, ApiError> {
+        let resp = self
+            .http
+            .get(format!("{}/accounts", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// List API keys (active and revoked) on an account.
+    pub async fn list_api_keys(&self, account_id: &str) -> Result<Vec<ApiKeyMetadata>, ApiError> {
+        let resp = self
+            .http
+            .get(format!("{}/accounts/{account_id}/api-keys", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Create a new account on the admin-key's app, returning the initial
+    /// API key (one-time bearer included).
+    pub async fn create_account(
+        &self,
+        name: Option<&str>,
+        note: Option<&str>,
+    ) -> Result<CreateAccountResponse, ApiError> {
+        let mut body = serde_json::Map::new();
+        if let Some(n) = name {
+            body.insert("name".into(), n.into());
+        }
+        if let Some(n) = note {
+            body.insert("note".into(), n.into());
+        }
+        let resp = self
+            .http
+            .post(format!("{}/accounts", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Mint a new API key on an existing account. Returns 409 from the
+    /// server when the per-account active-key cap is reached.
+    pub async fn mint_api_key(
+        &self,
+        account_id: &str,
+        note: Option<&str>,
+    ) -> Result<ApiKeyWithBearerToken, ApiError> {
+        let mut body = serde_json::Map::new();
+        if let Some(n) = note {
+            body.insert("note".into(), n.into());
+        }
+        let resp = self
+            .http
+            .post(format!("{}/accounts/{account_id}/api-keys", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .json(&serde_json::Value::Object(body))
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Revoke a specific API key on an account.
+    pub async fn revoke_api_key(&self, account_id: &str, key_id: &str) -> Result<(), ApiError> {
+        let resp = self
+            .http
+            .delete(format!(
+                "{}/accounts/{account_id}/api-keys/{key_id}",
+                self.base_url
+            ))
+            .header("Authorization", self.admin_auth_header()?)
+            .send()
+            .await?;
+        self.check_error(resp).await?;
+        Ok(())
     }
 }

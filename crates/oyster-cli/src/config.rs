@@ -36,6 +36,11 @@ pub enum ConfigError {
     },
     #[error("failed to serialize config: {0}")]
     SerializeError(#[from] serde_yaml::Error),
+    #[error(
+        "config file {path} has insecure permissions {mode:o}; \
+         refusing to read. Run: chmod 600 {path}"
+    )]
+    InsecurePermissions { path: PathBuf, mode: u32 },
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -113,6 +118,22 @@ pub fn load_file_config(
         }
         return Ok((FileConfig::default(), None));
     };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let meta = std::fs::metadata(&path).map_err(|e| ConfigError::ReadError {
+            path: path.clone(),
+            source: e,
+        })?;
+        let mode = meta.permissions().mode();
+        if mode & 0o077 != 0 {
+            return Err(ConfigError::InsecurePermissions {
+                path: path.clone(),
+                mode: mode & 0o7777,
+            });
+        }
+    }
 
     let contents = std::fs::read_to_string(&path).map_err(|e| ConfigError::ReadError {
         path: path.clone(),
@@ -234,6 +255,16 @@ pub fn save_config(path: &Path, config: &FileConfig) -> Result<(), ConfigError> 
         path: tmp.clone(),
         source: e,
     })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
+            ConfigError::WriteError {
+                path: tmp.clone(),
+                source: e,
+            }
+        })?;
+    }
     std::fs::rename(&tmp, path).map_err(|e| ConfigError::WriteError {
         path: path.to_owned(),
         source: e,
@@ -364,6 +395,52 @@ mod tests {
         let contents = std::fs::read_to_string(&path).unwrap();
         let parsed: FileConfig = serde_yaml::from_str(&contents).unwrap();
         assert_eq!(parsed, original);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_config_writes_mode_0o600() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        save_config(&path, &sample_config()).unwrap();
+        let meta = std::fs::metadata(&path).unwrap();
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_file_config_refuses_group_readable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let yaml = serde_yaml::to_string(&sample_config()).unwrap();
+        std::fs::write(&path, yaml).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let err = load_file_config(Some(&path)).unwrap_err();
+        match err {
+            ConfigError::InsecurePermissions {
+                path: err_path,
+                mode,
+            } => {
+                assert_eq!(err_path, path);
+                assert_ne!(mode & 0o077, 0);
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_file_config_accepts_mode_0o600() {
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let original = sample_config();
+        save_config(&path, &original).unwrap();
+        let (loaded, loaded_path) = load_file_config(Some(&path)).unwrap();
+        assert_eq!(loaded, original);
+        assert_eq!(loaded_path, Some(path));
     }
 
     /// Minimal tempdir without pulling in `tempfile` — uses a pid+nanos path
