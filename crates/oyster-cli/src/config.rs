@@ -41,6 +41,14 @@ pub enum ConfigError {
          refusing to read. Run: chmod 600 {path}"
     )]
     InsecurePermissions { path: PathBuf, mode: u32 },
+    #[error("active context '{ctx}' has no apps; run `oyster app import <name>` first")]
+    MissingApp { ctx: String },
+    #[error("unknown app '{name}' in active context; known apps: {known}")]
+    UnknownApp { name: String, known: String },
+    #[error(
+        "active context has multiple apps; pass --app <name> to disambiguate. Known apps: {known}"
+    )]
+    AmbiguousApp { known: String },
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
@@ -234,6 +242,89 @@ pub fn require_context_name(
 ) -> Result<String, ConfigError> {
     let env_ctx = std::env::var("OYSTER_CONTEXT").ok();
     resolve_context_name(cli_context, env_ctx.as_deref(), file)?.ok_or(ConfigError::NoActiveContext)
+}
+
+/// Resolution bundle for admin-keyed subcommands.
+///
+/// Returns enough state to mutate the on-disk config (e.g. write a freshly
+/// rotated `api_key` back to the active context).
+#[derive(Debug)]
+pub struct AdminResolved {
+    /// Server base URL (e.g. `https://oyster.example/api/v1`).
+    pub url: String,
+    /// App admin-key Bearer token.
+    pub admin_key: String,
+    /// Resolved active context name.
+    pub ctx_name: String,
+    /// Selected app name within that context.
+    pub app_name: String,
+    /// Full parsed config — round-tripped on save to preserve unrelated fields.
+    pub file: FileConfig,
+    /// Path of the config file on disk (always present here).
+    pub config_path: PathBuf,
+}
+
+/// Resolve the URL + admin key for an admin-scoped subcommand.
+///
+/// Picks the app automatically when the active context has exactly one;
+/// requires `--app <name>` to disambiguate when there are multiple.
+pub fn resolve_admin(
+    explicit: Option<&Path>,
+    cli_context: Option<&str>,
+    cli_url: Option<&str>,
+    app: Option<&str>,
+) -> Result<AdminResolved, ConfigError> {
+    let (file, config_path) = load_file_config(explicit)?;
+    let config_path = config_path.ok_or(ConfigError::NoConfigFile)?;
+    let env_ctx = std::env::var("OYSTER_CONTEXT").ok();
+    let ctx_name = require_context_name_with_env(cli_context, env_ctx.as_deref(), &file)?;
+    let ctx = file
+        .contexts
+        .get(&ctx_name)
+        .expect("checked by require_context_name_with_env");
+
+    let url = cli_url
+        .map(String::from)
+        .or_else(|| ctx.url.clone())
+        .ok_or(ConfigError::MissingUrl)?;
+
+    let app_name = match app {
+        Some(name) => {
+            if !ctx.apps.contains_key(name) {
+                let known = ctx.apps.keys().cloned().collect::<Vec<_>>().join(", ");
+                return Err(ConfigError::UnknownApp {
+                    name: name.into(),
+                    known,
+                });
+            }
+            name.to_string()
+        }
+        None => match ctx.apps.len() {
+            0 => return Err(ConfigError::MissingApp { ctx: ctx_name }),
+            1 => ctx.apps.keys().next().cloned().unwrap(),
+            _ => {
+                let known = ctx.apps.keys().cloned().collect::<Vec<_>>().join(", ");
+                return Err(ConfigError::AmbiguousApp { known });
+            }
+        },
+    };
+    let admin_key = ctx.apps[&app_name].admin_key.clone();
+    Ok(AdminResolved {
+        url,
+        admin_key,
+        ctx_name,
+        app_name,
+        file,
+        config_path,
+    })
+}
+
+fn require_context_name_with_env(
+    flag: Option<&str>,
+    env: Option<&str>,
+    file: &FileConfig,
+) -> Result<String, ConfigError> {
+    resolve_context_name(flag, env, file)?.ok_or(ConfigError::NoActiveContext)
 }
 
 /// Serialize `config` and atomically replace `path` with the result.
@@ -441,6 +532,89 @@ mod tests {
         let (loaded, loaded_path) = load_file_config(Some(&path)).unwrap();
         assert_eq!(loaded, original);
         assert_eq!(loaded_path, Some(path));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_admin_picks_single_app() {
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let mut file = FileConfig::default();
+        let mut ctx = Context {
+            url: Some("https://oyster.example/api/v1".to_string()),
+            ..Default::default()
+        };
+        ctx.apps.insert(
+            "only-app".to_string(),
+            AppEntry {
+                admin_key: "AK1".to_string(),
+            },
+        );
+        file.contexts.insert("only-ctx".to_string(), ctx);
+        file.active_context = Some("only-ctx".to_string());
+        save_config(&path, &file).unwrap();
+
+        let resolved = resolve_admin(Some(&path), None, None, None).unwrap();
+        assert_eq!(resolved.app_name, "only-app");
+        assert_eq!(resolved.admin_key, "AK1");
+        assert_eq!(resolved.ctx_name, "only-ctx");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_admin_ambiguous_when_multiple_apps() {
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let file = sample_config();
+        save_config(&path, &file).unwrap();
+
+        let err = resolve_admin(Some(&path), None, None, None).unwrap_err();
+        match err {
+            ConfigError::AmbiguousApp { known } => {
+                assert!(known.contains("app-one"));
+                assert!(known.contains("app-two"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_admin_unknown_app_lists_known() {
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let file = sample_config();
+        save_config(&path, &file).unwrap();
+
+        let err = resolve_admin(Some(&path), None, None, Some("nope")).unwrap_err();
+        match err {
+            ConfigError::UnknownApp { name, known } => {
+                assert_eq!(name, "nope");
+                assert!(known.contains("app-one"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_admin_missing_app() {
+        let dir = tempdir();
+        let path = dir.join("client.yaml");
+        let mut file = FileConfig::default();
+        let ctx = Context {
+            url: Some("https://oyster.example/api/v1".to_string()),
+            ..Default::default()
+        };
+        file.contexts.insert("empty".to_string(), ctx);
+        file.active_context = Some("empty".to_string());
+        save_config(&path, &file).unwrap();
+
+        let err = resolve_admin(Some(&path), None, None, None).unwrap_err();
+        match err {
+            ConfigError::MissingApp { ctx } => assert_eq!(ctx, "empty"),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     /// Minimal tempdir without pulling in `tempfile` — uses a pid+nanos path

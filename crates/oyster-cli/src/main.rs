@@ -7,7 +7,7 @@ mod output;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use client::{ApiError, OysterClient};
+use client::{AccountSummary, ApiError, ApiKeyMetadata, OysterClient};
 use config::{AppEntry, ConfigError};
 use output::Output;
 
@@ -192,6 +192,51 @@ enum AppCommand {
     Import {
         /// Name of the app to store the admin key under in the active context.
         app_name: String,
+    },
+    /// Account enumeration + active-key rotation.
+    Account {
+        /// App name in the active context (required when the context has
+        /// more than one app).
+        #[arg(long, global = true)]
+        app: Option<String>,
+        #[command(subcommand)]
+        command: AccountCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum AccountCommand {
+    /// List accounts owned by the selected app.
+    List,
+    /// Create a new account on the selected app.
+    Create {
+        /// Optional human-readable account name.
+        #[arg(long)]
+        name: Option<String>,
+        /// Optional note attached to the initial api_key.
+        #[arg(long)]
+        note: Option<String>,
+        /// Save the new account's bearer to context.api_key.
+        #[arg(long)]
+        activate: bool,
+    },
+    /// Mint a fresh api_key for an account and save it to context.api_key.
+    Use {
+        /// Account ID or name.
+        id_or_name: String,
+        /// On 409, revoke this key id and retry mint (non-interactive).
+        #[arg(long)]
+        revoke: Option<String>,
+        /// On 409, revoke the oldest active key and retry mint.
+        #[arg(long, conflicts_with = "revoke")]
+        revoke_oldest: bool,
+    },
+    /// Interactive picker over accounts, then mint and activate a new api_key.
+    Select,
+    /// List api_keys for an account.
+    Keys {
+        /// Account ID or name.
+        id_or_name: String,
     },
 }
 
@@ -414,6 +459,316 @@ fn cmd_app_import(
     Ok(())
 }
 
+async fn cmd_account(
+    out: &Output,
+    cli_config: Option<&std::path::Path>,
+    cli_context: Option<&str>,
+    cli_url: Option<&str>,
+    app: Option<&str>,
+    command: &AccountCommand,
+) -> Result<(), CliError> {
+    let resolved = config::resolve_admin(cli_config, cli_context, cli_url, app)?;
+    let client = OysterClient::with_admin_key(resolved.url.clone(), resolved.admin_key.clone());
+    match command {
+        AccountCommand::List => cmd_account_list(&client, out).await,
+        AccountCommand::Create {
+            name,
+            note,
+            activate,
+        } => {
+            cmd_account_create(
+                &client,
+                out,
+                resolved,
+                name.as_deref(),
+                note.as_deref(),
+                *activate,
+            )
+            .await
+        }
+        AccountCommand::Use {
+            id_or_name,
+            revoke,
+            revoke_oldest,
+        } => {
+            cmd_account_use(
+                &client,
+                out,
+                resolved,
+                id_or_name,
+                revoke.as_deref(),
+                *revoke_oldest,
+            )
+            .await
+        }
+        AccountCommand::Select => cmd_account_select(&client, out, resolved).await,
+        AccountCommand::Keys { id_or_name } => cmd_account_keys(&client, out, id_or_name).await,
+    }
+}
+
+async fn cmd_account_list(client: &OysterClient, out: &Output) -> Result<(), CliError> {
+    let accounts = client.list_accounts().await?;
+    out.print(&accounts, |rows| {
+        println!(
+            "{:<38} {:<24} {:<26} ACTIVE_KEYS",
+            "ID", "NAME", "CREATED_AT"
+        );
+        for a in rows {
+            println!(
+                "{:<38} {:<24} {:<26} {}",
+                a.id, a.name, a.created_at, a.active_api_key_count
+            );
+        }
+    });
+    Ok(())
+}
+
+async fn cmd_account_keys(
+    client: &OysterClient,
+    out: &Output,
+    id_or_name: &str,
+) -> Result<(), CliError> {
+    let account_id = resolve_account_id(client, id_or_name).await?;
+    let keys = client.list_api_keys(&account_id).await?;
+    out.print(&keys, |rows| {
+        println!(
+            "{:<38} {:<10} {:<24} {:<26} REVOKED_AT",
+            "ID", "PREFIX", "NOTE", "CREATED_AT"
+        );
+        for k in rows {
+            println!(
+                "{:<38} {:<10} {:<24} {:<26} {}",
+                k.id,
+                k.prefix,
+                k.note,
+                k.created_at,
+                k.revoked_at.as_deref().unwrap_or("-")
+            );
+        }
+    });
+    Ok(())
+}
+
+async fn cmd_account_create(
+    client: &OysterClient,
+    out: &Output,
+    resolved: config::AdminResolved,
+    name: Option<&str>,
+    note: Option<&str>,
+    activate: bool,
+) -> Result<(), CliError> {
+    let resp = client.create_account(name, note).await?;
+    if activate {
+        let mut file = resolved.file;
+        let ctx = file.contexts.entry(resolved.ctx_name.clone()).or_default();
+        ctx.api_key = Some(resp.api_key.bearer_token.clone());
+        config::save_config(&resolved.config_path, &file)?;
+    }
+    if out.json {
+        // In JSON mode, emit the full server response (includes bearer).
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&resp).expect("serialize CreateAccountResponse")
+        );
+    } else if activate {
+        println!("created account:");
+        println!("  account_id:     {}", resp.account_id);
+        println!("  api_key.id:     {}", resp.api_key.id);
+        println!("  api_key.prefix: {}", resp.api_key.prefix);
+        println!("  created_at:     {}", resp.api_key.created_at);
+        println!(
+            "saved to context {} (app {})",
+            resolved.ctx_name, resolved.app_name
+        );
+    } else {
+        println!("created account:");
+        println!("  account_id:     {}", resp.account_id);
+        println!("  api_key.id:     {}", resp.api_key.id);
+        println!("  api_key.prefix: {}", resp.api_key.prefix);
+        println!("  created_at:     {}", resp.api_key.created_at);
+        println!("  bearer_token:   {}", resp.api_key.bearer_token);
+        println!();
+        println!("store this bearer safely — it will not be shown again");
+    }
+    Ok(())
+}
+
+async fn cmd_account_use(
+    client: &OysterClient,
+    out: &Output,
+    resolved: config::AdminResolved,
+    id_or_name: &str,
+    revoke: Option<&str>,
+    revoke_oldest: bool,
+) -> Result<(), CliError> {
+    let account_id = resolve_account_id(client, id_or_name).await?;
+    let note = format!("oyster-cli: activate {id_or_name}");
+
+    let mut consumed_revoke = false;
+    for _attempt in 0..2 {
+        match client.mint_api_key(&account_id, Some(&note)).await {
+            Ok(key) => {
+                let mut file = resolved.file;
+                let ctx = file.contexts.entry(resolved.ctx_name.clone()).or_default();
+                ctx.api_key = Some(key.bearer_token.clone());
+                config::save_config(&resolved.config_path, &file)?;
+                if out.json {
+                    println!(
+                        "{}",
+                        serde_json::to_string_pretty(&key).expect("serialize ApiKey")
+                    );
+                } else {
+                    println!("rotated active api_key:");
+                    println!("  account_id:     {account_id}");
+                    println!("  api_key.id:     {}", key.id);
+                    println!("  api_key.prefix: {}", key.prefix);
+                    println!("  created_at:     {}", key.created_at);
+                    println!(
+                        "saved to context {} (app {})",
+                        resolved.ctx_name, resolved.app_name
+                    );
+                }
+                return Ok(());
+            }
+            Err(ApiError::Server { status: 409, .. }) => {
+                let to_revoke = pick_revoke_target(
+                    client,
+                    out,
+                    &account_id,
+                    if consumed_revoke { None } else { revoke },
+                    revoke_oldest,
+                )
+                .await?;
+                consumed_revoke = true;
+                client.revoke_api_key(&account_id, &to_revoke).await?;
+                continue;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    Err(CliError::Message(
+        "two consecutive 409 responses while minting api_key — concurrent modification, retry"
+            .to_string(),
+    ))
+}
+
+async fn cmd_account_select(
+    client: &OysterClient,
+    out: &Output,
+    resolved: config::AdminResolved,
+) -> Result<(), CliError> {
+    if !is_interactive(out) {
+        return Err(CliError::Message(
+            "`account select` requires an interactive TTY (not --json, stdin and stdout must be \
+             ttys); use `account list` + `account use <id>` non-interactively"
+                .to_string(),
+        ));
+    }
+    let accounts = client.list_accounts().await?;
+    if accounts.is_empty() {
+        return Err(CliError::Message(
+            "no accounts in this app; run `app account create` first".to_string(),
+        ));
+    }
+    let choices: Vec<AccountChoice> = accounts.iter().map(AccountChoice).collect();
+    let chosen = inquire::Select::new("Pick an account to activate:", choices)
+        .prompt()
+        .map_err(|e| CliError::Message(format!("inquire: {e}")))?;
+    let id = chosen.0.id.clone();
+    cmd_account_use(client, out, resolved, &id, None, false).await
+}
+
+async fn resolve_account_id(client: &OysterClient, id_or_name: &str) -> Result<String, CliError> {
+    let accounts = client.list_accounts().await?;
+    if let Some(a) = accounts.iter().find(|a| a.id == id_or_name) {
+        return Ok(a.id.clone());
+    }
+    let by_name: Vec<&AccountSummary> = accounts.iter().filter(|a| a.name == id_or_name).collect();
+    match by_name.len() {
+        0 => Err(CliError::Message(format!(
+            "no account matches '{id_or_name}' (no exact id or name match)"
+        ))),
+        1 => Ok(by_name[0].id.clone()),
+        _ => Err(CliError::Message(format!(
+            "account name '{id_or_name}' is ambiguous ({} matches); use the account id instead",
+            by_name.len()
+        ))),
+    }
+}
+
+async fn pick_revoke_target(
+    client: &OysterClient,
+    out: &Output,
+    account_id: &str,
+    revoke: Option<&str>,
+    revoke_oldest: bool,
+) -> Result<String, CliError> {
+    if let Some(id) = revoke {
+        return Ok(id.to_string());
+    }
+    if revoke_oldest {
+        let keys = client.list_api_keys(account_id).await?;
+        let oldest = keys
+            .iter()
+            .filter(|k| k.revoked_at.is_none())
+            .min_by(|a, b| a.created_at.cmp(&b.created_at))
+            .ok_or_else(|| {
+                CliError::Message(
+                    "server reported 409 but no active api_keys were returned by list".to_string(),
+                )
+            })?;
+        return Ok(oldest.id.clone());
+    }
+    if !is_interactive(out) {
+        return Err(CliError::Message(
+            "api_key cap reached (HTTP 409); pass --revoke <id> or --revoke-oldest, or run \
+             interactively for a TUI prompt"
+                .to_string(),
+        ));
+    }
+    let keys = client.list_api_keys(account_id).await?;
+    let active: Vec<&ApiKeyMetadata> = keys.iter().filter(|k| k.revoked_at.is_none()).collect();
+    if active.is_empty() {
+        return Err(CliError::Message(
+            "server reported 409 but no active api_keys were returned by list".to_string(),
+        ));
+    }
+    let choices: Vec<ApiKeyChoice> = active.iter().map(|k| ApiKeyChoice(k)).collect();
+    let chosen = inquire::Select::new("Revoke an api_key to make room:", choices)
+        .prompt()
+        .map_err(|e| CliError::Message(format!("inquire: {e}")))?;
+    Ok(chosen.0.id.clone())
+}
+
+fn is_interactive(out: &Output) -> bool {
+    use std::io::IsTerminal;
+    !out.json && std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
+}
+
+struct ApiKeyChoice<'a>(&'a ApiKeyMetadata);
+
+impl std::fmt::Display for ApiKeyChoice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} · {} · {}",
+            self.0.prefix, self.0.note, self.0.created_at
+        )
+    }
+}
+
+struct AccountChoice<'a>(&'a AccountSummary);
+
+impl std::fmt::Display for AccountChoice<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{} ({}) — {} keys",
+            self.0.name, self.0.id, self.0.active_api_key_count
+        )
+    }
+}
+
 fn cmd_info(out: &Output, config_path: Option<&std::path::Path>, url: &str, api_key: Option<&str>) {
     if out.json {
         let info = serde_json::json!({
@@ -497,6 +852,17 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
         Command::App { ref command } => match command {
             AppCommand::Import { app_name } => {
                 cmd_app_import(cli.config.as_deref(), cli.context.as_deref(), app_name)
+            }
+            AppCommand::Account { app, command } => {
+                cmd_account(
+                    out,
+                    cli.config.as_deref(),
+                    cli.context.as_deref(),
+                    cli.url.as_deref(),
+                    app.as_deref(),
+                    command,
+                )
+                .await
             }
         },
 
