@@ -328,12 +328,17 @@ fn require_context_name_with_env(
 }
 
 /// Serialize `config` and atomically replace `path` with the result.
-/// `std::fs::rename` over an existing file is atomic on POSIX and on
-/// Windows 10+; Oyster targets Linux/macOS developer machines, so this is
-/// sufficient.
+///
+/// The temp file is opened with `O_CREAT | O_EXCL` and (on Unix) mode
+/// `0o600` set at file-creation time, so the yaml never exists on disk
+/// at a more permissive mode — closing the TOCTOU window between
+/// content-write and chmod. `std::fs::rename` over an existing file is
+/// atomic on POSIX and on Windows 10+; Oyster targets Linux/macOS
+/// developer machines, so this is sufficient.
 pub fn save_config(path: &Path, config: &FileConfig) -> Result<(), ConfigError> {
+    use std::io::Write;
+
     let yaml = serde_yaml::to_string(config)?;
-    let tmp = path.with_extension("yaml.tmp");
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -342,25 +347,51 @@ pub fn save_config(path: &Path, config: &FileConfig) -> Result<(), ConfigError> 
             source: e,
         })?;
     }
-    std::fs::write(&tmp, yaml).map_err(|e| ConfigError::WriteError {
+    let tmp = unique_tmp_path(path);
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(&tmp).map_err(|e| ConfigError::WriteError {
         path: tmp.clone(),
         source: e,
     })?;
-    #[cfg(unix)]
+    if let Err(e) = file
+        .write_all(yaml.as_bytes())
+        .and_then(|()| file.sync_all())
     {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600)).map_err(|e| {
-            ConfigError::WriteError {
-                path: tmp.clone(),
-                source: e,
-            }
-        })?;
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ConfigError::WriteError {
+            path: tmp,
+            source: e,
+        });
     }
-    std::fs::rename(&tmp, path).map_err(|e| ConfigError::WriteError {
-        path: path.to_owned(),
-        source: e,
-    })?;
+    drop(file);
+
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(ConfigError::WriteError {
+            path: path.to_owned(),
+            source: e,
+        });
+    }
     Ok(())
+}
+
+/// Build a unique temp path next to `path`. Using a unique suffix per
+/// call lets us pass `O_EXCL` to `open()` without ever colliding with a
+/// stale temp file from a prior crashed run.
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    path.with_extension(format!("yaml.tmp.{}.{}", std::process::id(), nanos))
 }
 
 #[cfg(test)]

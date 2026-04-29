@@ -18,7 +18,7 @@
 - Global `--app <name>` flag on `oyster app account` to disambiguate when the active context has multiple apps; auto-picked when there's exactly one
 
 ### Changed — CLI security
-- `client.yaml` is now SSH-strict on Unix: load refuses any file with `mode & 0o077 != 0` (with a copy-pasteable `chmod 600 <path>` remediation message); save sets `0o600` on the temp file before the atomic rename. Windows behavior unchanged
+- `client.yaml` is now SSH-strict on Unix: load refuses any file with `mode & 0o077 != 0` (with a copy-pasteable `chmod 600 <path>` remediation message); save opens the temp file with `O_CREAT | O_EXCL` and mode `0o600` set at file-creation time (via `OpenOptions::mode`), so the yaml never lands on disk at a more permissive mode — closing the TOCTOU window between content-write and chmod. Each save uses a unique temp suffix to coexist with `O_EXCL` across crash-leftover temps. Windows behavior unchanged
 
 ### Dependencies
 - `oyster-cli` adds `inquire = 0.9.4` for the inline TUI revoke picker
