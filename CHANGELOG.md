@@ -1,11 +1,14 @@
 # Changelog
 
-## [Unreleased]
+## [0.6.0] - 2026-04-29
+
+### Breaking Changes
+- `oyster-cli` now refuses to read `client.yaml` on Unix if its mode allows any group/other access (`mode & 0o077 != 0`). Existing 0644-style configs from 0.5.0 will fail every CLI invocation until you run `chmod 600 <path>` (the error message embeds the exact command). Save opens the temp file with `O_CREAT | O_EXCL` and mode `0o600` set at file-creation time via `OpenOptions::mode`, so the yaml never lands on disk at a more permissive mode (closing the TOCTOU window between content-write and chmod). Each save uses a unique temp suffix to coexist with `O_EXCL` across crash-leftover temps. Windows behavior unchanged
+- New per-account active-api-key cap of **3** on `POST /api/v1/accounts/{account_id}/api-keys`: returns `409` with `"limit"` in the message when exceeded; revoke a key to free a slot. CLI users are insulated by the `oyster app account use` revoke-on-cap flow; direct HTTP callers must handle the new `409`
 
 ### Added — Server
 - `GET /api/v1/accounts` — list accounts owned by the authenticated app; returns `[AccountSummary]` with `active_api_key_count` per row
 - `GET /api/v1/accounts/{account_id}/api-keys` — list api-key metadata for an account (never returns the bearer secret)
-- Per-account active-api-key cap of **3** on `POST /api/v1/accounts/{account_id}/api-keys`: returns `409` with `"limit"` in the message when exceeded; revoking a key frees a slot
 - Optional `note` field on `POST /api/v1/accounts` and `POST /api/v1/accounts/{account_id}/api-keys` request bodies; defaults to `'api'` when omitted
 - Migration `015_api_keys_note.sql` (sqlite + postgres): adds `api_keys.note TEXT NOT NULL DEFAULT 'api'` plus a compound `(account_id, revoked_at)` index for the cap-count query
 
@@ -16,9 +19,6 @@
 - `oyster app account select` — TTY-only `inquire` picker over accounts; dispatches to `use`
 - `oyster app account keys <id-or-name>` — list api-key metadata for an account
 - Global `--app <name>` flag on `oyster app account` to disambiguate when the active context has multiple apps; auto-picked when there's exactly one
-
-### Changed — CLI security
-- `client.yaml` is now SSH-strict on Unix: load refuses any file with `mode & 0o077 != 0` (with a copy-pasteable `chmod 600 <path>` remediation message); save opens the temp file with `O_CREAT | O_EXCL` and mode `0o600` set at file-creation time (via `OpenOptions::mode`), so the yaml never lands on disk at a more permissive mode — closing the TOCTOU window between content-write and chmod. Each save uses a unique temp suffix to coexist with `O_EXCL` across crash-leftover temps. Windows behavior unchanged
 
 ### Dependencies
 - `oyster-cli` adds `inquire = 0.9.4` for the inline TUI revoke picker
