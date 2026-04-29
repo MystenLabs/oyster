@@ -88,7 +88,11 @@ async fn main() {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,s3s::ops=off".parse().unwrap()),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+                // s3s logs every unsigned/malformed request from internet bot
+                // traffic at ERROR. Force-silence the module regardless of
+                // RUST_LOG so production (which sets RUST_LOG=info) stays quiet.
+                .add_directive("s3s::ops=off".parse().unwrap()),
         )
         .init();
 
