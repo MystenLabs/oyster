@@ -219,6 +219,104 @@ oysterd app revoke-admin-key <OLD_KEY_ID>
 revoked) so an operator can confirm what is live. Multiple admin keys per
 app are supported with no cap.
 
+## Account Management
+
+Once a context has at least one app with an `admin_key`, the
+`oyster app account` subcommand tree manages the accounts that app
+owns. Use it to mint accounts, rotate which account the CLI's
+`api_key` points at, and inspect the api-keys an account has issued.
+
+### `--app <name>` selector
+
+Every `oyster app account` subcommand resolves which app to act
+through using `crates/oyster-cli/src/config.rs::resolve_admin`:
+
+- If the active context defines exactly one app, it's auto-selected.
+- If the active context defines multiple apps, you must pass
+  `--app <name>` (or the command errors and lists the known apps).
+- If the active context defines zero apps, the command errors —
+  import an admin key first with `oyster app import`.
+
+```bash
+oyster app account list                  # active context has 1 app
+oyster --app my-app account list         # multiple apps; pick one
+```
+
+### Subcommands
+
+#### `list`
+
+Tabular view of the accounts owned by the selected app — each row
+is `id`, `name`, `created_at`, `active_api_key_count`.
+
+```bash
+oyster app account list
+```
+
+#### `create [--name NAME] [--note NOTE] [--activate]`
+
+Mints a fresh account plus an initial api-key for it.
+
+- `--name NAME` — human-readable label stored on the account.
+- `--note NOTE` — note attached to the issued api-key (defaults to
+  `"api"` server-side).
+- `--activate` — atomically saves the new bearer to
+  `context.api_key` in `client.yaml`. Without this flag, the bearer
+  is printed once and you can wire it up yourself.
+
+```bash
+oyster app account create --name alice --activate
+```
+
+#### `use <id-or-name> [--revoke <key_id> | --revoke-oldest]`
+
+Pivots the active context's `api_key` onto a different account. It
+mints a fresh api-key on the target account (note `oyster-cli:
+activate <id-or-name>`), atomically writes it to `context.api_key`,
+and saves `client.yaml`.
+
+There's a server-side cap of **3 active api-keys per account**
+(`MAX_API_KEYS_PER_ACCOUNT` in
+`crates/oyster/src/routes/admin.rs`). If `use` would exceed that
+cap, the server returns `409 Conflict` with `"limit"` in the
+message and the CLI's behavior depends on whether stdout is a TTY:
+
+- **TTY**: the CLI uses `inquire::Select` (inline, never alt-screen)
+  to show the account's existing keys and ask which to revoke,
+  then retries the mint.
+- **Non-TTY** (CI, scripts, `--json`): the call fails unless you
+  pre-select the key to revoke. Pass either:
+  - `--revoke <KEY_ID>` to revoke a specific key, or
+  - `--revoke-oldest` to revoke the oldest active key (sorted by
+    `created_at`).
+
+The two flags are mutually exclusive.
+
+```bash
+oyster app account use alice
+oyster app account use alice --revoke-oldest
+oyster app account use alice --revoke 0123abcd...
+```
+
+#### `select`
+
+TTY-only `inquire` picker over the app's accounts. Dispatches to
+`use` with the chosen account. Errors out in non-TTY contexts —
+scripts should use `use <id-or-name>` directly.
+
+```bash
+oyster app account select
+```
+
+#### `keys <id-or-name>`
+
+Lists api-key metadata for the named account — id, note,
+`created_at`, `revoked_at`. Bearer secrets are never returned.
+
+```bash
+oyster app account keys alice
+```
+
 ## JSON Output
 
 Add `--json` to any command for machine-readable output:

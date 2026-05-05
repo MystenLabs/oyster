@@ -20,3 +20,4 @@
   - [AWS SDK Examples](guides/aws-sdk.md)
   - [Content Addressing](guides/content-addressing.md)
   - [Blob Lifecycle](guides/blob-lifecycle.md)
+  - [Webhooks](guides/webhooks.md)

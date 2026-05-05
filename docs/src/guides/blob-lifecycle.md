@@ -5,84 +5,100 @@ how Oyster's automatic extension service keeps your data alive.
 
 ## Upload and Expiration
 
-When you upload a blob, Oyster sets a default expiration of **30 days**:
+Walrus storage is epoch-scoped, not time-scoped. When you upload a blob,
+Oyster registers it under your account's `StoragePool` — a single
+on-chain object whose `end_epoch` defines the lifetime of every blob it
+holds. The first upload from an account lazily creates the pool with
+`POOL_INITIAL_EPOCHS_AHEAD` of runway (default `5`). Subsequent uploads
+share that same expiration.
 
-```json
-{
-  "key": "hello.txt",
-  "blob_id": "2cf24dba...",
-  "created_at": "2025-01-15T10:31:00Z",
-  "expires_at": "2025-02-14T10:31:00Z"
-}
-```
-
-The `expires_at` field reflects when the blob's on-chain storage allocation
-(on Walrus) would naturally expire. For blobs stored locally (filesystem
-backend), this timestamp is tracked in the database but not enforced.
+The pool's `end_epoch` is surfaced on the account; individual blob
+responses no longer carry an `expires_at` field. To inspect remaining
+runway, look at `pool_end_epoch` against the network's current epoch.
 
 ## Automatic Extension
 
-Oyster runs a **background extension service** that automatically renews
-blobs before they expire. In practice, this means your data persists
-indefinitely as long as:
+Oyster runs a **background extension worker** (`oysterd extend`) that
+keeps every account's `StoragePool` ahead of expiration. As long as the
+worker is running and the account's Pearl-derived wallet has WAL and
+SUI to spend, your blobs persist indefinitely.
 
-1. The extension service is running
-2. The account has sufficient on-chain funds (SUI/WAL)
+### How it works (continuous loop)
 
-### How It Works
+The worker is a continuous, idempotent loop modeled on Walrus's
+`garbage_collector.rs` — there is no cron-style "tick every N
+seconds." Each cycle:
 
-The extension service runs on a periodic loop:
+1. **Claim.** Atomically `UPDATE … RETURNING` a batch of `accounts`
+   rows whose `pool_end_epoch < current_epoch +
+   POOL_EXTEND_LOOKAHEAD_EPOCHS` and whose `extend_attempt_after <=
+   now`, stamping each claimed row with `extend_attempt_after = now +
+   EXTENSION_CLAIM_COOLDOWN_SECS` in the same statement.
+2. **Extend.** For each claimed pool, build an `extend_storage_pool`
+   PTB (extending by `POOL_EXTEND_EPOCHS` Walrus epochs), sign via
+   Pearl, and submit to Sui. On success, bump `pool_end_epoch` on the
+   account row.
+3. **Sleep.** If the cycle processed zero rows, sleep
+   `EXTENSION_IDLE_SLEEP_SECS`. Otherwise sleep `EXTENSION_BUSY_SLEEP_MS`
+   and run another cycle to drain remaining work.
 
-1. **Scan** — every check interval (default: 1 hour), query the database
-   for blobs expiring within the lookahead window (default: 7 days)
-2. **Extend** — for each expiring blob, submit a Walrus transaction to
-   extend the storage allocation by a set number of epochs (default: 5)
-3. **Update** — record the new expiration timestamp in the database
+### Multi-instance safe
 
-This means a blob uploaded today will be automatically renewed ~23 days
-later (30 days expiration minus 7 days lookahead), and then again every
-cycle as needed.
+The atomic claim + TTL stamp guarantees disjoint result sets across
+concurrent workers, so the extension worker is horizontally scalable
+— you can run multiple replicas against the same database without
+double-extending. The public Oyster testnet currently runs 2
+extender replicas behind a shared DB.
 
-### Extension Configuration
+The same `EXTENSION_CLAIM_COOLDOWN_SECS` TTL doubles as webhook-spam
+suppression: a row that just emitted `account.funding_required`
+cannot re-emit for the cooldown window, regardless of the attempt's
+outcome.
 
-Oyster administrators can tune the extension service with these environment
-variables:
+### Configuration
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | How often to check for expiring blobs (seconds) |
-| `BLOB_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead to look for upcoming expirations |
-| `BLOB_EXTEND_EPOCHS` | `5` | Number of Walrus epochs to extend by |
+| `POOL_EXTEND_LOOKAHEAD_EPOCHS` | `7` | Claim any pool expiring within `current_epoch + this`. Leave default unless your network's epoch length is unusual. |
+| `POOL_EXTEND_EPOCHS` | `5` | Walrus epochs each `extend_storage_pool` PTB extends by. Tune per network: testnet ≈ 1 day/epoch → `30`; mainnet ≈ 14 days/epoch → `4`. |
+| `EXTENSION_IDLE_SLEEP_SECS` | `30` | Sleep when a cycle finds zero work. Leave default unless tuning latency vs. RPC load. |
+| `EXTENSION_BUSY_SLEEP_MS` | `250` | Sleep between cycles while there's still work to drain. Leave default. |
+| `EXTENSION_CLAIM_BATCH_SIZE` | `100` | Max pool rows claimed per cycle. Leave default unless DB round-trip latency dominates. |
+| `EXTENSION_CLAIM_COOLDOWN_SECS` | `60` | Per-row claim TTL — also the webhook re-notify backoff for the same account. Leave default. |
 
-### Insufficient Funds
+### Insufficient funds
 
-If an account doesn't have enough on-chain funds to extend a blob, the
-extension service:
+If the Pearl-derived wallet for an account is short on WAL or SUI, the
+`extend_storage_pool` PTB fails with an insufficient-funds error.
+Oyster:
 
-1. Logs the error
-2. Posts a webhook notification to the owning app's `webhook_url` (if
-   configured) so administrators can top up the account
-3. Continues processing other blobs
+1. Logs the failure.
+2. POSTs an `account.funding_required` webhook to the owning app's
+   configured receiver URL (if any).
+3. Leaves the cooldown TTL stamped on the row so the same account
+   does not re-trigger the webhook for `EXTENSION_CLAIM_COOLDOWN_SECS`.
 
-The webhook payload includes the account ID, wallet address, and error
-details.
+The next cycle re-claims the row once the cooldown expires; if the
+wallet is still underfunded, another webhook fires. See
+[Webhooks](webhooks.md) for the full payload schema, retry policy,
+circuit-breaker behavior, and receiver examples.
 
 ## Blob States
 
-A blob goes through these states during its lifetime:
+A blob's lifetime is bound to its account's `StoragePool`:
 
 ```
-Upload → Active → Approaching Expiry → Extended → Active → ...
-                                    ↘ (if funds insufficient)
-                                      Expired
+Upload → Active → Pool Approaching Expiry → Pool Extended → Active → ...
+                                         ↘ (if wallet underfunded)
+                                           Funding Required webhook
 ```
 
 | State | Description |
 |-------|-------------|
-| **Active** | Blob is stored and accessible; expiration is in the future |
-| **Approaching Expiry** | Within the lookahead window; extension service will renew it |
-| **Extended** | Successfully renewed; `expires_at` updated with new date |
-| **Expired** | Not renewed (insufficient funds or service down); data may be lost on-chain |
+| **Active** | Blob is registered in a pool with `pool_end_epoch > current_epoch` |
+| **Pool Approaching Expiry** | `pool_end_epoch < current_epoch + POOL_EXTEND_LOOKAHEAD_EPOCHS`; the worker will claim and extend |
+| **Pool Extended** | `extend_storage_pool` PTB succeeded; `pool_end_epoch` advanced |
+| **Funding Required** | PTB failed insufficient-funds; webhook fired; cooldown TTL active |
 
 ## Deletion
 
@@ -92,15 +108,16 @@ Blobs can be explicitly deleted at any time via the API:
 - **S3 API:** `DeleteObject`
 - **CLI:** `oyster delete <key> --bucket <bucket>`
 
-Deletion is immediate and removes the blob metadata. The underlying data
-is only removed from storage when no other keys reference the same content
-(see [Content Addressing](content-addressing.md)).
+Deletion is reference-counted at the content-addressed level: the
+on-chain `delete_pooled_blob` PTB fires only when the last reference
+to a given `blob_id` is removed from the account (see
+[Content Addressing](content-addressing.md)).
 
 ## Local vs. On-Chain Storage
 
 | Aspect | Local (filesystem) | On-chain (Walrus) |
 |--------|-------------------|-------------------|
-| Expiration tracked | In database | On-chain + database |
-| Auto-renewal | Not applicable | Yes (extension service) |
-| `sui_object_id` | `null` | Sui object ID |
-| `expires_at` | Set but not enforced | Enforced by Walrus network |
+| Expiration tracked | Not applicable | `accounts.pool_end_epoch` (Walrus epochs) |
+| Auto-renewal | Not applicable | Yes (extension worker, multi-instance safe) |
+| `pooled_blob_object_id` | `null` | Sui object ID of the registered `PooledBlob` |
+| Storage scope | Per-blob file on disk | Pool-scoped capacity reservation |

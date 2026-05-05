@@ -171,8 +171,8 @@ Each cycle:
    `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui. On success bumps
    `pool_end_epoch` on the account row.
 3. On insufficient-funds failure, computes the WAL + SUI cost the wallet needs and POSTs an
-   `account.funding_required` webhook (see [SPEC § 10.5](./SPEC.md)). The cooldown TTL acts as
-   the only retry/back-off bookkeeping.
+   `account.funding_required` webhook (see [docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md)).
+   The cooldown TTL acts as the only retry/back-off bookkeeping.
 
 `POOL_EXTEND_LOOKAHEAD_EPOCHS` and `POOL_EXTEND_EPOCHS` are raw Walrus epochs — operators pick
 values appropriate to the deployed network's epoch duration:
@@ -181,6 +181,16 @@ values appropriate to the deployed network's epoch duration:
 |---------|--------------|--------------------------------|----------------------|
 | testnet | ≈ 1 day      | 7                              | 30                   |
 | mainnet | ≈ 14 days    | 1                              | 4                    |
+
+### Webhooks
+
+When the extension worker hits an insufficient-funds error, Oyster POSTs an
+`account.funding_required` event to the owning app's configured receiver URL. The payload
+carries a stable `event_id` (UUID v4, reused across retries), the Pearl-derived address, and
+the WAL/SUI amounts the wallet needs. Delivery uses bounded retries with a circuit breaker; v0.6.0
+sends an unsigned `POST` (HMAC signing is a tracked follow-up). See
+[docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md) for the full payload schema, retry
+policy, and receiver examples.
 
 ### Database
 
