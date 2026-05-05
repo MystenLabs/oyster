@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Breaking Changes
+- Extension task pivoted to a continuous, idempotent loop modeled on Walrus's `garbage_collector.rs`. Removed env vars: `BLOB_EXTEND_INTERVAL_SECS`, `POOL_EXTEND_LOOKAHEAD_DAYS`. New env vars: `POOL_EXTEND_LOOKAHEAD_EPOCHS` (raw epochs, replaces the day-shaped lookahead), `EXTENSION_IDLE_SLEEP_SECS` (default 30), `EXTENSION_BUSY_SLEEP_MS` (default 250), `EXTENSION_CLAIM_BATCH_SIZE` (default 100), `EXTENSION_CLAIM_COOLDOWN_SECS` (default 60). The cron-style `check_interval` field on `ExtensionConfig` is gone; `run_extension_cycle_once` now returns the number of pool rows processed instead of `(extended, errors)`
+- Webhook payload renamed and reshaped. Old: `InsufficientFundsPayload { account_id, address, error }` posted by `WebhookClient::notify_insufficient_funds`. New: `FundingRequiredPayload { event_id, type: "account.funding_required", account_id, pearl_address, amount: { wal_frost, sui_mist }, timestamp }` posted by `WebhookClient::notify_funding_required`. `event_id` is generated once per delivery and is stable across the internal retry loop, enabling receiver-side dedupe. Token amounts are decimal strings to avoid JSON-number precision loss for `u64`. The error string is no longer included
+- Migration `016_extend_attempt_after.sql` (sqlite + postgres): adds `accounts.extend_attempt_after TEXT` plus the partial index `accounts_extend_due ON accounts (pool_end_epoch, extend_attempt_after) WHERE storage_pool_object_id IS NOT NULL`. The atomic `UPDATE … RETURNING` claim guarantees disjoint result sets across concurrent workers, so the same row cannot be re-claimed (or re-notified) for `EXTENSION_CLAIM_COOLDOWN_SECS` regardless of the attempt's outcome — single backoff knob covers both worker-coordination and webhook-spam suppression
+
+### Added
+- `extension_cost::compute_extension_cost` helper computes `(wal_frost, sui_mist)` for a given pool + extend epochs. WAL is computed from `walrus_sui::utils::price_for_encoded_length`; SUI is a fixed `SUI_GAS_PER_EXTENSION_BUFFER_MIST = 100_000_000` (≈0.1 SUI) buffer — Oyster does not dry-run gas
+- `db::accounts::claim_pools_for_extension` (atomic `UPDATE … RETURNING` claim) and `db::accounts::fetch_webhook_urls_for_apps` follow-up keyed by the claim's app-ids
+
+### Recommended config per network
+
+| Network | Epoch length | `POOL_EXTEND_LOOKAHEAD_EPOCHS` | `POOL_EXTEND_EPOCHS` |
+|---------|--------------|--------------------------------|----------------------|
+| testnet | ≈ 1 day      | 7                              | 30                   |
+| mainnet | ≈ 14 days    | 1                              | 4                    |
+
 ## [0.6.0] - 2026-04-29
 
 ### Breaking Changes

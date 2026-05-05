@@ -18,6 +18,8 @@ pub mod db;
 pub mod direct_walrus_store;
 /// Application error types and HTTP response mapping.
 pub mod error;
+/// Helpers for estimating the WAL + SUI cost of extending a `StoragePool`.
+pub mod extension_cost;
 /// Background task that auto-extends expiring blobs.
 pub mod extension_task;
 /// Prometheus metric constants and recorder setup.

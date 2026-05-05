@@ -1,12 +1,16 @@
 use std::{collections::HashMap, time::Instant};
 
+use chrono::Utc;
 use metrics::{counter, gauge, histogram};
 use sui_types::base_types::{ObjectID, SuiAddress};
+use uuid::Uuid;
 use walrus_sui::client::{ReadClient as _, transaction_builder::WalrusPtbBuilder};
 
 use crate::{
     AccountId,
+    AppId,
     db::{self, DbPool, accounts::ExpiringPool},
+    extension_cost::{self, ExtensionCost},
     metrics::{
         EXTENSION_CYCLE_DURATION_SECONDS,
         EXTENSION_CYCLE_POOLS_PROCESSED,
@@ -17,24 +21,38 @@ use crate::{
     },
     pearl_client::PearlConnection,
     sui_transaction,
-    webhook::{self, InsufficientFundsPayload, WebhookClient},
+    webhook::{
+        self,
+        EVENT_TYPE_FUNDING_REQUIRED,
+        FundingAmount,
+        FundingRequiredPayload,
+        WebhookClient,
+    },
 };
 
 /// Configuration for the background `StoragePool` extension task.
 #[derive(Clone, Debug)]
 pub struct ExtensionConfig {
-    /// How often to check for expiring pools.
-    pub check_interval: std::time::Duration,
     /// Select pools whose `pool_end_epoch` is less than
-    /// `current_epoch + lookahead_epochs` (treated as ~days in config
-    /// but named by epoch unit here to match the on-chain model).
+    /// `current_epoch + lookahead_epochs`.
     pub lookahead_epochs: u32,
     /// Number of Walrus epochs to extend pools by.
     pub extend_epochs: u32,
+    /// Sleep duration when a cycle finds no work.
+    pub idle_sleep: std::time::Duration,
+    /// Sleep duration between busy cycles.
+    pub busy_sleep: std::time::Duration,
+    /// Maximum rows to claim per cycle.
+    pub claim_batch_size: i64,
+    /// Cooldown applied by `claim_pools_for_extension` — both the
+    /// don't-double-claim and the don't-spam-Harbor backoff.
+    pub claim_cooldown: std::time::Duration,
 }
 
-/// Run the background loop that periodically extends expiring
-/// `StoragePool` objects on Walrus.
+/// Run the background loop that continuously extends expiring `StoragePool`
+/// objects on Walrus. Modeled after Walrus's `garbage_collector.rs`: when a
+/// cycle finds nothing to do, sleep `idle_sleep`; while there is still work
+/// to drain, only pause for `busy_sleep` between cycles.
 pub async fn run_extension_loop(
     db: DbPool,
     pearl: PearlConnection,
@@ -44,10 +62,12 @@ pub async fn run_extension_loop(
     config: ExtensionConfig,
 ) {
     tracing::info!(
-        "pool extension task started (interval={}s, lookahead={}e, epochs={})",
-        config.check_interval.as_secs(),
+        "pool extension task started (lookahead={}e, extend={}e, idle={}s, busy={}ms, batch={})",
         config.lookahead_epochs,
         config.extend_epochs,
+        config.idle_sleep.as_secs(),
+        config.busy_sleep.as_millis(),
+        config.claim_batch_size,
     );
 
     let read_client =
@@ -61,21 +81,27 @@ pub async fn run_extension_loop(
         };
 
     loop {
-        tokio::time::sleep(config.check_interval).await;
-        let _ = run_extension_cycle_once(&db, &pearl, &rpc_url, &read_client, &config).await;
+        let processed =
+            run_extension_cycle_once(&db, &pearl, &rpc_url, &read_client, &config).await;
+        if processed == 0 {
+            tokio::time::sleep(config.idle_sleep).await;
+        } else {
+            tokio::time::sleep(config.busy_sleep).await;
+        }
     }
 }
 
-/// Execute exactly one pool-extension cycle synchronously, without the
-/// surrounding sleep loop. Tests use this to drive the extension task
-/// deterministically. Returns `(extended, errors)`.
+/// Execute exactly one pool-extension cycle synchronously. Returns the number
+/// of pool rows that were claimed and processed (regardless of outcome). A
+/// return of `0` means there was nothing to extend; callers can use this to
+/// pick between idle and busy sleeps.
 pub async fn run_extension_cycle_once(
     db: &DbPool,
     pearl: &PearlConnection,
     rpc_url: &str,
     read_client: &std::sync::Arc<walrus_sui::client::SuiReadClient>,
     config: &ExtensionConfig,
-) -> (u32, u32) {
+) -> u32 {
     counter!(EXTENSION_CYCLES_TOTAL).increment(1);
     let cycle_start = Instant::now();
 
@@ -84,21 +110,32 @@ pub async fn run_extension_cycle_once(
         Err(e) => {
             tracing::error!("failed to query current_epoch: {e}");
             counter!(EXTENSION_ERRORS_TOTAL, "stage" => "current_epoch").increment(1);
-            return (0, 1);
+            return 0;
         }
     };
 
     let cutoff_epoch = (current_epoch as i64) + (config.lookahead_epochs as i64);
+    let now = Utc::now();
+    let claim_until = now
+        + chrono::Duration::from_std(config.claim_cooldown)
+            .unwrap_or_else(|_| chrono::Duration::seconds(60));
 
-    let pools =
-        match db::accounts::list_accounts_with_pools_expiring_before(db, cutoff_epoch, 100).await {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::error!("failed to query expiring pools: {e}");
-                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_query").increment(1);
-                return (0, 1);
-            }
-        };
+    let pools = match db::accounts::claim_pools_for_extension(
+        db,
+        cutoff_epoch,
+        config.claim_batch_size,
+        claim_until,
+        now,
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("failed to claim expiring pools: {e}");
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_query").increment(1);
+            return 0;
+        }
+    };
 
     gauge!(EXTENSION_POOLS_EXPIRING).set(pools.len() as f64);
 
@@ -106,10 +143,25 @@ pub async fn run_extension_cycle_once(
         tracing::debug!("no pools need extension");
         gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(0.0);
         histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
-        return (0, 0);
+        return 0;
     }
 
     tracing::info!("{} pool(s) approaching expiry, extending", pools.len());
+
+    // Resolve webhook URLs once per cycle, keyed by the distinct app_ids in this batch.
+    let app_ids: Vec<AppId> = pools
+        .iter()
+        .map(|p| p.app_id)
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let webhook_urls = match db::accounts::fetch_webhook_urls_for_apps(db, &app_ids).await {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("failed to fetch webhook URLs: {e}");
+            HashMap::new()
+        }
+    };
 
     let mut extended = 0u32;
     let mut errors = 0u32;
@@ -173,28 +225,56 @@ pub async fn run_extension_cycle_once(
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
                 errors += 1;
 
-                if let Some(ref url) = pool.webhook_url
-                    && webhook::is_insufficient_funds_error(e.as_ref())
+                if webhook::is_insufficient_funds_error(e.as_ref())
+                    && let Some(Some(url)) = webhook_urls.get(&pool.app_id)
                 {
+                    let cost = match extension_cost::compute_extension_cost(
+                        read_client,
+                        pool,
+                        config.extend_epochs,
+                    )
+                    .await
+                    {
+                        Ok(c) => c,
+                        Err(err) => {
+                            tracing::warn!(
+                                account_id = %pool.account_id,
+                                error = %err,
+                                "failed to compute extension cost; falling back to zeros"
+                            );
+                            ExtensionCost {
+                                wal_frost: 0,
+                                sui_mist: 0,
+                            }
+                        }
+                    };
+
+                    let payload = FundingRequiredPayload {
+                        event_id: Uuid::new_v4(),
+                        event_type: EVENT_TYPE_FUNDING_REQUIRED,
+                        account_id: pool.account_id,
+                        pearl_address: sender_address.to_string(),
+                        amount: FundingAmount {
+                            wal_frost: cost.wal_frost.to_string(),
+                            sui_mist: cost.sui_mist.to_string(),
+                        },
+                        timestamp: Utc::now(),
+                    };
                     let wh = webhook_clients
                         .entry(url.clone())
                         .or_insert_with(|| WebhookClient::new(url.clone()));
-                    wh.notify_insufficient_funds(&InsufficientFundsPayload {
-                        account_id: pool.account_id,
-                        address: sender_address.to_string(),
-                        error: e.to_string(),
-                    })
-                    .await;
+                    wh.notify_funding_required(&payload).await;
                 }
             }
         }
     }
 
-    gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set((extended + errors) as f64);
+    let processed = extended + errors;
+    gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(processed as f64);
     histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
     tracing::info!(extended, errors, "extension cycle complete");
 
-    (extended, errors)
+    processed
 }
 
 async fn extend_single_pool(

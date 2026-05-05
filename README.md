@@ -155,19 +155,32 @@ reference to a given `blob_id` is removed from the account.
 
 ### Extension worker
 
-Run as a separate process with `oysterd extend`. When Walrus integration is active, it runs on
-a configurable interval:
+Run as a separate process with `oysterd extend`. The worker is a continuous, idempotent loop
+modeled on Walrus's `garbage_collector.rs`: while there is work to drain it sleeps briefly
+between cycles; once a cycle finds no candidates it backs off to a longer idle sleep.
 
-1. Queries the Oyster database for `StoragePool`s whose `end_epoch` falls within
-   `POOL_EXTEND_LOOKAHEAD_DAYS` of the current epoch.
-2. For each expiring pool, builds a single `extend_storage_pool` PTB (extending by
-   `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui.
-3. Updates the cached `pool_end_epoch` on the account row.
+Each cycle:
 
-When extension failures indicate insufficient funds and the blob's owning app has a
-`webhook_url` configured, Oyster notifies that URL with the account ID, wallet address, and
-error details. The webhook client uses a circuit breaker to avoid repeated calls to a failing
-endpoint.
+1. Atomically claims a batch of `accounts` rows whose `pool_end_epoch < current_epoch +
+   POOL_EXTEND_LOOKAHEAD_EPOCHS` and whose `extend_attempt_after <= now`, stamping each
+   claimed row with `extend_attempt_after = now + EXTENSION_CLAIM_COOLDOWN_SECS` in the same
+   `UPDATE … RETURNING` statement. The same row cannot be re-claimed (or re-notified) for the
+   cooldown window regardless of the attempt's outcome — a single backoff knob covers both
+   worker-coordination and webhook-spam suppression.
+2. For each claimed pool, builds an `extend_storage_pool` PTB (extending by
+   `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui. On success bumps
+   `pool_end_epoch` on the account row.
+3. On insufficient-funds failure, computes the WAL + SUI cost the wallet needs and POSTs an
+   `account.funding_required` webhook (see [SPEC § 10.5](./SPEC.md)). The cooldown TTL acts as
+   the only retry/back-off bookkeeping.
+
+`POOL_EXTEND_LOOKAHEAD_EPOCHS` and `POOL_EXTEND_EPOCHS` are raw Walrus epochs — operators pick
+values appropriate to the deployed network's epoch duration:
+
+| Network | Epoch length | `POOL_EXTEND_LOOKAHEAD_EPOCHS` | `POOL_EXTEND_EPOCHS` |
+|---------|--------------|--------------------------------|----------------------|
+| testnet | ≈ 1 day      | 7                              | 30                   |
+| mainnet | ≈ 14 days    | 1                              | 4                    |
 
 ### Database
 
@@ -200,8 +213,11 @@ files to `/run/secrets/`).
 | `POOL_INITIAL_EPOCHS_AHEAD` | `5` | Epochs ahead when creating a new `StoragePool` |
 | `POOL_INITIAL_ENCODED_CAPACITY_BYTES` | `1048576` | Initial reserved capacity for a new pool (1 MiB, Walrus `BYTES_PER_UNIT_SIZE`) |
 | `POOL_EXTEND_EPOCHS` | `5` | Epochs to extend a `StoragePool` by |
-| `POOL_EXTEND_LOOKAHEAD_DAYS` | `7` | How far ahead of pool expiry to trigger an extension |
-| `BLOB_EXTEND_INTERVAL_SECS` | `3600` | Extension worker cycle cadence |
+| `POOL_EXTEND_LOOKAHEAD_EPOCHS` | `7` | Epochs of runway: claim any pool expiring within `current_epoch + this` |
+| `EXTENSION_IDLE_SLEEP_SECS` | `30` | Sleep when the extension cycle finds no work |
+| `EXTENSION_BUSY_SLEEP_MS` | `250` | Sleep between extension cycles when there's still work to drain |
+| `EXTENSION_CLAIM_BATCH_SIZE` | `100` | Max pool rows claimed per cycle |
+| `EXTENSION_CLAIM_COOLDOWN_SECS` | `60` | Per-row claim TTL; same knob backs off both re-claim and webhook re-notify |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
 
 | CLI flag | Description |

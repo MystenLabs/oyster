@@ -114,11 +114,14 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         walrus_system_object: None,
         walrus_staking_object: None,
 
-        blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
         pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
-        pool_extend_lookahead_days: 7,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
     };
 
@@ -154,11 +157,14 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         walrus_system_object: None,
         walrus_staking_object: None,
 
-        blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
         pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
-        pool_extend_lookahead_days: 7,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
     };
 
@@ -1008,11 +1014,14 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
-        blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
         pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
-        pool_extend_lookahead_days: 7,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
     };
 
@@ -1174,11 +1183,14 @@ async fn metrics_endpoint_returns_prometheus_format() {
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
-        blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
         pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
-        pool_extend_lookahead_days: 7,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
     };
 
@@ -1245,11 +1257,14 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
-        blob_extend_interval_secs: 3600,
         pool_initial_epochs_ahead: 5,
         pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
         pool_extend_epochs: 5,
-        pool_extend_lookahead_days: 7,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
     };
 

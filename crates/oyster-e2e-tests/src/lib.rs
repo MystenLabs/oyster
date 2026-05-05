@@ -200,11 +200,14 @@ impl OysterTestHarness {
             sui_rpc_url: None,
             walrus_system_object: None,
             walrus_staking_object: None,
-            blob_extend_interval_secs: 3600,
             pool_initial_epochs_ahead: 1,
             pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
             pool_extend_epochs: 1,
-            pool_extend_lookahead_days: 7,
+            pool_extend_lookahead_epochs: 7,
+            extension_idle_sleep_secs: 30,
+            extension_busy_sleep_ms: 250,
+            extension_claim_batch_size: 100,
+            extension_claim_cooldown_secs: 60,
             extension_metrics_bind_addr: "unused".into(),
         };
 
@@ -241,13 +244,9 @@ impl OysterTestHarness {
         self.walrus_client.as_ref().sui_client()
     }
 
-    /// Run exactly one extension cycle synchronously, returning
-    /// `(extended, errors)`. Uses `ExtensionConfig { check_interval: ZERO, ... }`.
-    pub async fn trigger_extension_cycle(
-        &self,
-        lookahead_epochs: u32,
-        extend_epochs: u32,
-    ) -> (u32, u32) {
+    /// Run exactly one extension cycle synchronously, returning the number
+    /// of pool rows that were claimed and processed (regardless of outcome).
+    pub async fn trigger_extension_cycle(&self, lookahead_epochs: u32, extend_epochs: u32) -> u32 {
         let read_client = oyster::sui_transaction::build_sui_read_client(
             &self.rpc_url,
             self.system_object,
@@ -256,9 +255,12 @@ impl OysterTestHarness {
         .await
         .expect("build SuiReadClient");
         let config = oyster::extension_task::ExtensionConfig {
-            check_interval: std::time::Duration::ZERO,
             lookahead_epochs,
             extend_epochs,
+            idle_sleep: std::time::Duration::from_secs(30),
+            busy_sleep: std::time::Duration::from_millis(250),
+            claim_batch_size: 100,
+            claim_cooldown: std::time::Duration::from_secs(60),
         };
         oyster::extension_task::run_extension_cycle_once(
             &self.db,

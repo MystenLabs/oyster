@@ -232,9 +232,14 @@ async fn main() {
             let staking_object: ObjectID = stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
 
             let ext_config = oyster::extension_task::ExtensionConfig {
-                check_interval: std::time::Duration::from_secs(config.blob_extend_interval_secs),
-                lookahead_epochs: config.pool_extend_lookahead_days,
+                lookahead_epochs: config.pool_extend_lookahead_epochs,
                 extend_epochs: config.pool_extend_epochs,
+                idle_sleep: std::time::Duration::from_secs(config.extension_idle_sleep_secs),
+                busy_sleep: std::time::Duration::from_millis(config.extension_busy_sleep_ms),
+                claim_batch_size: config.extension_claim_batch_size,
+                claim_cooldown: std::time::Duration::from_secs(
+                    config.extension_claim_cooldown_secs,
+                ),
             };
 
             oyster::extension_task::run_extension_loop(

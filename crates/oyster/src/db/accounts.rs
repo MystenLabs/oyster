@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::{
@@ -6,20 +9,30 @@ use crate::{
     models::{Account, AccountSummary},
 };
 
+/// Format used to encode `DateTime<Utc>` values when binding to TEXT columns.
+/// Matches the format used by `datetime('now')` (SQLite) and the Postgres
+/// `to_char(... 'YYYY-MM-DD HH24:MI:SS')` defaults on the `accounts` table —
+/// same width and ordering, so lexicographic comparison is monotonic.
+const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
+
+fn ts(t: DateTime<Utc>) -> String {
+    t.format(TIMESTAMP_FORMAT).to_string()
+}
+
 /// Minimal account-level pool state needed by the extension task to schedule
 /// an `extend_storage_pool` PTB.
 #[derive(Debug, Clone)]
 pub struct ExpiringPool {
     /// Oyster account ID that owns the pool.
     pub account_id: AccountId,
+    /// Owning app — used to look up the per-app `webhook_url`.
+    pub app_id: AppId,
     /// On-chain Sui `ObjectID` of the `StoragePool`.
     pub storage_pool_object_id: String,
     /// Epoch at which the current reservation expires.
     pub pool_end_epoch: i64,
     /// Total encoded bytes reserved on the pool.
     pub pool_reserved_encoded_bytes: i64,
-    /// Optional webhook URL inherited from the owning app.
-    pub webhook_url: Option<String>,
 }
 
 /// Insert a new account belonging to the given app.
@@ -175,26 +188,42 @@ pub async fn update_pool_after_register(
     Ok(())
 }
 
-/// List accounts whose `StoragePool` expires before `cutoff_epoch`, joined
-/// with the owning app's `webhook_url`. Used by the background extension task
-/// to pick candidate pools for `extend_storage_pool`.
-pub async fn list_accounts_with_pools_expiring_before(
+/// Atomically claim a batch of pools that need extension and stamp them with
+/// `extend_attempt_after = claim_until`. A row is claimable when:
+///
+/// * it has a `StoragePool` (i.e. `storage_pool_object_id IS NOT NULL`); and
+/// * `pool_end_epoch < cutoff_epoch`; and
+/// * `extend_attempt_after IS NULL OR extend_attempt_after <= now`.
+///
+/// The single `UPDATE … RETURNING` statement is atomic per row on both SQLite
+/// (writer lock serializes claims) and Postgres (the implicit row lock taken
+/// by `UPDATE` covers the read-after-claim race). Two concurrent callers
+/// observe disjoint result sets — the second observes the freshly-stamped
+/// `extend_attempt_after` from the first and skips those rows.
+pub async fn claim_pools_for_extension(
     pool: &super::DbPool,
     cutoff_epoch: i64,
     limit: i64,
+    claim_until: DateTime<Utc>,
+    now: DateTime<Utc>,
 ) -> Result<Vec<ExpiringPool>, sqlx::Error> {
     let rows = sqlx::query(&super::sql(
-        "SELECT acc.id, acc.storage_pool_object_id, acc.pool_end_epoch, \
-                acc.pool_reserved_encoded_bytes, a.webhook_url \
-         FROM accounts acc \
-         JOIN apps a ON acc.app_id = a.id \
-         WHERE acc.storage_pool_object_id IS NOT NULL \
-           AND acc.pool_end_epoch IS NOT NULL \
-           AND acc.pool_end_epoch < ? \
-         ORDER BY acc.pool_end_epoch \
-         LIMIT ?",
+        "UPDATE accounts SET extend_attempt_after = ? \
+         WHERE id IN ( \
+             SELECT id FROM accounts \
+             WHERE storage_pool_object_id IS NOT NULL \
+               AND pool_end_epoch IS NOT NULL \
+               AND pool_end_epoch < ? \
+               AND (extend_attempt_after IS NULL OR extend_attempt_after <= ?) \
+             ORDER BY pool_end_epoch \
+             LIMIT ? \
+         ) \
+         RETURNING id, app_id, storage_pool_object_id, pool_end_epoch, \
+                   pool_reserved_encoded_bytes",
     ))
+    .bind(ts(claim_until))
     .bind(cutoff_epoch)
+    .bind(ts(now))
     .bind(limit)
     .fetch_all(pool)
     .await?;
@@ -203,10 +232,41 @@ pub async fn list_accounts_with_pools_expiring_before(
         .into_iter()
         .map(|r| ExpiringPool {
             account_id: r.get("id"),
+            app_id: r.get("app_id"),
             storage_pool_object_id: r.get("storage_pool_object_id"),
             pool_end_epoch: r.get("pool_end_epoch"),
             pool_reserved_encoded_bytes: r.get("pool_reserved_encoded_bytes"),
-            webhook_url: r.get("webhook_url"),
+        })
+        .collect())
+}
+
+/// Look up the per-app `webhook_url` for each app in `app_ids`. Apps without
+/// a webhook configured map to `None`; missing apps are simply absent from
+/// the map.
+pub async fn fetch_webhook_urls_for_apps(
+    pool: &super::DbPool,
+    app_ids: &[AppId],
+) -> Result<HashMap<AppId, Option<String>>, sqlx::Error> {
+    if app_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let placeholders = std::iter::repeat_n("?", app_ids.len())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let raw = format!("SELECT id, webhook_url FROM apps WHERE id IN ({placeholders})");
+    let q = super::sql(&raw);
+    let mut query = sqlx::query(&q);
+    for id in app_ids {
+        query = query.bind(id);
+    }
+    let rows = query.fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<AppId, _>("id"),
+                r.get::<Option<String>, _>("webhook_url"),
+            )
         })
         .collect())
 }
@@ -420,8 +480,12 @@ mod tests {
         assert_eq!(state.used_encoded_bytes, 150);
     }
 
+    fn now_at(secs: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(1_700_000_000 + secs, 0).unwrap()
+    }
+
     #[tokio::test]
-    async fn list_accounts_with_pools_expiring_before_filters_by_cutoff() {
+    async fn claim_pools_for_extension_filters_by_cutoff() {
         let pool = test_pool().await;
         let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
         let b = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
@@ -432,18 +496,21 @@ mod tests {
             .await
             .unwrap();
 
-        let results = list_accounts_with_pools_expiring_before(&pool, 20, 100)
+        let now = now_at(0);
+        let claim_until = now_at(60);
+        let results = claim_pools_for_extension(&pool, 20, 100, claim_until, now)
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].account_id, a.id);
+        assert_eq!(results[0].app_id, AppId::INTERNAL);
         assert_eq!(results[0].storage_pool_object_id, "0xaaa");
         assert_eq!(results[0].pool_end_epoch, 10);
         assert_eq!(results[0].pool_reserved_encoded_bytes, 1_000);
     }
 
     #[tokio::test]
-    async fn list_accounts_with_pools_expiring_before_skips_accounts_without_pool() {
+    async fn claim_pools_for_extension_skips_accounts_without_pool() {
         let pool = test_pool().await;
         let _unpooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
         let pooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
@@ -451,7 +518,7 @@ mod tests {
             .await
             .unwrap();
 
-        let results = list_accounts_with_pools_expiring_before(&pool, 100, 100)
+        let results = claim_pools_for_extension(&pool, 100, 100, now_at(60), now_at(0))
             .await
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -459,29 +526,132 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_accounts_with_pools_expiring_before_includes_webhook_url() {
+    async fn claim_pools_for_extension_skips_unexpired_ttl() {
         let pool = test_pool().await;
-        let app = crate::db::apps::create_app(
+        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+
+        // First claim stamps extend_attempt_after = now+60.
+        let first = claim_pools_for_extension(&pool, 100, 100, now_at(60), now_at(0))
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+
+        // Second call at now=30 — TTL still in the future, row should be skipped.
+        let second = claim_pools_for_extension(&pool, 100, 100, now_at(90), now_at(30))
+            .await
+            .unwrap();
+        assert!(second.is_empty());
+
+        // Third call at now=120 — TTL has expired, row is re-claimable and re-stamped.
+        let third = claim_pools_for_extension(&pool, 100, 100, now_at(180), now_at(120))
+            .await
+            .unwrap();
+        assert_eq!(third.len(), 1);
+        assert_eq!(third[0].account_id, a.id);
+    }
+
+    #[tokio::test]
+    async fn claim_pools_for_extension_lifts_row_after_bump() {
+        let pool = test_pool().await;
+        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+
+        let first = claim_pools_for_extension(&pool, 20, 100, now_at(60), now_at(0))
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+
+        // Simulate successful extend: pool_end_epoch jumps past the cutoff.
+        bump_pool_end_epoch(&pool, &a.id, 50).await.unwrap();
+
+        // Even with a fully-expired claim TTL, the row no longer matches the cutoff.
+        let second = claim_pools_for_extension(&pool, 20, 100, now_at(180), now_at(120))
+            .await
+            .unwrap();
+        assert!(second.is_empty());
+    }
+
+    #[tokio::test]
+    async fn claim_pools_for_extension_concurrent_callers_disjoint() {
+        let pool = test_pool().await;
+        // Insert several expiring pools.
+        let mut ids = Vec::new();
+        for i in 0..6 {
+            let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+            set_storage_pool(&pool, &acc.id, &format!("0x{i:03}"), 10, 1_000, 0)
+                .await
+                .unwrap();
+            ids.push(acc.id);
+        }
+
+        let p1 = pool.clone();
+        let p2 = pool.clone();
+        let now = now_at(0);
+        let until = now_at(60);
+        let (r1, r2) = tokio::join!(
+            tokio::spawn(async move {
+                claim_pools_for_extension(&p1, 100, 10, until, now)
+                    .await
+                    .unwrap()
+            }),
+            tokio::spawn(async move {
+                claim_pools_for_extension(&p2, 100, 10, until, now)
+                    .await
+                    .unwrap()
+            }),
+        );
+        let r1 = r1.unwrap();
+        let r2 = r2.unwrap();
+
+        // Together cover every row, with no overlap.
+        let mut seen: std::collections::HashSet<AccountId> =
+            r1.iter().map(|p| p.account_id).collect();
+        for p in &r2 {
+            assert!(
+                seen.insert(p.account_id),
+                "overlapping claim for {}",
+                p.account_id
+            );
+        }
+        assert_eq!(seen.len(), ids.len());
+    }
+
+    #[tokio::test]
+    async fn fetch_webhook_urls_for_apps_returns_map() {
+        let pool = test_pool().await;
+        let with_hook = crate::db::apps::create_app(
             &pool,
-            "webhook-app",
+            "with-hook",
             "wh@example.com",
             Some("https://example.com/hook"),
         )
         .await
         .unwrap();
-        let account = create_account(&pool, &app.id, None).await.unwrap();
-        set_storage_pool(&pool, &account.id, "0xddd", 10, 1_000, 0)
+        let without_hook = crate::db::apps::create_app(&pool, "no-hook", "n@example.com", None)
             .await
             .unwrap();
 
-        let results = list_accounts_with_pools_expiring_before(&pool, 100, 100)
+        let map = fetch_webhook_urls_for_apps(&pool, &[with_hook.id, without_hook.id])
             .await
             .unwrap();
-        assert_eq!(results.len(), 1);
+        assert_eq!(map.len(), 2);
         assert_eq!(
-            results[0].webhook_url.as_deref(),
+            map.get(&with_hook.id).unwrap().as_deref(),
             Some("https://example.com/hook")
         );
+        assert!(map.get(&without_hook.id).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_webhook_urls_for_apps_handles_empty_input() {
+        let pool = test_pool().await;
+        let map = fetch_webhook_urls_for_apps(&pool, &[]).await.unwrap();
+        assert!(map.is_empty());
     }
 
     #[tokio::test]

@@ -29,8 +29,6 @@ pub struct Config {
     pub walrus_system_object: Option<String>,
     /// Optional Walrus staking object ID on Sui.
     pub walrus_staking_object: Option<String>,
-    /// Interval in seconds between blob extension checks.
-    pub blob_extend_interval_secs: u64,
     /// Initial epoch window for newly-created `StoragePool` objects.
     pub pool_initial_epochs_ahead: u32,
     /// Initial encoded capacity (bytes) reserved on a newly-created `StoragePool`.
@@ -39,10 +37,22 @@ pub struct Config {
     /// reservation. Default is one full unit; subsequent uploads round growth up
     /// to the same quantum.
     pub pool_initial_encoded_capacity_bytes: u64,
-    /// Number of epochs to extend `StoragePool` objects by.
+    /// Number of Walrus epochs to extend `StoragePool` objects by on each cycle.
     pub pool_extend_epochs: u32,
-    /// Number of days to look ahead for expiring `StoragePool` objects.
-    pub pool_extend_lookahead_days: u32,
+    /// Number of Walrus epochs of runway: claim any pool whose `pool_end_epoch`
+    /// is within `current_epoch + lookahead_epochs`. Operator picks a value
+    /// appropriate to the deployed network's epoch duration.
+    pub pool_extend_lookahead_epochs: u32,
+    /// Sleep duration when the extension cycle finds no work (seconds).
+    pub extension_idle_sleep_secs: u64,
+    /// Sleep duration between batches when there is still work to drain (ms).
+    pub extension_busy_sleep_ms: u64,
+    /// Maximum number of pool rows to claim in a single cycle.
+    pub extension_claim_batch_size: i64,
+    /// Cooldown applied to a row by `claim_pools_for_extension`. Prevents the
+    /// same row from being re-claimed (or re-notified) for this long, regardless
+    /// of the attempt's outcome.
+    pub extension_claim_cooldown_secs: u64,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
 }
@@ -68,10 +78,6 @@ impl Config {
             sui_rpc_url: std::env::var("SUI_RPC_URL").ok(),
             walrus_system_object: std::env::var("WALRUS_SYSTEM_OBJECT").ok(),
             walrus_staking_object: std::env::var("WALRUS_STAKING_OBJECT").ok(),
-            blob_extend_interval_secs: std::env::var("BLOB_EXTEND_INTERVAL_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(3600),
             pool_initial_epochs_ahead: std::env::var("POOL_INITIAL_EPOCHS_AHEAD")
                 .ok()
                 .and_then(|v| v.parse().ok())
@@ -86,10 +92,26 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
-            pool_extend_lookahead_days: std::env::var("POOL_EXTEND_LOOKAHEAD_DAYS")
+            pool_extend_lookahead_epochs: std::env::var("POOL_EXTEND_LOOKAHEAD_EPOCHS")
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7),
+            extension_idle_sleep_secs: std::env::var("EXTENSION_IDLE_SLEEP_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30),
+            extension_busy_sleep_ms: std::env::var("EXTENSION_BUSY_SLEEP_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(250),
+            extension_claim_batch_size: std::env::var("EXTENSION_CLAIM_BATCH_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100),
+            extension_claim_cooldown_secs: std::env::var("EXTENSION_CLAIM_COOLDOWN_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(60),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
         }

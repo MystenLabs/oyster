@@ -1,12 +1,15 @@
-//! Outbound webhook client for notifying apps of insufficient funds.
+//! Outbound webhook client for notifying apps that an account's Pearl wallet
+//! needs funding.
 
 use std::{
     sync::Mutex,
     time::{Duration, Instant},
 };
 
+use chrono::{DateTime, Utc};
 use metrics::counter;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::{
     AccountId,
@@ -25,15 +28,40 @@ const FAILURE_THRESHOLD: u32 = 5;
 /// Seconds the circuit breaker stays open before allowing a probe request.
 const COOLDOWN_SECS: u64 = 60;
 
-/// Payload sent when a blob extension fails due to insufficient funds.
+/// Webhook event type emitted when an account's Pearl wallet cannot cover the
+/// next storage-pool extension.
+pub const EVENT_TYPE_FUNDING_REQUIRED: &str = "account.funding_required";
+
+/// Token amounts attached to a funding-required event. Encoded as decimal
+/// strings to avoid JSON-number precision loss for `u64`.
 #[derive(Debug, Serialize)]
-pub struct InsufficientFundsPayload {
-    /// Oyster account ID that owns the blob.
+pub struct FundingAmount {
+    /// Required WAL, in FROST units (1 WAL = 1e9 FROST).
+    pub wal_frost: String,
+    /// Required SUI, in MIST units (1 SUI = 1e9 MIST).
+    pub sui_mist: String,
+}
+
+/// Payload posted when a blob extension cannot be performed because Pearl's
+/// wallet for the account is short on either WAL or SUI.
+///
+/// `event_id` is generated once per delivery and is stable across the
+/// internal retry loop, so receivers can dedupe.
+#[derive(Debug, Serialize)]
+pub struct FundingRequiredPayload {
+    /// Stable id for this delivery — same across all retry attempts.
+    pub event_id: Uuid,
+    /// Event type discriminator (always `account.funding_required`).
+    #[serde(rename = "type")]
+    pub event_type: &'static str,
+    /// Oyster account whose pool needs extension funding.
     pub account_id: AccountId,
-    /// Sui wallet address that lacks funds.
-    pub address: String,
-    /// The error message from the failed transaction.
-    pub error: String,
+    /// Sui wallet address derived by Pearl for this account.
+    pub pearl_address: String,
+    /// Token amounts the wallet needs to perform the next extension.
+    pub amount: FundingAmount,
+    /// ISO-8601 UTC timestamp when the event was emitted.
+    pub timestamp: DateTime<Utc>,
 }
 
 /// HTTP client with retry logic and a circuit breaker for outbound webhooks.
@@ -67,7 +95,7 @@ impl WebhookClient {
     /// Send the webhook if the circuit is closed or half-open.
     ///
     /// Returns `Ok(())` even if skipped due to open circuit (fire-and-forget).
-    pub async fn notify_insufficient_funds(&self, payload: &InsufficientFundsPayload) {
+    pub async fn notify_funding_required(&self, payload: &FundingRequiredPayload) {
         if !self.should_attempt() {
             tracing::warn!(
                 account_id = %payload.account_id,
@@ -243,6 +271,38 @@ mod tests {
         let state = client.circuit.lock().unwrap();
         assert_eq!(state.consecutive_failures, 0);
         assert!(state.opened_at.is_none());
+    }
+
+    #[test]
+    fn test_funding_required_payload_json_shape() {
+        let event_id = Uuid::nil();
+        let timestamp = DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap();
+        let account_id: AccountId = "00000000-0000-0000-0000-000000000001".parse().unwrap();
+        let payload = FundingRequiredPayload {
+            event_id,
+            event_type: EVENT_TYPE_FUNDING_REQUIRED,
+            account_id,
+            pearl_address: "0xabc".into(),
+            amount: FundingAmount {
+                wal_frost: "12345".into(),
+                sui_mist: "67890".into(),
+            },
+            timestamp,
+        };
+
+        let json: serde_json::Value = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["event_id"], "00000000-0000-0000-0000-000000000000");
+        assert_eq!(json["type"], "account.funding_required");
+        assert_eq!(json["account_id"], "00000000-0000-0000-0000-000000000001");
+        assert_eq!(json["pearl_address"], "0xabc");
+        assert_eq!(json["amount"]["wal_frost"], "12345");
+        assert_eq!(json["amount"]["sui_mist"], "67890");
+        assert!(
+            json["timestamp"]
+                .as_str()
+                .unwrap()
+                .starts_with("2023-11-14")
+        );
     }
 
     #[test]

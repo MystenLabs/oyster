@@ -728,20 +728,33 @@ enum BlobStoreError {
 `BlobStoreError` is mapped to `AppError::BlobStore` and returns `500 Internal Server Error` in the
 HTTP response, except `NotFound` which returns `404`.
 
-## 10. Extension Task (Blob Lease Renewal)
+## 10. Extension Task (`StoragePool` Renewal)
 
-The extension task is a background loop that automatically renews expiring blob storage leases on
-Walrus.
+The extension task is a continuous, idempotent background loop that keeps every account's
+`StoragePool` extended at least `lookahead_epochs` epochs into the future. It is modeled on
+Walrus's `garbage_collector.rs`: while there is work to drain the loop sleeps briefly between
+cycles; once a cycle finds nothing to do it backs off to a longer idle sleep.
 
 ### 10.1 Configuration
 
 | Parameter | Default | Environment Variable |
 |-----------|---------|----------------------|
-| Check interval | 3600s (1 hour) | `BLOB_EXTEND_INTERVAL_SECS` |
-| Lookahead window | 7 days | `BLOB_EXTEND_LOOKAHEAD_DAYS` |
-| Extension amount | 5 epochs | `BLOB_EXTEND_EPOCHS` |
+| Lookahead window | 7 epochs | `POOL_EXTEND_LOOKAHEAD_EPOCHS` |
+| Extension amount | 5 epochs | `POOL_EXTEND_EPOCHS` |
+| Idle sleep (no work) | 30s | `EXTENSION_IDLE_SLEEP_SECS` |
+| Busy sleep (between batches) | 250ms | `EXTENSION_BUSY_SLEEP_MS` |
+| Claim batch size | 100 | `EXTENSION_CLAIM_BATCH_SIZE` |
+| Claim cooldown / per-row backoff | 60s | `EXTENSION_CLAIM_COOLDOWN_SECS` |
 | Metrics bind address | `0.0.0.0:50053` | `OYSTER_EXTENSION_METRICS_BIND_ADDR` |
 | Webhook URL | Per-app `webhook_url` | `apps.webhook_url` column |
+
+Lookahead and extend amounts are raw Walrus epochs — operators pick values appropriate to the
+deployed network's epoch duration:
+
+| Network | Epoch length | `POOL_EXTEND_LOOKAHEAD_EPOCHS` | `POOL_EXTEND_EPOCHS` |
+|---------|--------------|--------------------------------|----------------------|
+| testnet | ≈ 1 day      | 7                              | 30                   |
+| mainnet | ≈ 14 days    | 1                              | 4                    |
 
 ### 10.2 Execution
 
@@ -751,35 +764,62 @@ Invoked via `oysterd extend`. Requires all Walrus integration environment variab
 
 Each cycle:
 
-1. Query the database for all blobs where `expires_at` is within the lookahead window and
-   `sui_object_id IS NOT NULL`.
-2. For each qualifying blob:
+1. Atomically claim up to `extension_claim_batch_size` rows from `accounts` whose
+   `pool_end_epoch < current_epoch + lookahead_epochs` AND whose `extend_attempt_after <= now`,
+   stamping each claimed row with `extend_attempt_after = now + claim_cooldown` in the same
+   `UPDATE … RETURNING` statement. The same row cannot be re-claimed (by this worker or any
+   other) for `claim_cooldown_secs` regardless of the attempt's outcome.
+2. For each claimed row:
    a. Resolve the account ID to a Sui address via Pearl `GetAddress` (cached per cycle).
-   b. Build an `extend_blob` PTB on the Walrus system object.
-   c. Sign the PTB via Pearl gRPC.
-   d. Submit the signed transaction to Sui RPC.
-   e. Update `expires_at` in the database to reflect the new lease end.
-3. Record metrics (blobs processed, errors by stage, cycle duration).
-4. If any error indicates insufficient on-chain funds and the blob's owning app has a
-   `webhook_url`, invoke that app's webhook.
-5. Sleep for `check_interval` and repeat.
+   b. Build an `extend_storage_pool` PTB.
+   c. Sign via Pearl gRPC and submit the transaction to Sui RPC.
+   d. On success: bump `pool_end_epoch` in the database. The row now lives outside the cutoff
+      window, so the claim TTL becomes irrelevant.
+   e. On insufficient-funds failure: compute the WAL + SUI cost (§ 10.4) and POST the
+      `account.funding_required` webhook (§ 10.5). The claim TTL is the only backoff bookkeeping
+      — no separate "last notified" column.
+   f. On any other failure: log + increment metrics. Same TTL covers retry backoff.
+3. Record metrics (pools processed, errors by stage, cycle duration).
+4. Sleep `busy_sleep` if any rows were processed, else `idle_sleep`. Repeat.
 
-### 10.4 Insufficient Funds Webhook
+### 10.4 Cost Estimation
 
-Triggered when a transaction error message contains `"insufficientgas"` or
-`"insufficientcoinbalance"` (case-insensitive).
+For each insufficient-funds notification Oyster computes:
+
+* `wal_frost = price_for_encoded_length(pool_reserved_encoded_bytes, storage_price_per_unit_size,
+  extend_epochs)` via `walrus_sui::utils`. `storage_price_per_unit_size` is cached aggressively
+  inside the `SuiReadClient`, so per-cycle calls are cheap.
+* `sui_mist = SUI_GAS_PER_EXTENSION_BUFFER_MIST` — a constant ~0.1 SUI buffer, enough for ~100
+  extension PTBs. Oyster does not dry-run gas; the recipient should treat the value as a "send
+  roughly this much" hint, not a precise estimate.
+
+### 10.5 `account.funding_required` Webhook
+
+Triggered when a transaction error message contains `"insufficientgas"`,
+`"insufficientcoinbalance"`, or the literal substring `"insufficient"` (case-insensitive) and
+the blob's owning app has a `webhook_url`.
 
 Payload (`POST` to the app's `webhook_url`):
 
 ```json
 {
-  "account_id": "account_id",
-  "address": "0x...",
-  "error": "original error message"
+  "event_id": "8a1b3c20-…",
+  "type": "account.funding_required",
+  "account_id": "00000000-0000-0000-0000-000000000001",
+  "pearl_address": "0x…",
+  "amount": {
+    "wal_frost": "12345",
+    "sui_mist": "100000000"
+  },
+  "timestamp": "2024-01-01T00:00:00Z"
 }
 ```
 
-Retry policy: Up to 3 attempts with exponential backoff.
+`event_id` is generated once per delivery and is stable across the internal retry loop, so
+recipients can dedupe. Token amounts are decimal strings to avoid JSON-number precision loss for
+`u64`.
+
+Retry policy: Up to 3 attempts per delivery with exponential backoff.
 
 Circuit breaker: Opens after 5 consecutive failures. Resets after 60 seconds of cooldown. While
 open, webhook calls are skipped.

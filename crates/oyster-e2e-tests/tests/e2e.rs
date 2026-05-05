@@ -662,9 +662,8 @@ fn e2e_extension_task_extends_pool() {
             .await
             .expect("storage_pool_status before");
 
-        let (extended, errors) = harness.trigger_extension_cycle(7, 1).await;
-        assert_eq!(extended, 1, "exactly one pool should have been extended");
-        assert_eq!(errors, 0, "no errors during extension cycle");
+        let processed = harness.trigger_extension_cycle(7, 1).await;
+        assert_eq!(processed, 1, "exactly one pool should have been processed");
 
         let after = harness
             .walrus_sui_client()
