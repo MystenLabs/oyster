@@ -310,10 +310,11 @@ pub async fn bump_pool_end_epoch(
     new_end_epoch: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(&super::sql(
-        "UPDATE accounts SET pool_end_epoch = ? WHERE id = ?",
+        "UPDATE accounts SET pool_end_epoch = ? WHERE id = ? AND COALESCE(pool_end_epoch, 0) < ?",
     ))
     .bind(new_end_epoch)
     .bind(account_id)
+    .bind(new_end_epoch)
     .execute(pool)
     .await?;
     Ok(())
@@ -671,6 +672,39 @@ mod tests {
         assert_eq!(state.end_epoch, 99);
         assert_eq!(state.reserved_encoded_bytes, 1_000);
         assert_eq!(state.used_encoded_bytes, 400);
+    }
+
+    #[tokio::test]
+    async fn bump_pool_end_epoch_does_not_regress() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        set_storage_pool(&pool, &account.id, "0xabc", 100, 1_000, 400)
+            .await
+            .unwrap();
+
+        // Stale/smaller new_end_epoch must be a no-op.
+        bump_pool_end_epoch(&pool, &account.id, 50).await.unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 100);
+
+        // Equal new_end_epoch must also be a no-op (strict >).
+        bump_pool_end_epoch(&pool, &account.id, 100).await.unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 100);
+
+        // Strictly greater value still applies.
+        bump_pool_end_epoch(&pool, &account.id, 101).await.unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 101);
     }
 
     async fn mint_key(pool: &super::super::DbPool, account_id: &AccountId, note: &str) -> String {
