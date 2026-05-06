@@ -12,9 +12,10 @@ holds. The first upload from an account lazily creates the pool with
 `POOL_INITIAL_EPOCHS_AHEAD` of runway (default `5`). Subsequent uploads
 share that same expiration.
 
-The pool's `end_epoch` is surfaced on the account; individual blob
-responses no longer carry an `expires_at` field. To inspect remaining
-runway, look at `pool_end_epoch` against the network's current epoch.
+The pool's `end_epoch` is surfaced on the account as
+`pool_end_epoch`. To inspect remaining runway, compare it against
+the network's current epoch. Blob responses do not carry a per-blob
+expiration — every blob in the account shares the pool's lifetime.
 
 ## Automatic Extension
 
@@ -23,37 +24,30 @@ keeps every account's `StoragePool` ahead of expiration. As long as the
 worker is running and the account's Pearl-derived wallet has WAL and
 SUI to spend, your blobs persist indefinitely.
 
-### How it works (continuous loop)
+### What it guarantees
 
-The worker is a continuous, idempotent loop modeled on Walrus's
-`garbage_collector.rs` — there is no cron-style "tick every N
-seconds." Each cycle:
+While the worker is running:
 
-1. **Claim.** Atomically `UPDATE … RETURNING` a batch of `accounts`
-   rows whose `pool_end_epoch < current_epoch +
-   POOL_EXTEND_LOOKAHEAD_EPOCHS` and whose `extend_attempt_after <=
-   now`, stamping each claimed row with `extend_attempt_after = now +
-   EXTENSION_CLAIM_COOLDOWN_SECS` in the same statement.
-2. **Extend.** For each claimed pool, build an `extend_storage_pool`
-   PTB (extending by `POOL_EXTEND_EPOCHS` Walrus epochs), sign via
-   Pearl, and submit to Sui. On success, bump `pool_end_epoch` on the
-   account row.
-3. **Sleep.** If the cycle processed zero rows, sleep
-   `EXTENSION_IDLE_SLEEP_SECS`. Otherwise sleep `EXTENSION_BUSY_SLEEP_MS`
-   and run another cycle to drain remaining work.
+- Any account whose `pool_end_epoch` falls within
+  `current_epoch + POOL_EXTEND_LOOKAHEAD_EPOCHS` is picked up and its
+  pool extended by `POOL_EXTEND_EPOCHS` Walrus epochs, provided the
+  Pearl-derived wallet has the WAL and SUI to cover it.
+- Each pool is extended at most once per
+  `EXTENSION_CLAIM_COOLDOWN_SECS` window, so retries and
+  `account.funding_required` webhook deliveries are naturally rate-
+  limited per account. The same cooldown doubles as webhook-spam
+  suppression — a row that just emitted `account.funding_required`
+  cannot re-emit until the cooldown expires.
+- Latency between an account becoming eligible and its pool being
+  extended is bounded above by `EXTENSION_IDLE_SLEEP_SECS` plus the
+  RPC time of one extension.
 
-### Multi-instance safe
+### Horizontal scaling
 
-The atomic claim + TTL stamp guarantees disjoint result sets across
-concurrent workers, so the extension worker is horizontally scalable
-— you can run multiple replicas against the same database without
-double-extending. The public Oyster testnet currently runs 2
-extender replicas behind a shared DB.
-
-The same `EXTENSION_CLAIM_COOLDOWN_SECS` TTL doubles as webhook-spam
-suppression: a row that just emitted `account.funding_required`
-cannot re-emit for the cooldown window, regardless of the attempt's
-outcome.
+The worker is safe to run as multiple replicas against the same
+database — each pool is claimed by exactly one replica per cycle, so
+two extenders never double-extend the same pool. The public Oyster
+testnet runs 2 extender replicas behind a shared DB.
 
 ### Configuration
 

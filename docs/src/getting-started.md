@@ -114,8 +114,7 @@ Response:
   "size": 14,
   "md5": "9a0364b9e99bb480...",
   "sui_object_id": null,
-  "created_at": "2025-01-15T10:31:00Z",
-  "expires_at": "2025-02-14T10:31:00Z"
+  "created_at": "2025-01-15T10:31:00Z"
 }
 ```
 
@@ -161,8 +160,7 @@ Response:
       "content_type": "text/plain",
       "size": 14,
       "md5": "9a0364b9e99bb480...",
-      "created_at": "2025-01-15T10:31:00Z",
-      "expires_at": "2025-02-14T10:31:00Z"
+      "created_at": "2025-01-15T10:31:00Z"
     }
   ],
   "next_cursor": null

@@ -12,8 +12,9 @@ Key properties:
 - **Content-addressed** — identical content is stored only once
 - **Reference-counted deletion** — underlying data is removed only when no
   keys reference it
-- **30-day expiration** — blobs expire by default; an automatic extension
-  service renews them
+- **Pool-scoped expiration** — blobs share their account's `StoragePool`
+  lifetime; a background extension service renews each pool before it
+  expires (see [Blob Lifecycle](../guides/blob-lifecycle.md))
 
 ## Store Blob
 
@@ -92,8 +93,7 @@ curl -s -X PUT \
   "size": 14,
   "md5": "9a0364b9e99bb480dd25e1f0284c8555",
   "sui_object_id": null,
-  "created_at": "2025-01-15T10:31:00Z",
-  "expires_at": "2025-02-14T10:31:00Z"
+  "created_at": "2025-01-15T10:31:00Z"
 }
 ```
 
@@ -105,7 +105,6 @@ curl -s -X PUT \
 | `md5` | string | Hex-encoded MD5 digest (used as S3 ETag) |
 | `sui_object_id` | string or null | On-chain Sui object ID (if stored on Walrus) |
 | `created_at` | string | ISO 8601 timestamp |
-| `expires_at` | string or null | ISO 8601 expiration (default: 30 days) |
 
 The response includes an `ETag` header containing the quoted MD5 digest
 (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`).
@@ -243,8 +242,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \
       "size": 14,
       "md5": "9a0364b9e99bb480...",
       "sui_object_id": null,
-      "created_at": "2025-01-15T10:31:00Z",
-      "expires_at": "2025-02-14T10:31:00Z"
+      "created_at": "2025-01-15T10:31:00Z"
     }
   ],
   "next_cursor": null
@@ -262,7 +260,6 @@ curl -s -H "Authorization: Bearer $API_KEY" \
 | `md5` | string | Hex-encoded MD5 digest |
 | `sui_object_id` | string or null | On-chain Sui object ID |
 | `created_at` | string | ISO 8601 timestamp |
-| `expires_at` | string or null | ISO 8601 expiration |
 
 ## Update Blob Metadata
 

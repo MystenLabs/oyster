@@ -39,11 +39,12 @@ what's different from a full AWS S3 deployment.
 
 ### Object Expiration
 
-All objects expire after **30 days** by default. Oyster runs a background
-extension service that automatically renews objects before they expire, so
-in practice objects persist indefinitely as long as the service is running.
-
-There is no way to set a custom expiration per object.
+All objects in a bucket share the owning account's `StoragePool`
+lifetime — there is no per-object expiration to set. Oyster runs a
+background extension service that renews the pool before it expires,
+so objects persist indefinitely as long as the service is running and
+the account's wallet stays funded. See
+[Blob Lifecycle](../guides/blob-lifecycle.md) for the model.
 
 ### Bucket Naming
 

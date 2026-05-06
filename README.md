@@ -155,18 +155,18 @@ reference to a given `blob_id` is removed from the account.
 
 ### Extension worker
 
-Run as a separate process with `oysterd extend`. The worker is a continuous, idempotent loop
-modeled on Walrus's `garbage_collector.rs`: while there is work to drain it sleeps briefly
-between cycles; once a cycle finds no candidates it backs off to a longer idle sleep.
+Run as a separate process with `oysterd extend`. The worker runs a continuous, idempotent loop:
+while there is work to drain it sleeps briefly between cycles; once a cycle finds no candidates
+it backs off to a longer idle sleep.
 
 Each cycle:
 
 1. Atomically claims a batch of `accounts` rows whose `pool_end_epoch < current_epoch +
-   POOL_EXTEND_LOOKAHEAD_EPOCHS` and whose `extend_attempt_after <= now`, stamping each
-   claimed row with `extend_attempt_after = now + EXTENSION_CLAIM_COOLDOWN_SECS` in the same
-   `UPDATE … RETURNING` statement. The same row cannot be re-claimed (or re-notified) for the
-   cooldown window regardless of the attempt's outcome — a single backoff knob covers both
-   worker-coordination and webhook-spam suppression.
+   POOL_EXTEND_LOOKAHEAD_EPOCHS` and whose `extend_attempt_after <= now`, stamping each claimed
+   row with `extend_attempt_after = now + EXTENSION_CLAIM_COOLDOWN_SECS` in the same
+   transaction. The same row cannot be re-claimed (or re-notified) for the cooldown window
+   regardless of the attempt's outcome — a single backoff knob covers both worker-coordination
+   and webhook-spam suppression.
 2. For each claimed pool, builds an `extend_storage_pool` PTB (extending by
    `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui. On success bumps
    `pool_end_epoch` on the account row.

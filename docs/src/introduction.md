@@ -52,8 +52,10 @@ Key properties of blobs:
 - **Overwrite semantics** — uploading to an existing key replaces the blob.
 - **Reference-counted deletion** — deleting a key removes the reference;
   the underlying data is only removed when no other keys point to it.
-- **Expiration** — blobs expire after 30 days by default. An automatic
-  extension service renews them before they expire.
+- **Expiration** — blobs share their account's `StoragePool` lifetime
+  rather than expiring individually. A background extension service
+  renews each pool before it expires; see
+  [Blob Lifecycle](guides/blob-lifecycle.md) for details.
 
 ## Two API Surfaces
 

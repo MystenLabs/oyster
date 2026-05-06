@@ -43,8 +43,9 @@ If `--content-type` is omitted, it defaults to `application/octet-stream`.
 ### Key Behavior
 
 - **Overwrite:** Uploading to an existing key replaces the object
-- **Expiration:** Objects expire after 30 days by default (automatically
-  renewed by Oyster's extension service)
+- **Expiration:** Objects share the owning account's `StoragePool`
+  lifetime; the background extension service renews the pool before it
+  expires (see [Blob Lifecycle](../guides/blob-lifecycle.md))
 - **Content-addressed:** Identical content produces the same blob ID
   internally, enabling deduplication
 

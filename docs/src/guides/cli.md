@@ -40,10 +40,6 @@ contexts:
 > **Important:** The URL must include the `/api/v1` path. The CLI appends
 > endpoint paths (like `/buckets`) directly to this URL.
 
-> **Breaking change:** the pre-0.3 flat schema (top-level `url` /
-> `api_key`) no longer parses. Migrate by wrapping your existing values in
-> a named context under `contexts:`.
-
 Precedence for the active-context name (highest first):
 
 1. `--context <name>` flag
