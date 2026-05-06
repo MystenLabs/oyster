@@ -187,10 +187,14 @@ values appropriate to the deployed network's epoch duration:
 When the extension worker hits an insufficient-funds error, Oyster POSTs an
 `account.funding_required` event to the owning app's configured receiver URL. The payload
 carries a stable `event_id` (UUID v4, reused across retries), the Pearl-derived address, and
-the WAL/SUI amounts the wallet needs. Delivery uses bounded retries with a circuit breaker; v0.6.0
-sends an unsigned `POST` (HMAC signing is a tracked follow-up). See
-[docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md) for the full payload schema, retry
-policy, and receiver examples.
+the WAL/SUI amounts the wallet needs. Delivery uses bounded retries with a circuit breaker.
+Each delivery is signed with a per-app Ed25519 keypair; receivers verify with the
+`X-Oyster-Signature` (`ed25519=<base64(sig)>` over the body) and
+`X-Oyster-Public-Key-Fingerprint` headers. App builders register and rotate the receiver URL
+self-service via `oyster app webhook set <URL>` (or
+`PUT /api/v1/admin/app/webhook`); each call generates a fresh keypair and returns the public
+key. See [docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md) for the full payload
+schema, retry policy, signature verification, and receiver examples.
 
 ### Database
 
@@ -200,7 +204,8 @@ the `DATABASE_URL` connection string. Migrations are per backend under `crates/o
 - `migrations/sqlite/001_initial.sql`
 - `migrations/postgres/001_initial.sql`
 
-Tables: `accounts`, `api_keys`, `s3_access_keys`, `apps`, `buckets`, `blobs`, `blob_tags`.
+Tables: `accounts`, `api_keys`, `s3_access_keys`, `apps`, `app_admin_keys`, `buckets`, `blobs`,
+`blob_tags`, `audit_events`.
 
 ### Configuration
 
