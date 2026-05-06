@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-05-06
+
+### Changed
+- Documentation pass to strip pre-release backwards-facing language. Asides like "no longer carry `expires_at`", per-blob `expires_at` JSON snippets, "30-day default" wording, and the pre-0.3 `client.yaml` flat-schema breaking-change blockquote have been replaced with positive, present-tense statements about the current pool-scoped model. The `Blob Lifecycle` "How it works (continuous loop)" + "Multi-instance safe" walkthrough (with `UPDATE … RETURNING` and the `garbage_collector.rs` reference) is now framed as operational guarantees: latency bound, per-account cooldown rate-limit, and replica safety. The README's extension-worker section drops the `garbage_collector.rs` aside and the literal SQL phrasing while keeping the operational facts. No code or API changes
+
 ## [0.7.0] - 2026-05-05
 
 ### Breaking Changes
