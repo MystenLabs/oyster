@@ -2,33 +2,16 @@
 
 ## [Unreleased]
 
-## [0.6.0] - 2026-04-29
+## [0.7.0] - 2026-05-05
 
 ### Breaking Changes
-- `oyster-cli` now refuses to read `client.yaml` on Unix if its mode allows any group/other access (`mode & 0o077 != 0`). Existing 0644-style configs from 0.5.0 will fail every CLI invocation until you run `chmod 600 <path>` (the error message embeds the exact command). Save opens the temp file with `O_CREAT | O_EXCL` and mode `0o600` set at file-creation time via `OpenOptions::mode`, so the yaml never lands on disk at a more permissive mode (closing the TOCTOU window between content-write and chmod). Each save uses a unique temp suffix to coexist with `O_EXCL` across crash-leftover temps. Windows behavior unchanged
-- New per-account active-api-key cap of **3** on `POST /api/v1/accounts/{account_id}/api-keys`: returns `409` with `"limit"` in the message when exceeded; revoke a key to free a slot. CLI users are insulated by the `oyster app account use` revoke-on-cap flow; direct HTTP callers must handle the new `409`
 - Extension task pivoted to a continuous, idempotent loop modeled on Walrus's `garbage_collector.rs`. Removed env vars: `BLOB_EXTEND_INTERVAL_SECS`, `POOL_EXTEND_LOOKAHEAD_DAYS`. New env vars: `POOL_EXTEND_LOOKAHEAD_EPOCHS` (raw epochs, replaces the day-shaped lookahead), `EXTENSION_IDLE_SLEEP_SECS` (default 30), `EXTENSION_BUSY_SLEEP_MS` (default 250), `EXTENSION_CLAIM_BATCH_SIZE` (default 100), `EXTENSION_CLAIM_COOLDOWN_SECS` (default 60). The cron-style `check_interval` field on `ExtensionConfig` is gone; `run_extension_cycle_once` now returns the number of pool rows processed instead of `(extended, errors)`
 - Webhook payload renamed and reshaped. Old: `InsufficientFundsPayload { account_id, address, error }` posted by `WebhookClient::notify_insufficient_funds`. New: `FundingRequiredPayload { event_id, type: "account.funding_required", account_id, pearl_address, amount: { wal_frost, sui_mist }, timestamp }` posted by `WebhookClient::notify_funding_required`. `event_id` is generated once per delivery and is stable across the internal retry loop, enabling receiver-side dedupe. Token amounts are decimal strings to avoid JSON-number precision loss for `u64`. The error string is no longer included
 - Migration `016_extend_attempt_after.sql` (sqlite + postgres): adds `accounts.extend_attempt_after TEXT` plus the partial index `accounts_extend_due ON accounts (pool_end_epoch, extend_attempt_after) WHERE storage_pool_object_id IS NOT NULL`. The atomic `UPDATE … RETURNING` claim guarantees disjoint result sets across concurrent workers, so the same row cannot be re-claimed (or re-notified) for `EXTENSION_CLAIM_COOLDOWN_SECS` regardless of the attempt's outcome — single backoff knob covers both worker-coordination and webhook-spam suppression
 
-### Added — Server
-- `GET /api/v1/accounts` — list accounts owned by the authenticated app; returns `[AccountSummary]` with `active_api_key_count` per row
-- `GET /api/v1/accounts/{account_id}/api-keys` — list api-key metadata for an account (never returns the bearer secret)
-- Optional `note` field on `POST /api/v1/accounts` and `POST /api/v1/accounts/{account_id}/api-keys` request bodies; defaults to `'api'` when omitted
-- Migration `015_api_keys_note.sql` (sqlite + postgres): adds `api_keys.note TEXT NOT NULL DEFAULT 'api'` plus a compound `(account_id, revoked_at)` index for the cap-count query
+### Added
 - `extension_cost::compute_extension_cost` helper computes `(wal_frost, sui_mist)` for a given pool + extend epochs. WAL is computed from `walrus_sui::utils::price_for_encoded_length`; SUI is a fixed `SUI_GAS_PER_EXTENSION_BUFFER_MIST = 100_000_000` (≈0.1 SUI) buffer — Oyster does not dry-run gas
 - `db::accounts::claim_pools_for_extension` (atomic `UPDATE … RETURNING` claim) and `db::accounts::fetch_webhook_urls_for_apps` follow-up keyed by the claim's app-ids
-
-### Added — CLI
-- `oyster app account list` — table over accounts (id, name, created_at, active_api_key_count)
-- `oyster app account create [--name NAME] [--note NOTE] [--activate]` — mints account + initial api-key; `--activate` saves the bearer to `context.api_key` atomically
-- `oyster app account use <id-or-name> [--revoke <key_id> | --revoke-oldest]` — mints a fresh api-key (note `oyster-cli: activate <id-or-name>`) and replaces `context.api_key` atomically; on `409` in a TTY, prompts via `inquire` (inline, never alt-screen) and retries
-- `oyster app account select` — TTY-only `inquire` picker over accounts; dispatches to `use`
-- `oyster app account keys <id-or-name>` — list api-key metadata for an account
-- Global `--app <name>` flag on `oyster app account` to disambiguate when the active context has multiple apps; auto-picked when there's exactly one
-
-### Dependencies
-- `oyster-cli` adds `inquire = 0.9.4` for the inline TUI revoke picker
 
 ### Changed
 - Dependency bumps: `sui` → `testnet-v1.71.0`, `walrus-*` → `main`. Dropped the `[patch.crates-io]` `s3s` fork (`wbbradley/s3s@oyster-chrono-relax`); upstream `s3s` is now compatible with the workspace's `chrono` pin
@@ -43,6 +26,29 @@
 |---------|--------------|--------------------------------|----------------------|
 | testnet | ≈ 1 day      | 7                              | 30                   |
 | mainnet | ≈ 14 days    | 1                              | 4                    |
+
+## [0.6.0] - 2026-04-29
+
+### Breaking Changes
+- `oyster-cli` now refuses to read `client.yaml` on Unix if its mode allows any group/other access (`mode & 0o077 != 0`). Existing 0644-style configs from 0.5.0 will fail every CLI invocation until you run `chmod 600 <path>` (the error message embeds the exact command). Save opens the temp file with `O_CREAT | O_EXCL` and mode `0o600` set at file-creation time via `OpenOptions::mode`, so the yaml never lands on disk at a more permissive mode (closing the TOCTOU window between content-write and chmod). Each save uses a unique temp suffix to coexist with `O_EXCL` across crash-leftover temps. Windows behavior unchanged
+- New per-account active-api-key cap of **3** on `POST /api/v1/accounts/{account_id}/api-keys`: returns `409` with `"limit"` in the message when exceeded; revoke a key to free a slot. CLI users are insulated by the `oyster app account use` revoke-on-cap flow; direct HTTP callers must handle the new `409`
+
+### Added — Server
+- `GET /api/v1/accounts` — list accounts owned by the authenticated app; returns `[AccountSummary]` with `active_api_key_count` per row
+- `GET /api/v1/accounts/{account_id}/api-keys` — list api-key metadata for an account (never returns the bearer secret)
+- Optional `note` field on `POST /api/v1/accounts` and `POST /api/v1/accounts/{account_id}/api-keys` request bodies; defaults to `'api'` when omitted
+- Migration `015_api_keys_note.sql` (sqlite + postgres): adds `api_keys.note TEXT NOT NULL DEFAULT 'api'` plus a compound `(account_id, revoked_at)` index for the cap-count query
+
+### Added — CLI
+- `oyster app account list` — table over accounts (id, name, created_at, active_api_key_count)
+- `oyster app account create [--name NAME] [--note NOTE] [--activate]` — mints account + initial api-key; `--activate` saves the bearer to `context.api_key` atomically
+- `oyster app account use <id-or-name> [--revoke <key_id> | --revoke-oldest]` — mints a fresh api-key (note `oyster-cli: activate <id-or-name>`) and replaces `context.api_key` atomically; on `409` in a TTY, prompts via `inquire` (inline, never alt-screen) and retries
+- `oyster app account select` — TTY-only `inquire` picker over accounts; dispatches to `use`
+- `oyster app account keys <id-or-name>` — list api-key metadata for an account
+- Global `--app <name>` flag on `oyster app account` to disambiguate when the active context has multiple apps; auto-picked when there's exactly one
+
+### Dependencies
+- `oyster-cli` adds `inquire = 0.9.4` for the inline TUI revoke picker
 
 ## [0.5.0] - 2026-04-28
 
