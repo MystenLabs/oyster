@@ -7,6 +7,7 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use ed25519_dalek::SigningKey;
 use metrics::counter;
 use serde::Serialize;
 use uuid::Uuid;
@@ -19,6 +20,7 @@ use crate::{
         WEBHOOK_FAILURES_TOTAL,
         WEBHOOK_SUCCESSES_TOTAL,
     },
+    webhook_keys,
 };
 
 /// Maximum number of retry attempts per webhook call.
@@ -68,6 +70,8 @@ pub struct FundingRequiredPayload {
 pub struct WebhookClient {
     client: reqwest::Client,
     url: String,
+    signing_key: SigningKey,
+    public_key: [u8; webhook_keys::KEY_LEN],
     circuit: Mutex<CircuitState>,
 }
 
@@ -77,14 +81,21 @@ struct CircuitState {
 }
 
 impl WebhookClient {
-    /// Create a new webhook client targeting the given URL.
-    pub fn new(url: String) -> Self {
+    /// Create a new webhook client targeting the given URL with the per-app
+    /// keypair used to sign every delivery.
+    pub fn new(
+        url: String,
+        signing_key: SigningKey,
+        public_key: [u8; webhook_keys::KEY_LEN],
+    ) -> Self {
         Self {
             client: reqwest::Client::builder()
                 .timeout(Duration::from_secs(10))
                 .build()
                 .expect("failed to build reqwest client"),
             url,
+            signing_key,
+            public_key,
             circuit: Mutex::new(CircuitState {
                 consecutive_failures: 0,
                 opened_at: None,
@@ -106,11 +117,32 @@ impl WebhookClient {
 
         counter!(WEBHOOK_ATTEMPTS_TOTAL).increment(1);
 
+        // Serialize once; sign exactly the bytes that go on the wire.
+        let body_bytes = serde_json::to_vec(payload).expect("serialize FundingRequiredPayload");
+        let signature = webhook_keys::sign(&self.signing_key, &body_bytes);
+        let sig_header = format!(
+            "ed25519={}",
+            base64::engine::Engine::encode(
+                &base64::engine::general_purpose::STANDARD,
+                signature.to_bytes(),
+            ),
+        );
+        let fp_header = webhook_keys::fingerprint(&self.public_key);
+
         let mut last_err = None;
         let mut delay = Duration::from_millis(100);
 
         for attempt in 1..=MAX_RETRIES {
-            match self.client.post(&self.url).json(payload).send().await {
+            match self
+                .client
+                .post(&self.url)
+                .header("content-type", "application/json")
+                .header("X-Oyster-Signature", &sig_header)
+                .header("X-Oyster-Public-Key-Fingerprint", &fp_header)
+                .body(body_bytes.clone())
+                .send()
+                .await
+            {
                 Ok(resp) if resp.status().is_success() => {
                     self.record_success();
                     counter!(WEBHOOK_SUCCESSES_TOTAL).increment(1);
@@ -219,6 +251,11 @@ mod tests {
     }
     impl std::error::Error for FakeError {}
 
+    fn test_client(url: &str) -> WebhookClient {
+        let (sk, pk) = webhook_keys::generate_keypair();
+        WebhookClient::new(url.to_string(), sk, pk)
+    }
+
     #[test]
     fn test_is_insufficient_funds_error() {
         assert!(is_insufficient_funds_error(
@@ -241,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_opens_after_threshold() {
-        let client = WebhookClient::new("http://localhost:9999/webhook".into());
+        let client = test_client("http://localhost:9999/webhook");
 
         // Circuit should be closed initially.
         assert!(client.should_attempt());
@@ -257,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_resets_on_success() {
-        let client = WebhookClient::new("http://localhost:9999/webhook".into());
+        let client = test_client("http://localhost:9999/webhook");
 
         for _ in 0..FAILURE_THRESHOLD {
             client.record_failure();
@@ -307,7 +344,7 @@ mod tests {
 
     #[test]
     fn test_circuit_breaker_half_open_after_cooldown() {
-        let client = WebhookClient::new("http://localhost:9999/webhook".into());
+        let client = test_client("http://localhost:9999/webhook");
 
         for _ in 0..FAILURE_THRESHOLD {
             client.record_failure();

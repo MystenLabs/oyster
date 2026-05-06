@@ -297,6 +297,91 @@ curl -s -X DELETE \
 | `403` | Account does not belong to the authenticated app |
 | `404` | Access key not found or already revoked |
 
+## App
+
+### Get App
+
+```
+GET /api/v1/admin/app
+```
+
+Returns the authenticated app, including the current webhook URL and
+the base64-encoded Ed25519 public key paired with it. Useful when an
+admin lost the response from `PUT /admin/app/webhook`.
+
+**Response** (`200 OK`):
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "my-app",
+  "contact_email": "admin@example.com",
+  "webhook_url": "https://example.com/oyster/webhook",
+  "webhook_public_key": "base64-encoded-32-byte-key",
+  "created_at": "2025-01-15T10:30:00Z"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `webhook_url` | string or null | Currently configured webhook URL, or `null` when none |
+| `webhook_public_key` | string or null | Base64-encoded 32-byte Ed25519 public key, or `null` when no webhook is configured |
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `401` | Missing or invalid admin key |
+
+### Set Webhook URL
+
+```
+PUT /api/v1/admin/app/webhook
+```
+
+Registers or rotates the webhook URL for the authenticated app. Each
+call generates a fresh Ed25519 keypair; the response is the only
+opportunity to capture the public key for verification. Subsequent
+deliveries are signed with the corresponding private key — see
+[Webhooks](../guides/webhooks.md) for the signature format.
+
+**Request body:**
+
+```json
+{ "webhook_url": "https://example.com/oyster/webhook" }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `webhook_url` | string | yes | Receiver URL. Must be `https://`, ≤ 2048 chars, must not embed credentials, must have a host |
+
+**Response** (`200 OK`): same shape as `GET /admin/app` above.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Webhook URL invalid (bad scheme, embedded credentials, oversize, host-less, malformed) |
+| `401` | Missing or invalid admin key |
+
+### Clear Webhook URL
+
+```
+DELETE /api/v1/admin/app/webhook
+```
+
+Clears the webhook URL and discards the keypair. Subsequent
+extension failures will not deliver a webhook.
+
+**Response** (`200 OK`): the updated app row with all three webhook
+fields nulled.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `401` | Missing or invalid admin key |
+
 ## Server Commands
 
 The `oysterd app` subcommands let server operators manage apps and admin
@@ -305,17 +390,18 @@ keys from the command line.
 ### Create App
 
 ```bash
-oysterd app new --name <NAME> --contact_email <EMAIL> [--webhook_url <URL>] [--no-key]
+oysterd app new --name <NAME> --contact_email <EMAIL> [--no-key]
 ```
 
 Creates a new app, prints its UUID, and (by default) auto-issues a first
-admin key alongside.
+admin key alongside. Webhook URLs are configured by the app builder
+using the self-service `PUT /admin/app/webhook` endpoint above (or
+`oyster app webhook set <URL>`).
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--name` | yes | Human-readable app name |
 | `--contact_email` | yes | Contact email for the app owner |
-| `--webhook_url` | no | Webhook URL for extension failure notifications |
 | `--no-key` | no | Skip the auto-issued first admin key |
 
 **Example:**

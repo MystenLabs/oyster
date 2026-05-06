@@ -45,6 +45,10 @@ pub const WEBHOOK_SUCCESSES_TOTAL: &str = "oyster_webhook_successes_total";
 pub const WEBHOOK_FAILURES_TOTAL: &str = "oyster_webhook_failures_total";
 /// Counter: number of times the webhook circuit breaker opened.
 pub const WEBHOOK_CIRCUIT_OPEN_TOTAL: &str = "oyster_webhook_circuit_open_total";
+/// Counter: deliveries skipped because the per-app private key is missing.
+/// Should be zero in normal operation; non-zero indicates the migration was
+/// bypassed or a row was rolled back below 017's invariants.
+pub const WEBHOOK_SKIPPED_UNSIGNED_TOTAL: &str = "oyster_webhook_skipped_unsigned_total";
 
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {

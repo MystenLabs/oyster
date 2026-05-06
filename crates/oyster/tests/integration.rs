@@ -123,6 +123,7 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -166,6 +167,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1023,6 +1025,7 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1192,6 +1195,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1266,6 +1270,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -2043,7 +2048,7 @@ async fn s3_conditional_requests() {
 
 /// Create an app and issue an admin key for it. Returns (app_id, admin_key bearer token).
 async fn create_test_app_admin_key(pool: &db::DbPool) -> (String, String) {
-    let app = db::apps::create_app(pool, "test-app", "test@example.com", None)
+    let app = db::apps::create_app(pool, "test-app", "test@example.com")
         .await
         .unwrap();
     let raw = auth::generate_api_key();
@@ -2297,7 +2302,7 @@ async fn admin_cross_app_isolation() {
     // Create two different apps, each with its own admin key.
     let (_app_a_id, admin_key_a) = create_test_app_admin_key(&pool).await;
 
-    let app_b = db::apps::create_app(&pool, "app-b", "b@example.com", None)
+    let app_b = db::apps::create_app(&pool, "app-b", "b@example.com")
         .await
         .unwrap();
     let raw_b = auth::generate_api_key();
@@ -2607,7 +2612,7 @@ async fn admin_list_api_keys_foreign_account() {
 
     let (_app_a_id, admin_key_a) = create_test_app_admin_key(&pool).await;
 
-    let app_b = db::apps::create_app(&pool, "list-app-b", "lb@example.com", None)
+    let app_b = db::apps::create_app(&pool, "list-app-b", "lb@example.com")
         .await
         .unwrap();
     let raw_b = auth::generate_api_key();
@@ -3494,4 +3499,466 @@ async fn s3_put_object_tagging_rejects_invalid_charset() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), &s3s::S3ErrorCode::InvalidTag);
+}
+
+// ---------------------------------------------------------------------------
+// Self-service webhook URL endpoints (admin-key authenticated)
+// ---------------------------------------------------------------------------
+
+/// Variant of `test_app()` with the production setting
+/// `allow_http_webhook_scheme = false`. Used to verify that release builds
+/// reject `http://` URLs.
+async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+
+        walrus_aggregator_url: None,
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+
+        pool_initial_epochs_ahead: 5,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
+        pool_extend_epochs: 5,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
+        extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: false,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = oyster::blob_store::LocalBlobStore::new(blob_path)
+        .await
+        .unwrap();
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: Arc::new(blob_store),
+        pearl: None,
+        config,
+        metrics_handle: None,
+    };
+
+    (routes::build_router(state), tmp, pool)
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_works() {
+    use base64::Engine as _;
+
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let app_id_typed: oyster::AppId = app_id.parse().unwrap();
+
+    let (status, body) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body["webhook_url"].as_str().unwrap(),
+        "http://localhost:1/hook"
+    );
+    let pubkey_b64 = body["webhook_public_key"].as_str().unwrap();
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(pubkey_b64)
+        .unwrap();
+    assert_eq!(decoded.len(), 32);
+
+    // DB row carries the same public key.
+    let stored = db::apps::get_app(&pool, &app_id_typed)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.webhook_public_key.as_deref(), Some(pubkey_b64));
+    assert_eq!(
+        stored.webhook_url.as_deref(),
+        Some("http://localhost:1/hook")
+    );
+
+    // Audit row written.
+    let events = db::audit_events::list_audit_events_by_app(&pool, &app_id_typed)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].event_type, "webhook.url_set");
+    let parsed: serde_json::Value = serde_json::from_str(&events[0].event_data).unwrap();
+    assert_eq!(parsed["host"], "localhost");
+    assert!(parsed["public_key_fingerprint"].as_str().unwrap().len() == 16);
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_rotates_keypair() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, body1) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pk1 = body1["webhook_public_key"].as_str().unwrap().to_string();
+
+    let (status, body2) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pk2 = body2["webhook_public_key"].as_str().unwrap().to_string();
+
+    assert_ne!(pk1, pk2, "second PUT should rotate the keypair");
+}
+
+#[tokio::test]
+async fn admin_clear_webhook_url_works() {
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let app_id_typed: oyster::AppId = app_id.parse().unwrap();
+
+    // Pre-set so clear has something to clear.
+    let (status, _) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let (status, body) = json_response(
+        &app,
+        Request::delete("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(body["webhook_url"].is_null());
+    assert!(body["webhook_public_key"].is_null());
+
+    // All three columns are NULL via direct DB read.
+    use sqlx::Row;
+    let row = sqlx::query(&db::sql(
+        "SELECT webhook_url, webhook_public_key, webhook_private_key FROM apps WHERE id = ?",
+    ))
+    .bind(&app_id_typed)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    let url: Option<String> = row.get("webhook_url");
+    let pubk: Option<String> = row.get("webhook_public_key");
+    let privk: Option<String> = row.get("webhook_private_key");
+    assert!(url.is_none());
+    assert!(pubk.is_none());
+    assert!(privk.is_none());
+
+    // Audit log records both events.
+    let events = db::audit_events::list_audit_events_by_app(&pool, &app_id_typed)
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].event_type, "webhook.url_set");
+    assert_eq!(events[1].event_type, "webhook.url_cleared");
+}
+
+#[tokio::test]
+async fn admin_get_app_returns_public_key() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, set_body) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pk = set_body["webhook_public_key"].as_str().unwrap().to_string();
+
+    let (status, body) = json_response(
+        &app,
+        Request::get("/api/v1/admin/app")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["webhook_public_key"].as_str().unwrap(), pk);
+    assert_eq!(
+        body["webhook_url"].as_str().unwrap(),
+        "http://localhost:1/hook"
+    );
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_unauthenticated() {
+    let (app, _tmp, _pool) = test_app().await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_invalid() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let oversized = format!("https://example.com/{}", "a".repeat(2049));
+    let cases: &[&str] = &[
+        "not a url",
+        "ftp://x",
+        "https://user:pw@example.com",
+        oversized.as_str(),
+        "",
+        "https://",
+    ];
+
+    for case in cases {
+        let body = serde_json::json!({ "webhook_url": case }).to_string();
+        let (status, _) = json_response(
+            &app,
+            Request::put("/api/v1/admin/app/webhook")
+                .header("authorization", format!("Bearer {admin_key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "expected 400 for {case:?}");
+    }
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_isolated_per_app() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_a_id, admin_key_a) = create_test_app_admin_key(&pool).await;
+
+    let app_b = db::apps::create_app(&pool, "iso-app-b", "b@example.com")
+        .await
+        .unwrap();
+    let raw_b = auth::generate_api_key();
+    let hash_b = auth::hash_api_key(&raw_b);
+    let prefix_b = auth::key_prefix(&raw_b);
+    db::app_admin_keys::create_admin_key(&pool, &app_b.id, &hash_b, &prefix_b, &raw_b)
+        .await
+        .unwrap();
+
+    // App A sets a webhook.
+    let (status, body_a) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key_a}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/a"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pk_a = body_a["webhook_public_key"].as_str().unwrap().to_string();
+
+    // App B sets a different webhook.
+    let (status, body_b) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {raw_b}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/b"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let pk_b = body_b["webhook_public_key"].as_str().unwrap().to_string();
+
+    // App A still sees its own URL + key after App B's update.
+    let (status, body_a_after) = json_response(
+        &app,
+        Request::get("/api/v1/admin/app")
+            .header("authorization", format!("Bearer {admin_key_a}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body_a_after["webhook_url"].as_str().unwrap(),
+        "http://localhost:1/a"
+    );
+    assert_eq!(body_a_after["webhook_public_key"].as_str().unwrap(), pk_a);
+    assert_ne!(pk_a, pk_b);
+}
+
+#[tokio::test]
+async fn admin_set_webhook_url_http_rejected_in_default_config() {
+    let (app, _tmp, pool) = test_app_https_only().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, _) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"webhook_url":"http://localhost:1/hook"}"#.to_string(),
+            ))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn webhook_delivery_includes_signature() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{Router, body::Bytes, extract::State, http::HeaderMap, routing::post};
+    use base64::Engine as _;
+    use ed25519_dalek::{Verifier, VerifyingKey};
+    use oyster::webhook::{
+        EVENT_TYPE_FUNDING_REQUIRED,
+        FundingAmount,
+        FundingRequiredPayload,
+        WebhookClient,
+    };
+
+    #[derive(Clone, Default)]
+    struct Captured {
+        body: Vec<u8>,
+        sig: String,
+        fp: String,
+    }
+    let store: Arc<Mutex<Option<Captured>>> = Arc::new(Mutex::new(None));
+
+    async fn handler(
+        State(store): State<Arc<Mutex<Option<Captured>>>>,
+        headers: HeaderMap,
+        body: Bytes,
+    ) -> StatusCode {
+        let sig = headers
+            .get("X-Oyster-Signature")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let fp = headers
+            .get("X-Oyster-Public-Key-Fingerprint")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        *store.lock().unwrap() = Some(Captured {
+            body: body.to_vec(),
+            sig,
+            fp,
+        });
+        StatusCode::OK
+    }
+
+    let receiver_app: Router = Router::new()
+        .route("/hook", post(handler))
+        .with_state(store.clone());
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, receiver_app).await.unwrap();
+    });
+
+    // Generate a keypair and build a WebhookClient pointing at the local server.
+    let (sk, pk) = oyster::webhook_keys::generate_keypair();
+    let url = format!("http://{addr}/hook");
+    let client = WebhookClient::new(url, sk, pk);
+
+    let payload = FundingRequiredPayload {
+        event_id: uuid::Uuid::nil(),
+        event_type: EVENT_TYPE_FUNDING_REQUIRED,
+        account_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+        pearl_address: "0xabc".into(),
+        amount: FundingAmount {
+            wal_frost: "1".into(),
+            sui_mist: "2".into(),
+        },
+        timestamp: chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+    };
+    client.notify_funding_required(&payload).await;
+
+    let captured = store
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("receiver should have captured a delivery");
+
+    // Body matches what we serialize.
+    let expected_body = serde_json::to_vec(&payload).unwrap();
+    assert_eq!(captured.body, expected_body);
+
+    // Fingerprint header is the first 8 bytes of the public key, hex-encoded.
+    assert_eq!(captured.fp, hex::encode(&pk[..8]));
+
+    // X-Oyster-Signature parses as `ed25519=<base64>` and verifies.
+    let sig_b64 = captured
+        .sig
+        .strip_prefix("ed25519=")
+        .expect("signature header should start with ed25519=");
+    let sig_bytes = base64::engine::general_purpose::STANDARD
+        .decode(sig_b64)
+        .unwrap();
+    let signature = ed25519_dalek::Signature::from_bytes(
+        &sig_bytes.as_slice().try_into().expect("64-byte signature"),
+    );
+    let vk = VerifyingKey::from_bytes(&pk).unwrap();
+    vk.verify(&captured.body, &signature)
+        .expect("signature verifies");
 }

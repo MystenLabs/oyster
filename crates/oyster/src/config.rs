@@ -55,6 +55,11 @@ pub struct Config {
     pub extension_claim_cooldown_secs: u64,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
+    /// **Test-only.** When true, `validate_webhook_url` accepts `http://`
+    /// in addition to `https://`. Production builds always leave this at
+    /// `false`; integration tests flip it on so they can register a webhook
+    /// URL pointing at a local axum test server. Never wired to an env var.
+    pub allow_http_webhook_scheme: bool,
 }
 
 impl Config {
@@ -114,6 +119,7 @@ impl Config {
                 .unwrap_or(60),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
+            allow_http_webhook_scheme: false,
         }
     }
 

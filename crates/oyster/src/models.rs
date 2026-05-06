@@ -16,8 +16,51 @@ pub struct App {
     pub contact_email: String,
     /// Optional webhook URL for extension failure notifications.
     pub webhook_url: Option<String>,
+    /// Base64-encoded Ed25519 public key paired with the active webhook URL,
+    /// or `None` when no webhook is configured.
+    pub webhook_public_key: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
+}
+
+/// Request body for `PUT /admin/app/webhook`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetWebhookUrlRequest {
+    /// The webhook URL to register. Must be `https://`, must not embed
+    /// credentials, must have a host. Each call generates a fresh keypair.
+    pub webhook_url: String,
+}
+
+/// Response shape for app endpoints that return the public key alongside
+/// the standard `App` fields.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct AppWithPublicKey {
+    /// Unique identifier.
+    pub id: AppId,
+    /// Human-readable app name.
+    pub name: String,
+    /// Contact email for the app owner.
+    pub contact_email: String,
+    /// Webhook URL, or `None` when no webhook is configured.
+    pub webhook_url: Option<String>,
+    /// Base64-encoded Ed25519 public key for verifying webhook deliveries,
+    /// or `None` when no webhook is configured.
+    pub webhook_public_key: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
+
+impl From<App> for AppWithPublicKey {
+    fn from(app: App) -> Self {
+        Self {
+            id: app.id,
+            name: app.name,
+            contact_email: app.contact_email,
+            webhook_url: app.webhook_url,
+            webhook_public_key: app.webhook_public_key,
+            created_at: app.created_at,
+        }
+    }
 }
 
 /// An Oyster account.

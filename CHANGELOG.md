@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-05-06
+
+### Breaking Changes
+- `apps.webhook_url` is reset on upgrade. App builders must re-register
+  their webhook URL via `PUT /api/v1/admin/app/webhook` (or
+  `oyster app webhook set <URL>`) before deliveries resume. Existing rows
+  pre-date the per-app keypair, so the migration nulls the URL to force a
+  re-register through the new endpoint.
+- `oysterd app new --webhook_url` flag removed. Webhook URLs are now
+  exclusively self-service via the new admin endpoints below.
+
+### Added
+- `PUT /api/v1/admin/app/webhook`, `DELETE /api/v1/admin/app/webhook`,
+  `GET /api/v1/admin/app` for self-service webhook configuration. Each
+  `PUT` generates a fresh Ed25519 keypair and returns the public key
+  (base64). `PUT` always rotates: the prior keypair is discarded, so
+  receivers must update their stored public key after every call
+- Webhook deliveries are signed with the per-app Ed25519 keypair.
+  Receivers verify with `X-Oyster-Signature` (`ed25519=<base64(sig)>`)
+  computed over the exact body bytes plus
+  `X-Oyster-Public-Key-Fingerprint` (hex of the first 8 bytes of the
+  public key, for rotation detection). Express + Flask receiver
+  examples in `docs/src/guides/webhooks.md` show the verification
+  flow with `tweetnacl` and `pynacl`
+- `audit_events` table for security-relevant admin actions; webhook
+  URL set/clear are recorded with the actor's admin-key id, the host,
+  and the public-key fingerprint (never the full URL — path/query may
+  contain secrets)
+- `oyster app webhook {show,set,clear}` CLI commands wrapping the new
+  admin endpoints
+- Counter `oyster_webhook_skipped_unsigned_total` — should be zero in
+  normal operation; non-zero indicates a stored key failed to decode
+
+### Migration `017_webhook_signing_and_audit_events.sql` (sqlite + postgres)
+Adds `apps.webhook_public_key` and `apps.webhook_private_key`, both
+TEXT (base64-encoded 32-byte values) — TEXT is portable across the
+`sqlx::Any` driver in a way that BLOB/BYTEA is not. Resets
+`apps.webhook_url` to NULL. Creates the `audit_events` table with an
+`(app_id, created_at)` index.
+
 ## [0.7.1] - 2026-05-06
 
 ### Changed

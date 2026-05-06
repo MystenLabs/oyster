@@ -202,6 +202,30 @@ enum AppCommand {
         #[command(subcommand)]
         command: AccountCommand,
     },
+    /// Self-service webhook URL management.
+    Webhook {
+        /// App name in the active context (required when the context has
+        /// more than one app).
+        #[arg(long, global = true)]
+        app: Option<String>,
+        #[command(subcommand)]
+        command: WebhookCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum WebhookCommand {
+    /// Show the currently-configured webhook URL and public key.
+    Show,
+    /// Register or rotate the webhook URL. Each call generates a fresh
+    /// Ed25519 keypair; the printed public key is needed to verify
+    /// subsequent deliveries.
+    Set {
+        /// Receiver URL (must be https in production builds).
+        url: String,
+    },
+    /// Clear the webhook URL and discard the keypair.
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -503,6 +527,54 @@ async fn cmd_account(
         }
         AccountCommand::Select => cmd_account_select(&client, out, resolved).await,
         AccountCommand::Keys { id_or_name } => cmd_account_keys(&client, out, id_or_name).await,
+    }
+}
+
+async fn cmd_webhook(
+    out: &Output,
+    cli_config: Option<&std::path::Path>,
+    cli_context: Option<&str>,
+    cli_url: Option<&str>,
+    app: Option<&str>,
+    command: &WebhookCommand,
+) -> Result<(), CliError> {
+    let resolved = config::resolve_admin(cli_config, cli_context, cli_url, app)?;
+    let client = OysterClient::with_admin_key(resolved.url.clone(), resolved.admin_key.clone());
+    match command {
+        WebhookCommand::Show => {
+            let app = client.get_app().await?;
+            out.print(&app, |a| {
+                println!("app:           {} ({})", a.name, a.id);
+                println!(
+                    "webhook_url:   {}",
+                    a.webhook_url.as_deref().unwrap_or("(not set)")
+                );
+                println!(
+                    "public_key:    {}",
+                    a.webhook_public_key.as_deref().unwrap_or("(not set)")
+                );
+            });
+            Ok(())
+        }
+        WebhookCommand::Set { url } => {
+            let app = client.set_webhook_url(url).await?;
+            out.print(&app, |a| {
+                println!("webhook configured:");
+                println!("  url:         {}", a.webhook_url.as_deref().unwrap_or("-"));
+                println!(
+                    "  public_key:  {}",
+                    a.webhook_public_key.as_deref().unwrap_or("-")
+                );
+                println!();
+                println!("store the public key safely — receivers verify deliveries against it.");
+            });
+            Ok(())
+        }
+        WebhookCommand::Clear => {
+            client.clear_webhook_url().await?;
+            out.success("webhook cleared");
+            Ok(())
+        }
     }
 }
 
@@ -855,6 +927,17 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
             }
             AppCommand::Account { app, command } => {
                 cmd_account(
+                    out,
+                    cli.config.as_deref(),
+                    cli.context.as_deref(),
+                    cli.url.as_deref(),
+                    app.as_deref(),
+                    command,
+                )
+                .await
+            }
+            AppCommand::Webhook { app, command } => {
+                cmd_webhook(
                     out,
                     cli.config.as_deref(),
                     cli.context.as_deref(),

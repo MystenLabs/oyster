@@ -96,6 +96,19 @@ pub struct ApiKeyWithBearerToken {
     pub created_at: String,
 }
 
+/// App metadata returned by `GET /admin/app` and the webhook PUT/DELETE
+/// endpoints. `webhook_public_key` is only `Some` after a `set` (or `get`
+/// when a webhook is currently configured).
+#[derive(Debug, Serialize, Deserialize)]
+pub struct AppWithPublicKey {
+    pub id: String,
+    pub name: String,
+    pub contact_email: String,
+    pub webhook_url: Option<String>,
+    pub webhook_public_key: Option<String>,
+    pub created_at: String,
+}
+
 /// Response after successfully creating a new account, including its
 /// initial API key.
 #[derive(Debug, Serialize, Deserialize)]
@@ -540,5 +553,44 @@ impl OysterClient {
             .await?;
         self.check_error(resp).await?;
         Ok(())
+    }
+
+    /// Fetch the authenticated app, including its current webhook URL and
+    /// public key.
+    pub async fn get_app(&self) -> Result<AppWithPublicKey, ApiError> {
+        let resp = self
+            .http
+            .get(format!("{}/admin/app", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Register or rotate the webhook URL for the authenticated app.
+    /// Returns the freshly-generated public key.
+    pub async fn set_webhook_url(&self, webhook_url: &str) -> Result<AppWithPublicKey, ApiError> {
+        let resp = self
+            .http
+            .put(format!("{}/admin/app/webhook", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .json(&serde_json::json!({ "webhook_url": webhook_url }))
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
+    }
+
+    /// Clear the webhook URL and discard the keypair.
+    pub async fn clear_webhook_url(&self) -> Result<AppWithPublicKey, ApiError> {
+        let resp = self
+            .http
+            .delete(format!("{}/admin/app/webhook", self.base_url))
+            .header("Authorization", self.admin_auth_header()?)
+            .send()
+            .await?;
+        let resp = self.check_error(resp).await?;
+        Ok(resp.json().await?)
     }
 }

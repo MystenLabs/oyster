@@ -42,6 +42,8 @@ pub mod sui_transaction;
 pub mod validation;
 /// Outbound webhook for fund manager notifications.
 pub mod webhook;
+/// Helpers for the per-app Ed25519 keypair that signs webhook deliveries.
+pub mod webhook_keys;
 
 use std::sync::Arc;
 

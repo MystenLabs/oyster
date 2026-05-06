@@ -20,11 +20,16 @@ use crate::{
         AccountSummary,
         ApiKeyMetadata,
         ApiKeyWithBearerToken,
+        App,
+        AppWithPublicKey,
         CreateAccountRequest,
         CreateAccountResponse,
         CreateApiKeyRequest,
         ErrorResponse,
+        SetWebhookUrlRequest,
     },
+    validation,
+    webhook_keys,
 };
 
 /// Maximum number of active access keys per account.
@@ -296,4 +301,114 @@ pub async fn admin_delete_access_key(
     } else {
         Err(AppError::NotFound)
     }
+}
+
+#[utoipa::path(
+    get,
+    path = "/admin/app",
+    tag = "Admin",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "The authenticated app, including the webhook public key", body = AppWithPublicKey),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// Return the authenticated app, including its current webhook URL and
+/// public key. Useful when an admin lost the response from `set_webhook_url`.
+pub async fn get_app(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+) -> Result<Json<AppWithPublicKey>, AppError> {
+    let app = db::apps::get_app(&state.db, &auth.app_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+    Ok(Json(AppWithPublicKey::from(app)))
+}
+
+#[utoipa::path(
+    put,
+    path = "/admin/app/webhook",
+    tag = "Admin",
+    security(("bearer" = [])),
+    request_body(content = SetWebhookUrlRequest, content_type = "application/json"),
+    responses(
+        (status = 200, description = "Webhook URL set; response includes the freshly-generated public key", body = AppWithPublicKey),
+        (status = 400, description = "Invalid webhook URL", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// Register or rotate the webhook URL for the authenticated app. Each call
+/// generates a fresh Ed25519 keypair; the returned public key is the only
+/// way to verify subsequent webhook deliveries.
+pub async fn set_webhook_url(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+    Json(body): Json<SetWebhookUrlRequest>,
+) -> Result<Json<AppWithPublicKey>, AppError> {
+    validation::validate_webhook_url(&body.webhook_url, state.config.allow_http_webhook_scheme)
+        .map_err(AppError::BadRequest)?;
+    let parsed = url::Url::parse(&body.webhook_url).expect("validated above");
+
+    let (signing_key, public_key_bytes) = webhook_keys::generate_keypair();
+    let private_b64 = webhook_keys::encode(signing_key.as_bytes());
+    let public_b64 = webhook_keys::encode(&public_key_bytes);
+
+    let app = db::apps::set_app_webhook(
+        &state.db,
+        &auth.app_id,
+        &body.webhook_url,
+        &public_b64,
+        &private_b64,
+    )
+    .await?;
+
+    let fingerprint = webhook_keys::fingerprint(&public_key_bytes);
+    db::audit_events::record_audit_event(
+        &state.db,
+        &auth.app_id,
+        Some(&auth.admin_key_id),
+        "webhook.url_set",
+        serde_json::json!({
+            "host": parsed.host_str(),
+            "public_key_fingerprint": fingerprint,
+        }),
+    )
+    .await?;
+    tracing::info!(
+        app_id = %auth.app_id,
+        host = ?parsed.host_str(),
+        %fingerprint,
+        "webhook url set",
+    );
+
+    Ok(Json(AppWithPublicKey::from(app)))
+}
+
+#[utoipa::path(
+    delete,
+    path = "/admin/app/webhook",
+    tag = "Admin",
+    security(("bearer" = [])),
+    responses(
+        (status = 200, description = "Webhook URL cleared", body = App),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+    ),
+)]
+/// Clear the webhook URL and discard the keypair for the authenticated app.
+/// Subsequent extension failures will not deliver a webhook.
+pub async fn clear_webhook_url(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+) -> Result<Json<App>, AppError> {
+    let app = db::apps::clear_app_webhook(&state.db, &auth.app_id).await?;
+    db::audit_events::record_audit_event(
+        &state.db,
+        &auth.app_id,
+        Some(&auth.admin_key_id),
+        "webhook.url_cleared",
+        serde_json::json!({}),
+    )
+    .await?;
+    tracing::info!(app_id = %auth.app_id, "webhook url cleared");
+    Ok(Json(app))
 }

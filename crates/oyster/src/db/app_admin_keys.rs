@@ -102,7 +102,7 @@ mod tests {
     }
 
     async fn make_app(pool: &super::super::DbPool, name: &str) -> AppId {
-        db::apps::create_app(pool, name, "owner@example.com", None)
+        db::apps::create_app(pool, name, "owner@example.com")
             .await
             .unwrap()
             .id

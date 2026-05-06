@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::Instant};
 
 use chrono::Utc;
+use ed25519_dalek::SigningKey;
 use metrics::{counter, gauge, histogram};
 use sui_types::base_types::{ObjectID, SuiAddress};
 use uuid::Uuid;
@@ -18,6 +19,7 @@ use crate::{
         EXTENSION_ERRORS_TOTAL,
         EXTENSION_POOLS_EXPIRING,
         EXTENSION_POOLS_EXTENDED_TOTAL,
+        WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
     pearl_client::PearlConnection,
     sui_transaction,
@@ -28,6 +30,7 @@ use crate::{
         FundingRequiredPayload,
         WebhookClient,
     },
+    webhook_keys,
 };
 
 /// Configuration for the background `StoragePool` extension task.
@@ -155,10 +158,10 @@ pub async fn run_extension_cycle_once(
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let webhook_urls = match db::accounts::fetch_webhook_urls_for_apps(db, &app_ids).await {
+    let webhook_for_apps = match db::accounts::fetch_webhook_for_apps(db, &app_ids).await {
         Ok(m) => m,
         Err(e) => {
-            tracing::warn!("failed to fetch webhook URLs: {e}");
+            tracing::warn!("failed to fetch webhook configs: {e}");
             HashMap::new()
         }
     };
@@ -166,7 +169,7 @@ pub async fn run_extension_cycle_once(
     let mut extended = 0u32;
     let mut errors = 0u32;
     let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
-    let mut webhook_clients: HashMap<String, WebhookClient> = HashMap::new();
+    let mut webhook_clients: HashMap<AppId, WebhookClient> = HashMap::new();
 
     for pool in &pools {
         let sender_address = match address_cache.get(&pool.account_id) {
@@ -226,7 +229,7 @@ pub async fn run_extension_cycle_once(
                 errors += 1;
 
                 if webhook::is_insufficient_funds_error(e.as_ref())
-                    && let Some(Some(url)) = webhook_urls.get(&pool.app_id)
+                    && let Some(Some(wh_cfg)) = webhook_for_apps.get(&pool.app_id)
                 {
                     let cost = match extension_cost::compute_extension_cost(
                         read_client,
@@ -260,10 +263,11 @@ pub async fn run_extension_cycle_once(
                         },
                         timestamp: Utc::now(),
                     };
-                    let wh = webhook_clients
-                        .entry(url.clone())
-                        .or_insert_with(|| WebhookClient::new(url.clone()));
-                    wh.notify_funding_required(&payload).await;
+                    if let Some(wh) =
+                        get_or_build_webhook_client(&mut webhook_clients, &pool.app_id, wh_cfg)
+                    {
+                        wh.notify_funding_required(&payload).await;
+                    }
                 }
             }
         }
@@ -275,6 +279,40 @@ pub async fn run_extension_cycle_once(
     tracing::info!(extended, errors, "extension cycle complete");
 
     processed
+}
+
+/// Build or retrieve a `WebhookClient` for `app_id` using the per-app
+/// keypair. Returns `None` (and emits a warning + metric) when the stored
+/// keys fail to decode — defensive: post-migration this should not happen.
+fn get_or_build_webhook_client<'a>(
+    cache: &'a mut HashMap<AppId, WebhookClient>,
+    app_id: &AppId,
+    cfg: &db::accounts::AppWebhook,
+) -> Option<&'a WebhookClient> {
+    if !cache.contains_key(app_id) {
+        let private_bytes = match webhook_keys::decode_key(&cfg.private_key_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                counter!(WEBHOOK_SKIPPED_UNSIGNED_TOTAL).increment(1);
+                tracing::warn!(%app_id, error = %e, "skipping webhook delivery: invalid private key");
+                return None;
+            }
+        };
+        let public_bytes = match webhook_keys::decode_key(&cfg.public_key_b64) {
+            Ok(b) => b,
+            Err(e) => {
+                counter!(WEBHOOK_SKIPPED_UNSIGNED_TOTAL).increment(1);
+                tracing::warn!(%app_id, error = %e, "skipping webhook delivery: invalid public key");
+                return None;
+            }
+        };
+        let signing_key = SigningKey::from_bytes(&private_bytes);
+        cache.insert(
+            *app_id,
+            WebhookClient::new(cfg.url.clone(), signing_key, public_bytes),
+        );
+    }
+    cache.get(app_id)
 }
 
 async fn extend_single_pool(

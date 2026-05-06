@@ -240,20 +240,36 @@ pub async fn claim_pools_for_extension(
         .collect())
 }
 
-/// Look up the per-app `webhook_url` for each app in `app_ids`. Apps without
-/// a webhook configured map to `None`; missing apps are simply absent from
+/// Per-app webhook configuration: URL plus the base64-encoded Ed25519
+/// keypair used to sign deliveries. All three fields are populated together
+/// or all NULL together — see migration 017.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppWebhook {
+    /// Receiver URL.
+    pub url: String,
+    /// Base64-encoded 32-byte public key.
+    pub public_key_b64: String,
+    /// Base64-encoded 32-byte signing-key seed.
+    pub private_key_b64: String,
+}
+
+/// Look up the per-app webhook configuration for each app in `app_ids`. Apps
+/// without a webhook configured map to `None`; missing apps are absent from
 /// the map.
-pub async fn fetch_webhook_urls_for_apps(
+pub async fn fetch_webhook_for_apps(
     pool: &super::DbPool,
     app_ids: &[AppId],
-) -> Result<HashMap<AppId, Option<String>>, sqlx::Error> {
+) -> Result<HashMap<AppId, Option<AppWebhook>>, sqlx::Error> {
     if app_ids.is_empty() {
         return Ok(HashMap::new());
     }
     let placeholders = std::iter::repeat_n("?", app_ids.len())
         .collect::<Vec<_>>()
         .join(", ");
-    let raw = format!("SELECT id, webhook_url FROM apps WHERE id IN ({placeholders})");
+    let raw = format!(
+        "SELECT id, webhook_url, webhook_public_key, webhook_private_key \
+         FROM apps WHERE id IN ({placeholders})"
+    );
     let q = super::sql(&raw);
     let mut query = sqlx::query(&q);
     for id in app_ids {
@@ -263,10 +279,19 @@ pub async fn fetch_webhook_urls_for_apps(
     Ok(rows
         .into_iter()
         .map(|r| {
-            (
-                r.get::<AppId, _>("id"),
-                r.get::<Option<String>, _>("webhook_url"),
-            )
+            let id: AppId = r.get("id");
+            let url: Option<String> = r.get("webhook_url");
+            let pubk: Option<String> = r.get("webhook_public_key");
+            let privk: Option<String> = r.get("webhook_private_key");
+            let wh = match (url, pubk, privk) {
+                (Some(url), Some(public_key_b64), Some(private_key_b64)) => Some(AppWebhook {
+                    url,
+                    public_key_b64,
+                    private_key_b64,
+                }),
+                _ => None,
+            };
+            (id, wh)
         })
         .collect())
 }
@@ -623,35 +648,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fetch_webhook_urls_for_apps_returns_map() {
+    async fn fetch_webhook_for_apps_returns_map() {
         let pool = test_pool().await;
-        let with_hook = crate::db::apps::create_app(
+        let with_hook = crate::db::apps::create_app(&pool, "with-hook", "wh@example.com")
+            .await
+            .unwrap();
+        crate::db::apps::set_app_webhook(
             &pool,
-            "with-hook",
-            "wh@example.com",
-            Some("https://example.com/hook"),
+            &with_hook.id,
+            "https://example.com/hook",
+            "pubkey-b64",
+            "privkey-b64",
         )
         .await
         .unwrap();
-        let without_hook = crate::db::apps::create_app(&pool, "no-hook", "n@example.com", None)
+        let without_hook = crate::db::apps::create_app(&pool, "no-hook", "n@example.com")
             .await
             .unwrap();
 
-        let map = fetch_webhook_urls_for_apps(&pool, &[with_hook.id, without_hook.id])
+        let map = fetch_webhook_for_apps(&pool, &[with_hook.id, without_hook.id])
             .await
             .unwrap();
         assert_eq!(map.len(), 2);
-        assert_eq!(
-            map.get(&with_hook.id).unwrap().as_deref(),
-            Some("https://example.com/hook")
-        );
+        let wh = map.get(&with_hook.id).unwrap().as_ref().unwrap();
+        assert_eq!(wh.url, "https://example.com/hook");
+        assert_eq!(wh.public_key_b64, "pubkey-b64");
+        assert_eq!(wh.private_key_b64, "privkey-b64");
         assert!(map.get(&without_hook.id).unwrap().is_none());
     }
 
     #[tokio::test]
-    async fn fetch_webhook_urls_for_apps_handles_empty_input() {
+    async fn fetch_webhook_for_apps_handles_empty_input() {
         let pool = test_pool().await;
-        let map = fetch_webhook_urls_for_apps(&pool, &[]).await.unwrap();
+        let map = fetch_webhook_for_apps(&pool, &[]).await.unwrap();
         assert!(map.is_empty());
     }
 
@@ -768,10 +797,10 @@ mod tests {
     #[tokio::test]
     async fn list_account_summaries_by_app_filters_by_app_id() {
         let pool = test_pool().await;
-        let app_a = crate::db::apps::create_app(&pool, "app-a", "a@example.com", None)
+        let app_a = crate::db::apps::create_app(&pool, "app-a", "a@example.com")
             .await
             .unwrap();
-        let app_b = crate::db::apps::create_app(&pool, "app-b", "b@example.com", None)
+        let app_b = crate::db::apps::create_app(&pool, "app-b", "b@example.com")
             .await
             .unwrap();
         let acc_a = create_account(&pool, &app_a.id, Some("for-a"))

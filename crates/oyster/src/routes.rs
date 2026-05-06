@@ -114,6 +114,8 @@ pub fn build_router(state: AppState) -> Router {
             admin::admin_list_access_keys
         ))
         .routes(routes!(admin::admin_delete_access_key))
+        .routes(routes!(admin::get_app))
+        .routes(routes!(admin::set_webhook_url, admin::clear_webhook_url))
         // Account
         .routes(routes!(account::get_wallet))
         // Stubs

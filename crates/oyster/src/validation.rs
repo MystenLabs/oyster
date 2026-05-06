@@ -79,6 +79,46 @@ pub fn validate_tag_set(tags: &[(String, String)]) -> Result<(), String> {
     Ok(())
 }
 
+/// Maximum URL length accepted by `validate_webhook_url`.
+pub const MAX_WEBHOOK_URL_LEN: usize = 2048;
+
+/// Validate a self-service webhook URL submitted by an app builder.
+///
+/// `allow_http` is wired from `Config.allow_http_webhook_scheme` and is
+/// expected to be `true` only inside integration tests, so production
+/// receivers always speak https.
+pub fn validate_webhook_url(url: &str, allow_http: bool) -> Result<(), String> {
+    if url.is_empty() {
+        return Err("webhook_url must not be empty".into());
+    }
+    if url.len() > MAX_WEBHOOK_URL_LEN {
+        return Err(format!(
+            "webhook_url must be ≤ {MAX_WEBHOOK_URL_LEN} chars (got {})",
+            url.len()
+        ));
+    }
+    let parsed = url::Url::parse(url).map_err(|e| format!("invalid url: {e}"))?;
+    let allowed_schemes: &[&str] = if allow_http {
+        &["http", "https"]
+    } else {
+        &["https"]
+    };
+    if !allowed_schemes.contains(&parsed.scheme()) {
+        return Err(format!(
+            "webhook_url scheme must be https (got {})",
+            parsed.scheme()
+        ));
+    }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err("webhook_url must not contain credentials".into());
+    }
+    match parsed.host_str() {
+        None | Some("") => return Err("webhook_url must have a host".into()),
+        Some(_) => {}
+    }
+    Ok(())
+}
+
 /// Validate a bucket name against S3 naming rules.
 ///
 /// Rules:
@@ -261,5 +301,54 @@ mod tests {
     #[test]
     fn tag_kv_rejects_empty_key() {
         assert!(validate_tag_kv("", "v").is_err());
+    }
+
+    #[test]
+    fn webhook_url_https_accepted() {
+        assert!(validate_webhook_url("https://example.com/hook", false).is_ok());
+        assert!(validate_webhook_url("https://example.com/hook", true).is_ok());
+    }
+
+    #[test]
+    fn webhook_url_http_rejected_by_default() {
+        assert!(validate_webhook_url("http://example.com/hook", false).is_err());
+    }
+
+    #[test]
+    fn webhook_url_http_accepted_when_allowed() {
+        assert!(validate_webhook_url("http://localhost:8080/hook", true).is_ok());
+    }
+
+    #[test]
+    fn webhook_url_ftp_rejected() {
+        assert!(validate_webhook_url("ftp://example.com/hook", true).is_err());
+    }
+
+    #[test]
+    fn webhook_url_credentials_rejected() {
+        assert!(validate_webhook_url("https://user:pw@example.com/hook", false).is_err());
+        assert!(validate_webhook_url("https://user@example.com/hook", false).is_err());
+    }
+
+    #[test]
+    fn webhook_url_oversized_rejected() {
+        let long = format!("https://example.com/{}", "a".repeat(MAX_WEBHOOK_URL_LEN));
+        assert!(validate_webhook_url(&long, false).is_err());
+    }
+
+    #[test]
+    fn webhook_url_empty_rejected() {
+        assert!(validate_webhook_url("", false).is_err());
+    }
+
+    #[test]
+    fn webhook_url_hostless_rejected() {
+        // `https://` fails to parse (empty host).
+        assert!(validate_webhook_url("https://", false).is_err());
+    }
+
+    #[test]
+    fn webhook_url_junk_rejected() {
+        assert!(validate_webhook_url("not a url", false).is_err());
     }
 }

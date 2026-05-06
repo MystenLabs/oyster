@@ -209,6 +209,7 @@ impl OysterTestHarness {
             extension_claim_batch_size: 100,
             extension_claim_cooldown_secs: 60,
             extension_metrics_bind_addr: "unused".into(),
+            allow_http_webhook_scheme: false,
         };
 
         let state = AppState {
@@ -324,7 +325,7 @@ impl OysterTestHarness {
     ///
     /// Returns `(app_id, admin_key)`.
     pub async fn create_app_admin_key(&self, name: &str) -> (String, String) {
-        let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"), None)
+        let app = db::apps::create_app(&self.db, name, &format!("{name}@test.example"))
             .await
             .expect("create app");
         let raw = oyster::auth::generate_api_key();

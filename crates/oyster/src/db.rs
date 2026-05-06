@@ -8,6 +8,8 @@ pub mod api_keys;
 pub mod app_admin_keys;
 /// App database operations.
 pub mod apps;
+/// Audit-event database operations (security-relevant admin actions).
+pub mod audit_events;
 /// Blob tag database operations.
 pub mod blob_tags;
 /// Blob metadata database operations.

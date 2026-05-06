@@ -52,8 +52,6 @@ enum AppCommand {
         name: String,
         #[arg(long)]
         contact_email: String,
-        #[arg(long)]
-        webhook_url: Option<String>,
         /// Do not auto-issue an initial admin key.
         #[arg(long)]
         no_key: bool,
@@ -266,10 +264,9 @@ async fn handle_app_command(command: AppCommand) {
         AppCommand::New {
             name,
             contact_email,
-            webhook_url,
             no_key,
         } => {
-            let app = db::apps::create_app(&pool, &name, &contact_email, webhook_url.as_deref())
+            let app = db::apps::create_app(&pool, &name, &contact_email)
                 .await
                 .expect("failed to create app");
             println!("{}", app.id);
