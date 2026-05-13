@@ -16,15 +16,24 @@ pub async fn record_audit_event(
 ) -> Result<(), sqlx::Error> {
     let id = Uuid::new_v4().to_string();
     let event_data = serde_json::to_string(&event_data).expect("serialize audit event_data");
+    // Bind an explicit microsecond-precision timestamp instead of relying on
+    // the column default. SQLite's `datetime('now')` and the Postgres mirror
+    // both truncate to whole seconds, which makes the `(created_at, id)`
+    // sort flap for events recorded back-to-back (the secondary key is a
+    // random UUID). Microseconds make ties effectively impossible.
+    let created_at = chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.6f")
+        .to_string();
     sqlx::query(&super::sql(
-        "INSERT INTO audit_events (id, app_id, actor_admin_key_id, event_type, event_data) \
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO audit_events (id, app_id, actor_admin_key_id, event_type, event_data, created_at) \
+         VALUES (?, ?, ?, ?, ?, ?)",
     ))
     .bind(&id)
     .bind(app_id)
     .bind(actor_admin_key_id)
     .bind(event_type)
     .bind(&event_data)
+    .bind(&created_at)
     .execute(pool)
     .await?;
     Ok(())
