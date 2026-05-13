@@ -107,6 +107,16 @@ where
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
+/// Parse an Oyster [`BlobId`] string into a `walrus_core::BlobId`,
+/// returning `BlobStoreError::InvalidBlobId` (which the error layer maps
+/// to 400) when the string can't be decoded.
+fn parse_walrus_blob_id(blob_id: &BlobId) -> Result<walrus_core::BlobId, BlobStoreError> {
+    blob_id
+        .as_str()
+        .parse()
+        .map_err(|e| BlobStoreError::InvalidBlobId(format!("{blob_id}: {e}")))
+}
+
 /// Bytes to request from `increase_storage_pool_capacity`, rounded up to the
 /// Walrus accounting unit. Returns 0 when the encoded blob already fits.
 ///
@@ -464,10 +474,7 @@ impl BlobStore for DirectWalrusBlobStore {
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
         let blob_id = blob_id.clone();
         Box::pin(async move {
-            let walrus_blob_id: walrus_core::BlobId = blob_id
-                .as_str()
-                .parse()
-                .map_err(|e| BlobStoreError::InvalidBlobId(format!("{blob_id}: {e}")))?;
+            let walrus_blob_id = parse_walrus_blob_id(&blob_id)?;
 
             match self
                 .node_client
@@ -549,10 +556,7 @@ impl BlobStore for DirectWalrusBlobStore {
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
         let blob_id = blob_id.clone();
         Box::pin(async move {
-            let walrus_blob_id: walrus_core::BlobId = blob_id
-                .as_str()
-                .parse()
-                .map_err(|e| BlobStoreError::InvalidBlobId(format!("{blob_id}: {e}")))?;
+            let walrus_blob_id = parse_walrus_blob_id(&blob_id)?;
 
             match self
                 .node_client
@@ -595,5 +599,27 @@ mod tests {
         assert_eq!(grow_by_bytes(0, MIB + 1), 2 * MIB);
         // Negative `remaining` (shouldn't happen in practice, but be defensive).
         assert_eq!(grow_by_bytes(-10, 5), MIB);
+    }
+
+    #[test]
+    fn parse_walrus_blob_id_rejects_malformed_with_invalid_blob_id() {
+        // The route handler hands the raw path param straight to the store,
+        // so a malformed id must surface as `InvalidBlobId` (→ HTTP 400) and
+        // never as `Http` (→ HTTP 500). See `read_blob_by_blob_id` and the
+        // `blob_store_invalid_blob_id_maps_to_400` integration test.
+        let err = parse_walrus_blob_id(&BlobId("FAKE_BLOB_ID_DOES_NOT_EXIST".into()))
+            .expect_err("malformed blob_id should fail to parse");
+        assert!(
+            matches!(err, BlobStoreError::InvalidBlobId(_)),
+            "expected InvalidBlobId, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn parse_walrus_blob_id_accepts_well_formed_id() {
+        use base64::Engine as _;
+        // 32-byte URL-safe-base64 (no padding) — well-formed by construction.
+        let s = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32]);
+        parse_walrus_blob_id(&BlobId(s)).expect("well-formed id should parse");
     }
 }

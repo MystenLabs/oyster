@@ -2824,6 +2824,20 @@ async fn blob_store_unreachable_maps_to_502() {
     assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
 }
 
+/// A malformed blob_id surfaced by a backing store as `InvalidBlobId`
+/// must map to 400 (not 500). Guards against regressing the
+/// `DirectWalrusBlobStore::read` parse-failure path back to
+/// `BlobStoreError::Http` (500).
+#[tokio::test]
+async fn blob_store_invalid_blob_id_maps_to_400() {
+    use axum::response::IntoResponse;
+    use oyster::error::AppError;
+
+    let err: AppError = BlobStoreError::InvalidBlobId("not a walrus blob id".into()).into();
+    let resp = err.into_response();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
 /// Unmatched `/api/v1/...` paths return a clean 404 instead of falling through
 /// to the S3 handler (which would choke on the Bearer Authorization header and
 /// return a confusing 400).
