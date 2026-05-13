@@ -926,11 +926,11 @@ def resolve_auth(args):
 
     # Interactive fallback.
     interactive_base = input(f"Oyster URL [{base}]: ").strip() or base
-    api_key = input("API key: ").strip()
-    if not api_key:
-        print("API key is required.")
+    bearer_token = input("Bearer Token: ").strip()
+    if not bearer_token:
+        print("Bearer Token is required.")
         sys.exit(1)
-    return interactive_base.rstrip("/"), {"Authorization": f"Bearer {api_key}"}, None
+    return interactive_base.rstrip("/"), {"Authorization": f"Bearer {bearer_token}"}, None
 
 
 def parse_args():
