@@ -14,7 +14,12 @@ use std::{future::Future, pin::Pin, sync::Arc};
 use sui_sdk::rpc_types::ObjectChange;
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_core::{Epoch, encoding::EncodingFactory as _, messages::BlobPersistenceType};
-use walrus_sdk::{config::ClientConfig, node_client::WalrusNodeClient, uploader::TailHandling};
+use walrus_sdk::{
+    config::ClientConfig,
+    error::ClientErrorKind,
+    node_client::WalrusNodeClient,
+    uploader::TailHandling,
+};
 use walrus_sui::{
     client::{
         BlobObjectMetadata,
@@ -34,17 +39,6 @@ use crate::{
     pearl_client::PearlConnection,
     sui_transaction,
 };
-
-/// Map a `reqwest::Error` to a `BlobStoreError`. Connect/timeout errors
-/// (no HTTP status was ever returned) become `Unreachable`, which the error
-/// layer surfaces as HTTP 502. Everything else becomes a generic `Http`.
-fn map_reqwest_err(e: reqwest::Error) -> BlobStoreError {
-    if e.is_connect() || e.is_timeout() {
-        BlobStoreError::Unreachable(e.to_string())
-    } else {
-        BlobStoreError::Http(e.to_string())
-    }
-}
 
 /// Check whether an error message indicates insufficient on-chain balance.
 fn is_insufficient_balance(msg: &str) -> bool {
@@ -134,8 +128,6 @@ pub struct DirectWalrusBlobStore {
     read_client: Arc<SuiReadClient>,
     pearl: PearlConnection,
     rpc_url: String,
-    aggregator_url: String,
-    http_client: reqwest::Client,
     db: db::DbPool,
     pool_initial_encoded_capacity_bytes: u64,
     pool_initial_epochs_ahead: u32,
@@ -143,10 +135,8 @@ pub struct DirectWalrusBlobStore {
 
 impl DirectWalrusBlobStore {
     /// Create a new direct Walrus blob store connected to the given Sui RPC and Walrus cluster.
-    #[allow(clippy::too_many_arguments)]
     pub async fn new(
         rpc_url: String,
-        aggregator_url: String,
         system_object: ObjectID,
         staking_object: ObjectID,
         pearl: PearlConnection,
@@ -169,8 +159,6 @@ impl DirectWalrusBlobStore {
             read_client,
             pearl,
             rpc_url,
-            aggregator_url,
-            http_client: reqwest::Client::new(),
             db,
             pool_initial_encoded_capacity_bytes,
             pool_initial_epochs_ahead,
@@ -474,31 +462,29 @@ impl BlobStore for DirectWalrusBlobStore {
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
-        let url = format!("{}/v1/blobs/{}", self.aggregator_url, blob_id);
+        let blob_id = blob_id.clone();
         Box::pin(async move {
-            let resp = self
-                .http_client
-                .get(&url)
-                .send()
-                .await
-                .map_err(map_reqwest_err)?;
+            let walrus_blob_id: walrus_core::BlobId = blob_id
+                .as_str()
+                .parse()
+                .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
 
-            let status = resp.status();
-            if !status.is_success() {
-                if status == reqwest::StatusCode::NOT_FOUND {
-                    return Err(BlobStoreError::NotFound(url));
-                }
-                let body = resp.text().await.unwrap_or_default();
-                return Err(BlobStoreError::Upstream {
-                    status: status.as_u16(),
-                    message: body,
-                });
+            match self
+                .node_client
+                .read_blob_retry_committees::<walrus_core::encoding::Primary>(
+                    &walrus_blob_id,
+                    walrus_core::encoding::ConsistencyCheckType::Default,
+                )
+                .await
+            {
+                Ok(bytes) => Ok(bytes),
+                Err(e) => match e.kind() {
+                    ClientErrorKind::BlobIdDoesNotExist => {
+                        Err(BlobStoreError::NotFound(blob_id.to_string()))
+                    }
+                    _ => Err(BlobStoreError::Http(format!("walrus read error: {e}"))),
+                },
             }
-
-            resp.bytes()
-                .await
-                .map(|b| b.to_vec())
-                .map_err(map_reqwest_err)
         })
     }
 
@@ -561,22 +547,26 @@ impl BlobStore for DirectWalrusBlobStore {
     }
 
     fn exists(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
-        let url = format!("{}/v1/blobs/{}", self.aggregator_url, blob_id);
+        let blob_id = blob_id.clone();
         Box::pin(async move {
-            let resp = self
-                .http_client
-                .head(&url)
-                .send()
-                .await
-                .map_err(map_reqwest_err)?;
+            let walrus_blob_id: walrus_core::BlobId = blob_id
+                .as_str()
+                .parse()
+                .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
 
-            match resp.status() {
-                reqwest::StatusCode::OK => Ok(true),
-                reqwest::StatusCode::NOT_FOUND => Ok(false),
-                status => Err(BlobStoreError::Upstream {
-                    status: status.as_u16(),
-                    message: String::new(),
-                }),
+            match self
+                .node_client
+                .get_blob_status_with_retries(&walrus_blob_id, self.read_client.as_ref())
+                .await
+            {
+                // `initial_certified_epoch().is_some()` mirrors the aggregator's
+                // HEAD semantics: 200 only when the blob is retrievable —
+                // certified (Permanent or Deletable) and not Nonexistent/Invalid.
+                Ok(status) => Ok(status.initial_certified_epoch().is_some()),
+                Err(e) if matches!(e.kind(), ClientErrorKind::BlobIdDoesNotExist) => Ok(false),
+                Err(e) => Err(BlobStoreError::Http(format!(
+                    "walrus blob status error: {e}"
+                ))),
             }
         })
     }

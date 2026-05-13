@@ -21,8 +21,6 @@ pub struct Config {
     pub pearl_grpc_url: Option<String>,
     /// Shared secret for authenticating with Pearl.
     pub pearl_service_secret: String,
-    /// Optional Walrus aggregator HTTP URL.
-    pub walrus_aggregator_url: Option<String>,
     /// Optional Sui RPC endpoint URL.
     pub sui_rpc_url: Option<String>,
     /// Optional Walrus system object ID on Sui.
@@ -79,7 +77,6 @@ impl Config {
                 .expect(
                     "PEARL_SERVICE_SECRET is required (set env var or use --pearl-service-secret-file)",
                 ),
-            walrus_aggregator_url: std::env::var("WALRUS_AGGREGATOR_URL").ok(),
             sui_rpc_url: std::env::var("SUI_RPC_URL").ok(),
             walrus_system_object: std::env::var("WALRUS_SYSTEM_OBJECT").ok(),
             walrus_staking_object: std::env::var("WALRUS_STAKING_OBJECT").ok(),

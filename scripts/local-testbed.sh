@@ -16,7 +16,6 @@ OYSTER_BIND_ADDR="127.0.0.1:3000"
 PEARL_SERVICE_SECRET="testbed-secret"
 # Deterministic 32-byte master seed for local testbed key derivation (NOT for production use).
 PEARL_MASTER_SEED="deadbeefcafebabe1234567890abcdef0102030405060708090a0b0c0d0e0f10"
-WALRUS_AGGREGATOR_URL="http://127.0.0.1:31415"
 PEARL_TMUX="oyster-testbed-pearl"
 OYSTER_TMUX="oyster-testbed-oyster"
 EXTEND_TMUX="oyster-testbed-extend"
@@ -209,12 +208,6 @@ main() {
 
   check_prereqs
 
-  # Verify Walrus testbed is running (aggregator returns 404 on /, so just check connectivity).
-  echo "Checking Walrus aggregator at $WALRUS_AGGREGATOR_URL..."
-  curl -so /dev/null --connect-timeout 5 "$WALRUS_AGGREGATOR_URL" 2>/dev/null \
-    || die "Walrus aggregator not reachable at $WALRUS_AGGREGATOR_URL — start the testbed first"
-  echo "  aggregator reachable"
-
   parse_config
 
   # Kill stale testbed sessions and orphaned processes from previous runs.
@@ -269,7 +262,6 @@ main() {
      SUI_RPC_URL='$SUI_RPC_URL' \
      WALRUS_SYSTEM_OBJECT='$WALRUS_SYSTEM_OBJECT' \
      WALRUS_STAKING_OBJECT='$WALRUS_STAKING_OBJECT' \
-     WALRUS_AGGREGATOR_URL='$WALRUS_AGGREGATOR_URL' \
      RUST_LOG=info \
      cargo run -p oyster -- serve; \
      echo 'Oyster exited. Press Enter to close.'; read"

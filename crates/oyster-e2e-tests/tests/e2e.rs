@@ -56,7 +56,7 @@ async fn create_test_bucket(app: &Router, api_key: &str, name: &str) -> String {
 /// create account → create bucket → store blob → read blob → list blobs → delete blob.
 ///
 /// This test exercises the real Walrus pipeline: encoding → on-chain registration via Pearl
-/// signing → sliver upload to storage nodes → certification → aggregator read.
+/// signing → sliver upload to storage nodes → certification → direct storage-node read.
 #[test]
 fn e2e_blob_lifecycle() {
     run_e2e(async {

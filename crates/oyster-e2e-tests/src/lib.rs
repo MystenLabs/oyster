@@ -62,7 +62,7 @@ use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
     StorageNodeHandle,
     TestCluster,
-    test_cluster::{AggregatorHandle, E2eTestSetupBuilder},
+    test_cluster::E2eTestSetupBuilder,
 };
 use walrus_sui::{
     client::SuiContractClient,
@@ -89,8 +89,6 @@ pub struct OysterTestHarness {
     pub sui_cluster: Arc<TokioMutex<TestClusterHandle>>,
     /// The Walrus storage node cluster.
     pub walrus_cluster: TestCluster<StorageNodeHandle>,
-    /// The Walrus aggregator handle.
-    pub aggregator: AggregatorHandle,
     /// Oyster database pool (for direct DB operations in tests).
     pub db: db::DbPool,
     /// Sui RPC URL for the test cluster.
@@ -104,23 +102,19 @@ pub struct OysterTestHarness {
 }
 
 impl OysterTestHarness {
-    /// Boot the full stack: Sui → Walrus (storage nodes + aggregator) → Pearl → Oyster.
+    /// Boot the full stack: Sui → Walrus (storage nodes) → Pearl → Oyster.
     ///
     /// This is expensive (~10-30s) so tests should share a single harness where possible.
     pub async fn start() -> Self {
-        // 1. Boot the Walrus test cluster with an aggregator.
+        // 1. Boot the Walrus test cluster.
         eprintln!("[harness] building walrus e2e test cluster...");
-        let (sui_cluster, walrus_cluster, walrus_client, system_ctx, aggregator) =
+        let (sui_cluster, walrus_cluster, walrus_client, system_ctx, _aggregator) =
             E2eTestSetupBuilder::new()
-                .with_aggregator()
                 .build()
                 .await
                 .expect("failed to build walrus e2e test cluster");
 
-        let aggregator =
-            aggregator.expect("aggregator should be present (with_aggregator was set)");
-        let aggregator_url = aggregator.base_url();
-        eprintln!("[harness] walrus cluster ready, aggregator at {aggregator_url}");
+        eprintln!("[harness] walrus cluster ready");
 
         // Extract Sui RPC URL.
         let rpc_url = {
@@ -178,7 +172,6 @@ impl OysterTestHarness {
 
         let blob_store = DirectWalrusBlobStore::new(
             rpc_url.clone(),
-            aggregator_url,
             system_object,
             staking_object,
             pearl.clone(),
@@ -196,7 +189,6 @@ impl OysterTestHarness {
             pearl_grpc_url: Some("in-process".into()),
             pearl_service_secret: PEARL_SECRET.into(),
 
-            walrus_aggregator_url: None,
             sui_rpc_url: None,
             walrus_system_object: None,
             walrus_staking_object: None,
@@ -230,7 +222,6 @@ impl OysterTestHarness {
             operator_address,
             sui_cluster,
             walrus_cluster,
-            aggregator,
             db: oyster_db,
             rpc_url,
             system_object,

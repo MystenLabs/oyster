@@ -221,7 +221,6 @@ files to `/run/secrets/`).
 | `ENABLE_DEBUG` | `false` | Enable `/debug/*` endpoints |
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
-| `WALRUS_AGGREGATOR_URL` | -- | Walrus aggregator HTTP URL |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |
 | `WALRUS_SYSTEM_OBJECT` | -- | Walrus system object ID on Sui |
 | `WALRUS_STAKING_OBJECT` | -- | Walrus staking object ID on Sui |

@@ -109,7 +109,6 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -153,7 +152,6 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -1012,7 +1010,6 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -1182,7 +1179,6 @@ async fn metrics_endpoint_returns_prometheus_format() {
         blob_store_path: blob_path.clone(),
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -1257,7 +1253,6 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         blob_store_path: blob_path.clone(),
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
@@ -3519,7 +3514,6 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         pearl_grpc_url: None,
         pearl_service_secret: "test-secret".into(),
 
-        walrus_aggregator_url: None,
         sui_rpc_url: None,
         walrus_system_object: None,
         walrus_staking_object: None,
