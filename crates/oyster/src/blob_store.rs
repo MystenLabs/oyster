@@ -40,6 +40,10 @@ pub enum BlobStoreError {
     /// The requested blob was not found.
     #[error("blob not found: {0}")]
     NotFound(String),
+    /// The supplied blob ID could not be parsed by the backing store
+    /// (e.g. not a valid Walrus BlobId). Maps to 400.
+    #[error("invalid blob_id: {0}")]
+    InvalidBlobId(String),
     /// An I/O error occurred.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),

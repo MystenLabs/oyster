@@ -79,6 +79,9 @@ impl IntoResponse for AppError {
                 crate::blob_store::BlobStoreError::NotFound(_) => {
                     (StatusCode::NOT_FOUND, self.to_string())
                 }
+                crate::blob_store::BlobStoreError::InvalidBlobId(_) => {
+                    (StatusCode::BAD_REQUEST, self.to_string())
+                }
                 crate::blob_store::BlobStoreError::PoolCreationFailed(msg) => {
                     tracing::error!(error = %msg, "pool creation failed");
                     (StatusCode::BAD_GATEWAY, "pool creation failed".into())

@@ -36,6 +36,10 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             tracing::warn!(blob = %id, "blob not found");
             S3Error::with_message(S3ErrorCode::NoSuchKey, format!("blob not found: {id}"))
         }
+        BlobStoreError::InvalidBlobId(ref msg) => {
+            tracing::warn!(error = %msg, "invalid blob_id");
+            S3Error::with_message(S3ErrorCode::InvalidRequest, msg.clone())
+        }
         BlobStoreError::InsufficientBalance(ref msg) => {
             tracing::warn!(error = %msg, "insufficient balance for blob operation");
             let mut err = S3Error::with_message(

@@ -467,7 +467,7 @@ impl BlobStore for DirectWalrusBlobStore {
             let walrus_blob_id: walrus_core::BlobId = blob_id
                 .as_str()
                 .parse()
-                .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
+                .map_err(|e| BlobStoreError::InvalidBlobId(format!("{blob_id}: {e}")))?;
 
             match self
                 .node_client
@@ -552,7 +552,7 @@ impl BlobStore for DirectWalrusBlobStore {
             let walrus_blob_id: walrus_core::BlobId = blob_id
                 .as_str()
                 .parse()
-                .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
+                .map_err(|e| BlobStoreError::InvalidBlobId(format!("{blob_id}: {e}")))?;
 
             match self
                 .node_client
