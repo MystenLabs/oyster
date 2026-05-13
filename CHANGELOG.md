@@ -2,6 +2,38 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-05-13
+
+### Breaking Changes
+- `DirectWalrusBlobStore` now reads blobs and checks existence directly
+  against Walrus storage nodes via the `walrus-sdk` `WalrusNodeClient`,
+  removing the Walrus aggregator dependency entirely. The
+  `WALRUS_AGGREGATOR_URL` environment variable, the
+  `walrus_aggregator_url` field on `oyster::config::Config`, and the
+  `aggregator_url` argument to `DirectWalrusBlobStore::new` are all
+  removed. Operators must drop `WALRUS_AGGREGATOR_URL` from their
+  deployment environments; embedders must update calls to
+  `DirectWalrusBlobStore::new` and stop setting
+  `Config::walrus_aggregator_url`. The e2e test harness's
+  `.with_aggregator()` builder method is also gone, and
+  `scripts/local-testbed.sh` no longer starts or wires an aggregator.
+
+### Changed
+- Blob reads and existence checks no longer require a running Walrus
+  aggregator. `exists()` mirrors the aggregator's previous HEAD
+  semantics by treating a blob as present only when its
+  `initial_certified_epoch` is set (i.e. certified, not deleted, not
+  invalid).
+
+### Fixed
+- Malformed `blob_id` path parameters on direct Walrus reads now return
+  HTTP 400 (with a dedicated `BlobStoreError::InvalidBlobId` mapping)
+  instead of 500, matching the previous aggregator behavior on both
+  the JSON and S3 surfaces.
+- Audit events are now timestamped with microsecond precision,
+  eliminating tied `created_at` values that caused non-deterministic
+  ordering when multiple events were recorded within the same second.
+
 ## [0.8.0] - 2026-05-06
 
 ### Breaking Changes
