@@ -2,6 +2,7 @@
 name = "oyster-cli"
 version = "0.9.0"
 edition = "2024"
+publish = false
 
 [lib]
 name = "oyster_cli"

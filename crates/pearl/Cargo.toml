@@ -2,6 +2,7 @@
 name = "pearl"
 version = "0.9.0"
 edition = "2024"
+publish = false
 
 [dependencies]
 axum = { workspace = true }
