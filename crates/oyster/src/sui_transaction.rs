@@ -8,11 +8,7 @@ use sui_types::{
     base_types::{ObjectID, SuiAddress},
     transaction::{Transaction, TransactionData},
 };
-use walrus_sui::client::{
-    SuiReadClient,
-    contract_config::ContractConfig,
-    dual_client::DEFAULT_CHECKPOINT_WAIT_TIMEOUT,
-};
+use walrus_sui::client::{SuiReadClient, contract_config::ContractConfig};
 use walrus_utils::backoff::ExponentialBackoffConfig;
 
 use crate::{AccountId, pearl_client::PearlConnection};
@@ -29,13 +25,8 @@ pub async fn build_sui_read_client(
         Some(3),
     );
     let contract_config = ContractConfig::new(system_object, staking_object);
-    let read_client = SuiReadClient::new_for_rpc_urls(
-        &[rpc_url],
-        &contract_config,
-        backoff,
-        DEFAULT_CHECKPOINT_WAIT_TIMEOUT,
-    )
-    .await?;
+    let read_client =
+        SuiReadClient::new_for_rpc_urls(&[rpc_url], &contract_config, backoff).await?;
     Ok(Arc::new(read_client))
 }
 

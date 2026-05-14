@@ -1918,8 +1918,8 @@ dependencies = [
 
 [[package]]
 name = "checkpoint-downloader"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "async-channel",
@@ -1935,7 +1935,7 @@ dependencies = [
  "tokio",
  "tokio-util 0.7.18",
  "tracing",
- "typed-store 1.48.0",
+ "typed-store 1.48.1",
  "walrus-sui",
  "walrus-utils",
 ]
@@ -13369,8 +13369,8 @@ dependencies = [
 
 [[package]]
 name = "typed-store"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "async-trait",
  "bcs",
@@ -13754,8 +13754,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-core"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "base64 0.22.1",
  "bcs",
@@ -13776,8 +13776,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-proc-macros"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "darling 0.23.0",
  "proc-macro2",
@@ -13787,8 +13787,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-sdk"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -13833,8 +13833,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-service"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -13922,7 +13922,7 @@ dependencies = [
  "tracing-opentelemetry 0.32.1",
  "tracing-subscriber",
  "twox-hash 2.1.2",
- "typed-store 1.48.0",
+ "typed-store 1.48.1",
  "utoipa",
  "utoipa-redoc",
  "uuid",
@@ -13939,8 +13939,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-storage-node-client"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "bcs",
  "bytes",
@@ -13974,8 +13974,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-sui"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -14036,8 +14036,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-test-utils"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "once_cell",
@@ -14050,8 +14050,8 @@ dependencies = [
 
 [[package]]
 name = "walrus-utils"
-version = "1.48.0"
-source = "git+https://github.com/MystenLabs/walrus?rev=7ecb6720aadd5bde11b7b59eaa647b0cbd201e76#7ecb6720aadd5bde11b7b59eaa647b0cbd201e76"
+version = "1.48.1"
+source = "git+https://github.com/MystenLabs/walrus?tag=testnet-v1.48.1#9c5590a81e29e1141b05a2481c677fe1e2b73b29"
 dependencies = [
  "anyhow",
  "bytes",

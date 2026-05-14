@@ -62,12 +62,12 @@ sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.71.0" }
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.71.0" }
 
 # Walrus ecosystem — single version across workspace
-walrus-core = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
-walrus-sdk = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
-walrus-service = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
-walrus-sui = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
-walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
-walrus-utils = { git = "https://github.com/MystenLabs/walrus", rev = "7ecb6720aadd5bde11b7b59eaa647b0cbd201e76" }
+walrus-core = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
+walrus-sdk = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
+walrus-service = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
+walrus-sui = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
+walrus-test-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
+walrus-utils = { git = "https://github.com/MystenLabs/walrus", tag = "testnet-v1.48.1" }
 
 # Internal path deps
 oyster = { path = "crates/oyster" }
