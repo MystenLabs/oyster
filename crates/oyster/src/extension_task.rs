@@ -10,8 +10,9 @@ use walrus_sui::client::{ReadClient as _, transaction_builder::WalrusPtbBuilder}
 use crate::{
     AccountId,
     AppId,
+    FundingAmount,
     db::{self, DbPool, accounts::ExpiringPool},
-    extension_cost::{self, ExtensionCost},
+    extension_cost,
     metrics::{
         EXTENSION_CYCLE_DURATION_SECONDS,
         EXTENSION_CYCLE_POOLS_PROCESSED,
@@ -23,13 +24,7 @@ use crate::{
     },
     pearl_client::PearlConnection,
     sui_transaction,
-    webhook::{
-        self,
-        EVENT_TYPE_FUNDING_REQUIRED,
-        FundingAmount,
-        FundingRequiredPayload,
-        WebhookClient,
-    },
+    webhook::{self, EVENT_TYPE_FUNDING_REQUIRED, FundingRequiredPayload, WebhookClient},
     webhook_keys,
 };
 
@@ -245,7 +240,7 @@ pub async fn run_extension_cycle_once(
                                 error = %err,
                                 "failed to compute extension cost; falling back to zeros"
                             );
-                            ExtensionCost {
+                            FundingAmount {
                                 wal_frost: 0,
                                 sui_mist: 0,
                             }
@@ -257,10 +252,7 @@ pub async fn run_extension_cycle_once(
                         event_type: EVENT_TYPE_FUNDING_REQUIRED,
                         account_id: pool.account_id,
                         pearl_address: sender_address.to_string(),
-                        amount: FundingAmount {
-                            wal_frost: cost.wal_frost.to_string(),
-                            sui_mist: cost.sui_mist.to_string(),
-                        },
+                        amount: cost,
                         timestamp: Utc::now(),
                     };
                     if let Some(wh) =

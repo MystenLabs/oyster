@@ -34,7 +34,8 @@ use walrus_sui::{
 
 use crate::{
     AccountId,
-    blob_store::{BlobId, BlobStore, BlobStoreError, FundingAmount, StoreResult},
+    FundingAmount,
+    blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,
     sui_transaction,

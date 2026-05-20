@@ -3876,11 +3876,9 @@ async fn webhook_delivery_includes_signature() {
     use axum::{Router, body::Bytes, extract::State, http::HeaderMap, routing::post};
     use base64::Engine as _;
     use ed25519_dalek::{Verifier, VerifyingKey};
-    use oyster::webhook::{
-        EVENT_TYPE_FUNDING_REQUIRED,
+    use oyster::{
         FundingAmount,
-        FundingRequiredPayload,
-        WebhookClient,
+        webhook::{EVENT_TYPE_FUNDING_REQUIRED, FundingRequiredPayload, WebhookClient},
     };
 
     #[derive(Clone, Default)]
@@ -3935,8 +3933,8 @@ async fn webhook_delivery_includes_signature() {
         account_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
         pearl_address: "0xabc".into(),
         amount: FundingAmount {
-            wal_frost: "1".into(),
-            sui_mist: "2".into(),
+            wal_frost: 1,
+            sui_mist: 2,
         },
         timestamp: chrono::DateTime::<chrono::Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
     };

@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::{
     AccountId,
+    FundingAmount,
     metrics::{
         WEBHOOK_ATTEMPTS_TOTAL,
         WEBHOOK_CIRCUIT_OPEN_TOTAL,
@@ -33,16 +34,6 @@ const COOLDOWN_SECS: u64 = 60;
 /// Webhook event type emitted when an account's Pearl wallet cannot cover the
 /// next storage-pool extension.
 pub const EVENT_TYPE_FUNDING_REQUIRED: &str = "account.funding_required";
-
-/// Token amounts attached to a funding-required event. Encoded as decimal
-/// strings to avoid JSON-number precision loss for `u64`.
-#[derive(Debug, Serialize)]
-pub struct FundingAmount {
-    /// Required WAL, in FROST units (1 WAL = 1e9 FROST).
-    pub wal_frost: String,
-    /// Required SUI, in MIST units (1 SUI = 1e9 MIST).
-    pub sui_mist: String,
-}
 
 /// Payload posted when a blob extension cannot be performed because Pearl's
 /// wallet for the account is short on either WAL or SUI.
@@ -321,8 +312,8 @@ mod tests {
             account_id,
             pearl_address: "0xabc".into(),
             amount: FundingAmount {
-                wal_frost: "12345".into(),
-                sui_mist: "67890".into(),
+                wal_frost: 12345,
+                sui_mist: 67890,
             },
             timestamp,
         };

@@ -812,7 +812,7 @@ pub fn build_s3_service(state: &AppState) -> s3s::service::S3Service {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::blob_store::{BlobStoreError, FundingAmount};
+    use crate::{FundingAmount, blob_store::BlobStoreError};
 
     #[test]
     fn insufficient_balance_returns_402_with_funding_in_message() {

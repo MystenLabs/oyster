@@ -98,10 +98,8 @@ impl IntoResponse for AppError {
                 "error": format!("insufficient balance: {message}"),
             });
             if let Some(amount) = funding_required {
-                body["funding_required"] = serde_json::json!({
-                    "wal_frost": amount.wal_frost.to_string(),
-                    "sui_mist": amount.sui_mist.to_string(),
-                });
+                body["funding_required"] =
+                    serde_json::to_value(amount).expect("FundingAmount Serialize is infallible");
             }
             return (StatusCode::PAYMENT_REQUIRED, axum::Json(body)).into_response();
         }
@@ -187,7 +185,7 @@ mod tests {
     use axum::{body::to_bytes, http::StatusCode};
 
     use super::*;
-    use crate::blob_store::{BlobStoreError, FundingAmount};
+    use crate::{FundingAmount, blob_store::BlobStoreError};
 
     async fn read_json_body(resp: Response) -> serde_json::Value {
         let bytes = to_bytes(resp.into_body(), usize::MAX)

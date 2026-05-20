@@ -22,6 +22,8 @@ pub mod error;
 pub mod extension_cost;
 /// Background task that auto-extends expiring blobs.
 pub mod extension_task;
+/// Shared WAL/SUI funding-amount type (sync 402 + webhook).
+pub mod funding;
 /// Prometheus metric constants and recorder setup.
 pub mod metrics;
 /// Axum middleware for recording HTTP request metrics.
@@ -52,6 +54,7 @@ pub use app_admin::AuthenticatedApp;
 pub use app_id::AppId;
 use blob_store::BlobStore;
 use config::Config;
+pub use funding::FundingAmount;
 use pearl_client::PearlConnection;
 pub use sui_types;
 

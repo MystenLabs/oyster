@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use walrus_sui::client::{ReadClient, SuiReadClient};
 
-use crate::db::accounts::ExpiringPool;
+use crate::{FundingAmount, db::accounts::ExpiringPool};
 
 /// Fixed SUI buffer attached to every funding-required notification, in MIST.
 ///
@@ -16,15 +16,6 @@ use crate::db::accounts::ExpiringPool;
 /// reference gas prices. Harbor tops up the wallet with at least this much
 /// SUI so subsequent extensions don't immediately re-trigger the webhook.
 pub const SUI_GAS_PER_EXTENSION_BUFFER_MIST: u64 = 100_000_000;
-
-/// Outputs of `compute_extension_cost`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExtensionCost {
-    /// WAL needed for the extension, in FROST units.
-    pub wal_frost: u64,
-    /// SUI buffer to keep the wallet solvent, in MIST units.
-    pub sui_mist: u64,
-}
 
 /// Errors returned while estimating extension cost.
 #[derive(Debug, thiserror::Error)]
@@ -42,14 +33,14 @@ pub async fn compute_extension_cost(
     read_client: &Arc<SuiReadClient>,
     pool: &ExpiringPool,
     extend_epochs: u32,
-) -> Result<ExtensionCost, ExtensionCostError> {
+) -> Result<FundingAmount, ExtensionCostError> {
     let storage_price = read_client.storage_price_per_unit_size().await?;
     let wal_frost = walrus_sui::utils::price_for_encoded_length(
         pool.pool_reserved_encoded_bytes.max(0) as u64,
         storage_price,
         extend_epochs,
     );
-    Ok(ExtensionCost {
+    Ok(FundingAmount {
         wal_frost,
         sui_mist: SUI_GAS_PER_EXTENSION_BUFFER_MIST,
     })

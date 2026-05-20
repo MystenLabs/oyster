@@ -2,7 +2,7 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 
 use blake2::{Blake2s256, Digest};
 
-use crate::AccountId;
+use crate::{AccountId, FundingAmount};
 
 /// Content-addressed blob identifier (hex-encoded BLAKE2s-256 hash for local store).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -32,22 +32,6 @@ impl std::fmt::Display for BlobId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(&self.0)
     }
-}
-
-/// Funding estimate attached to a synchronous 402 response so the caller
-/// (Harbor, the FE) knows how much WAL and SUI to top up without
-/// round-tripping to `/account/wallet`.
-///
-/// Carries raw `u64` units (FROST / MIST). Intentionally distinct from
-/// [`crate::webhook::FundingAmount`], which serializes amounts as decimal
-/// strings for transport — we don't want to entangle the webhook payload
-/// shape with sync-error internals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FundingAmount {
-    /// Required WAL, in FROST units (1 WAL = 1e9 FROST).
-    pub wal_frost: u64,
-    /// Required SUI, in MIST units (1 SUI = 1e9 MIST).
-    pub sui_mist: u64,
 }
 
 /// Errors that can occur during blob storage operations.
