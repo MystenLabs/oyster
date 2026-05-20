@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-05-20
+
+### Added
+- `oyster_funding_required_webhooks_total{outcome=success|failure}`
+  Prometheus counter, incremented exactly once per
+  `WebhookClient::notify_funding_required` call at each of the three
+  terminal points (2xx success, 4xx non-retryable, retries exhausted).
+- `oyster_insufficient_funds_responses_total{operation=…}` Prometheus
+  counter, emitted from the `InsufficientBalance` short-circuit arm of
+  `AppError::into_response` so every Axum 402 funding response is
+  counted regardless of route. Today's reachable label values:
+  `store_blob`, `unknown`.
+- `BlobStoreError::with_operation(&'static str)` helper that re-tags an
+  `InsufficientBalance` error with the API surface that produced it;
+  no-op on other variants.
+
+### Changed
+- `BlobStoreError::InsufficientBalance` gained an `operation: &'static
+  str` field tagging the API surface that produced the 402. Backend
+  constructors in `direct_walrus_store` default to `"unknown"`; the
+  `store_blob` route re-tags via `with_operation("store_blob")` before
+  propagation.
+
 ## [0.10.0] - 2026-05-20
 
 ### Breaking Changes
