@@ -91,9 +91,19 @@ impl IntoResponse for AppError {
         if let AppError::BlobStore(BlobStoreError::InsufficientBalance {
             message,
             funding_required,
+            operation,
         }) = &self
         {
-            tracing::warn!(error = %message, "insufficient balance for blob operation");
+            metrics::counter!(
+                crate::metrics::INSUFFICIENT_FUNDS_RESPONSES_TOTAL,
+                "operation" => *operation,
+            )
+            .increment(1);
+            tracing::warn!(
+                error = %message,
+                operation = %operation,
+                "insufficient balance for blob operation",
+            );
             let mut body = serde_json::json!({
                 "error": format!("insufficient balance: {message}"),
             });
@@ -199,6 +209,7 @@ mod tests {
         let err = AppError::BlobStore(BlobStoreError::InsufficientBalance {
             message: "could not find WAL coins with sufficient balance".into(),
             funding_required: None,
+            operation: "store_blob",
         });
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);
@@ -224,6 +235,7 @@ mod tests {
                 wal_frost: 1_234,
                 sui_mist: 10_000_000,
             }),
+            operation: "store_blob",
         });
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::PAYMENT_REQUIRED);

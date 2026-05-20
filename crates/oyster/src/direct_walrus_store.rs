@@ -77,6 +77,7 @@ fn classify_create_pool_error(
         BlobStoreError::InsufficientBalance {
             message: raw,
             funding_required: funding_estimate,
+            operation: "unknown",
         }
     } else {
         BlobStoreError::PoolCreationFailed(raw)
@@ -91,6 +92,7 @@ fn classify_upstream_error(raw: String, funding_estimate: Option<FundingAmount>)
         BlobStoreError::InsufficientBalance {
             message: raw,
             funding_required: funding_estimate,
+            operation: "unknown",
         }
     } else {
         BlobStoreError::Upstream(raw)

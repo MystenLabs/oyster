@@ -49,6 +49,16 @@ pub const WEBHOOK_CIRCUIT_OPEN_TOTAL: &str = "oyster_webhook_circuit_open_total"
 /// Should be zero in normal operation; non-zero indicates the migration was
 /// bypassed or a row was rolled back below 017's invariants.
 pub const WEBHOOK_SKIPPED_UNSIGNED_TOTAL: &str = "oyster_webhook_skipped_unsigned_total";
+/// Counter: terminal funding-required webhook deliveries, labelled by
+/// `outcome` ∈ {`success`, `failure`}. Incremented exactly once per
+/// `WebhookClient::notify_funding_required` call (not per HTTP retry).
+pub const FUNDING_REQUIRED_WEBHOOKS_TOTAL: &str = "oyster_funding_required_webhooks_total";
+
+// Funding-shortfall response metrics
+
+/// Counter: 402 "insufficient funds" responses returned by Axum routes,
+/// labelled by `operation` (e.g. `store_blob`).
+pub const INSUFFICIENT_FUNDS_RESPONSES_TOTAL: &str = "oyster_insufficient_funds_responses_total";
 
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {

@@ -43,6 +43,7 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
         BlobStoreError::InsufficientBalance {
             ref message,
             ref funding_required,
+            ..
         } => {
             tracing::warn!(error = %message, "insufficient balance for blob operation");
             // S3 doesn't have a first-class structured-extension slot for this,
@@ -822,6 +823,7 @@ mod tests {
                 wal_frost: 12_345,
                 sui_mist: 10_000_000,
             }),
+            operation: "store_blob",
         });
         assert_eq!(err.status_code(), Some(hyper::StatusCode::PAYMENT_REQUIRED));
         let rendered = format!("{err}");
@@ -840,6 +842,7 @@ mod tests {
         let err = blob_store_error(BlobStoreError::InsufficientBalance {
             message: "no balance".into(),
             funding_required: None,
+            operation: "store_blob",
         });
         assert_eq!(err.status_code(), Some(hyper::StatusCode::PAYMENT_REQUIRED));
     }

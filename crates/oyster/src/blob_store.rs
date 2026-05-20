@@ -92,6 +92,12 @@ pub enum BlobStoreError {
         /// WAL/SUI top-up estimate, best-effort. `None` when the price
         /// lookup itself failed during error formatting.
         funding_required: Option<FundingAmount>,
+        /// API surface that produced this 402 (e.g. `"store_blob"`). Used
+        /// as the `operation` label on
+        /// `oyster_insufficient_funds_responses_total`. Backend
+        /// constructors default to `"unknown"`; routes re-tag via
+        /// [`BlobStoreError::with_operation`] before returning.
+        operation: &'static str,
     },
     /// Lazy creation of a `StoragePool` failed on-chain during PTB build or
     /// submit and wasn't a balance shortfall. Maps to 502 Bad Gateway.
@@ -104,6 +110,25 @@ pub enum BlobStoreError {
     /// Error bookkeeping pool/blob state in the Oyster database. Maps to 500.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+}
+
+impl BlobStoreError {
+    /// Tag an `InsufficientBalance` error with the API operation that
+    /// produced it. No-op for other variants.
+    pub fn with_operation(self, op: &'static str) -> Self {
+        match self {
+            BlobStoreError::InsufficientBalance {
+                message,
+                funding_required,
+                ..
+            } => BlobStoreError::InsufficientBalance {
+                message,
+                funding_required,
+                operation: op,
+            },
+            other => other,
+        }
+    }
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;

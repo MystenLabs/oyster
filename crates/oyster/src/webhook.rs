@@ -16,6 +16,7 @@ use crate::{
     AccountId,
     FundingAmount,
     metrics::{
+        FUNDING_REQUIRED_WEBHOOKS_TOTAL,
         WEBHOOK_ATTEMPTS_TOTAL,
         WEBHOOK_CIRCUIT_OPEN_TOTAL,
         WEBHOOK_FAILURES_TOTAL,
@@ -137,6 +138,7 @@ impl WebhookClient {
                 Ok(resp) if resp.status().is_success() => {
                     self.record_success();
                     counter!(WEBHOOK_SUCCESSES_TOTAL).increment(1);
+                    counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "success").increment(1);
                     tracing::info!(
                         account_id = %payload.account_id,
                         "webhook delivered successfully"
@@ -152,6 +154,7 @@ impl WebhookClient {
                     );
                     self.record_failure();
                     counter!(WEBHOOK_FAILURES_TOTAL).increment(1);
+                    counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "failure").increment(1);
                     return;
                 }
                 Ok(resp) => {
@@ -180,6 +183,7 @@ impl WebhookClient {
         );
         self.record_failure();
         counter!(WEBHOOK_FAILURES_TOTAL).increment(1);
+        counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "failure").increment(1);
     }
 
     /// Check whether a request should be attempted based on circuit state.
@@ -352,5 +356,99 @@ mod tests {
 
         // But a second immediate attempt should be blocked (circuit re-armed during half-open).
         assert!(!client.should_attempt());
+    }
+
+    fn sample_payload() -> FundingRequiredPayload {
+        FundingRequiredPayload {
+            event_id: Uuid::nil(),
+            event_type: EVENT_TYPE_FUNDING_REQUIRED,
+            account_id: "00000000-0000-0000-0000-000000000001".parse().unwrap(),
+            pearl_address: "0xabc".into(),
+            amount: FundingAmount {
+                wal_frost: 1,
+                sui_mist: 2,
+            },
+            timestamp: DateTime::<Utc>::from_timestamp(1_700_000_000, 0).unwrap(),
+        }
+    }
+
+    /// Drive one `notify_funding_required` against a local axum handler
+    /// under a thread-local Prometheus recorder, and return the rendered
+    /// metric text. The handler is built from `make_handler`, which is
+    /// called fresh for each request — useful for stub handlers that need
+    /// to return different statuses per attempt.
+    fn drive_and_render<F, Fut>(make_handler: F) -> String
+    where
+        F: Fn() -> Fut + Clone + Send + Sync + 'static,
+        Fut: std::future::Future<Output = axum::http::StatusCode> + Send + 'static,
+    {
+        use axum::{Router, routing::post};
+
+        let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+        let handle = recorder.handle();
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        metrics::with_local_recorder(&recorder, || {
+            rt.block_on(async move {
+                let handler = make_handler.clone();
+                let app: Router = Router::new().route("/hook", post(move || (handler.clone())()));
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                tokio::spawn(async move {
+                    axum::serve(listener, app).await.unwrap();
+                });
+
+                let url = format!("http://{addr}/hook");
+                let client = test_client(&url);
+                client.notify_funding_required(&sample_payload()).await;
+            });
+        });
+
+        handle.render()
+    }
+
+    #[test]
+    fn notify_funding_required_increments_success_counter() {
+        let rendered = drive_and_render(|| async { axum::http::StatusCode::OK });
+        assert!(
+            rendered.contains(r#"oyster_funding_required_webhooks_total{outcome="success"} 1"#,),
+            "expected success counter == 1, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains(r#"outcome="failure""#),
+            "unexpected failure counter present, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn notify_funding_required_increments_failure_counter_on_4xx() {
+        let rendered = drive_and_render(|| async { axum::http::StatusCode::BAD_REQUEST });
+        assert!(
+            rendered.contains(r#"oyster_funding_required_webhooks_total{outcome="failure"} 1"#,),
+            "expected failure counter == 1 on 4xx, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains(r#"outcome="success""#),
+            "unexpected success counter present, got:\n{rendered}",
+        );
+    }
+
+    #[test]
+    fn notify_funding_required_increments_failure_counter_on_retries_exhausted() {
+        let rendered = drive_and_render(|| async { axum::http::StatusCode::INTERNAL_SERVER_ERROR });
+        // Exactly one terminal failure increment, regardless of how many 5xx
+        // retry attempts the loop made.
+        assert!(
+            rendered.contains(r#"oyster_funding_required_webhooks_total{outcome="failure"} 1"#,),
+            "expected failure counter == 1 after retries exhausted, got:\n{rendered}",
+        );
+        assert!(
+            !rendered.contains(r#"outcome="success""#),
+            "unexpected success counter present, got:\n{rendered}",
+        );
     }
 }

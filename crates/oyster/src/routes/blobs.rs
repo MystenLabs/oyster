@@ -188,7 +188,7 @@ pub async fn store_blob(
                 "operation" => "store", "result" => "error"
             )
             .increment(1);
-            return Err(e.into());
+            return Err(e.with_operation("store_blob").into());
         }
     };
 

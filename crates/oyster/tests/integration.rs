@@ -3968,3 +3968,127 @@ async fn webhook_delivery_includes_signature() {
     vk.verify(&captured.body, &signature)
         .expect("signature verifies");
 }
+
+// ---------------------------------------------------------------------------
+// 402 InsufficientBalance route-level metric
+// ---------------------------------------------------------------------------
+
+/// `BlobStore` stub whose `store()` always returns `InsufficientBalance`
+/// tagged `operation: "unknown"` — the route layer is expected to re-tag
+/// it to `"store_blob"` before the 402 counter is emitted.
+struct InsufficientStubBlobStore;
+
+impl BlobStore for InsufficientStubBlobStore {
+    fn store(
+        &self,
+        _data: &[u8],
+        _account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
+        Box::pin(async move {
+            Err(BlobStoreError::InsufficientBalance {
+                message: "stub: no balance".into(),
+                funding_required: Some(oyster::FundingAmount {
+                    wal_frost: 100,
+                    sui_mist: 200,
+                }),
+                operation: "unknown",
+            })
+        })
+    }
+
+    fn read(&self, _blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
+        Box::pin(async move { Err(BlobStoreError::NotFound("stub".into())) })
+    }
+
+    fn delete(
+        &self,
+        _blob_id: &BlobId,
+        _pool_id: Option<&str>,
+        _encoded_size: u64,
+        _account_id: &AccountId,
+    ) -> BoxFuture<'_, Result<(), BlobStoreError>> {
+        Box::pin(async move { Ok(()) })
+    }
+
+    fn exists(&self, _blob_id: &BlobId) -> BoxFuture<'_, Result<bool, BlobStoreError>> {
+        Box::pin(async move { Ok(false) })
+    }
+}
+
+#[test]
+fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
+    use oyster::config::Config;
+
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    let status = metrics::with_local_recorder(&recorder, || {
+        rt.block_on(async {
+            let tmp = TempDir::new().unwrap();
+            let blob_path = tmp.path().join("blobs");
+            let config = Config {
+                bind_addr: "unused".into(),
+                database_url: "sqlite::memory:".into(),
+                blob_store_path: blob_path,
+                pearl_grpc_url: None,
+                pearl_service_secret: "test-secret".into(),
+
+                sui_rpc_url: None,
+                walrus_system_object: None,
+                walrus_staking_object: None,
+
+                pool_initial_epochs_ahead: 5,
+                pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
+                pool_extend_epochs: 5,
+                pool_extend_lookahead_epochs: 7,
+                extension_idle_sleep_secs: 30,
+                extension_busy_sleep_ms: 250,
+                extension_claim_batch_size: 100,
+                extension_claim_cooldown_secs: 60,
+                extension_metrics_bind_addr: "unused".into(),
+                allow_http_webhook_scheme: true,
+            };
+            let pool = db::create_pool(&config.database_url).await.unwrap();
+            let state = AppState {
+                db: pool.clone(),
+                blob_store: Arc::new(InsufficientStubBlobStore) as Arc<dyn BlobStore>,
+                pearl: None,
+                config,
+                metrics_handle: None,
+            };
+            let app = routes::build_router(state);
+
+            let (_, key) = create_test_account(&pool).await;
+            let bucket_name = create_test_bucket(&app, &key, "stub-bucket").await;
+
+            let req = Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/k"))
+                .header("authorization", format!("Bearer {key}"))
+                .header("content-type", "text/plain")
+                .body(Body::from(b"data".to_vec()))
+                .unwrap();
+            let resp = app.clone().oneshot(req).await.unwrap();
+            resp.status()
+        })
+    });
+
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+
+    let rendered = handle.render();
+    assert!(
+        rendered
+            .contains(r#"oyster_insufficient_funds_responses_total{operation="store_blob"} 1"#,),
+        "expected operation=\"store_blob\" label on 402 counter, got:\n{rendered}",
+    );
+    // The stub's default `operation: "unknown"` should have been overwritten
+    // by `with_operation("store_blob")` in the route's error arm — so no
+    // `operation="unknown"` series should appear at all.
+    assert!(
+        !rendered.contains(r#"oyster_insufficient_funds_responses_total{operation="unknown""#),
+        "operation=\"unknown\" should have been re-tagged, got:\n{rendered}",
+    );
+}
