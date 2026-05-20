@@ -323,6 +323,30 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+/// Funding estimate attached to a 402 Payment Required response so the
+/// caller knows how much WAL and SUI to top up.
+///
+/// Amounts are decimal strings to preserve `u64` precision across JSON,
+/// matching the `account.funding_required` webhook payload convention.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FundingRequiredResponse {
+    /// Required WAL, in FROST units (1 WAL = 1e9 FROST).
+    pub wal_frost: String,
+    /// Required SUI, in MIST units (1 SUI = 1e9 MIST).
+    pub sui_mist: String,
+}
+
+/// Body returned with a 402 Payment Required when the account's Pearl
+/// wallet can't cover the requested operation. `funding_required` is
+/// `None` when the price-lookup itself failed.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct InsufficientBalanceErrorResponse {
+    /// Human-readable error message.
+    pub error: String,
+    /// Best-effort WAL/SUI top-up estimate, or `None` on lookup failure.
+    pub funding_required: Option<FundingRequiredResponse>,
+}
+
 /// Wallet information for an account.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WalletResponse {

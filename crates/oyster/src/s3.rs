@@ -40,11 +40,25 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             tracing::warn!(error = %msg, "invalid blob_id");
             S3Error::with_message(S3ErrorCode::InvalidRequest, msg.clone())
         }
-        BlobStoreError::InsufficientBalance(ref msg) => {
-            tracing::warn!(error = %msg, "insufficient balance for blob operation");
+        BlobStoreError::InsufficientBalance {
+            ref message,
+            ref funding_required,
+        } => {
+            tracing::warn!(error = %message, "insufficient balance for blob operation");
+            // S3 doesn't have a first-class structured-extension slot for this,
+            // so render `funding_required` into the message body. Mirrors the
+            // JSON response from the Axum side as closely as `S3Error` allows.
+            let body = match funding_required {
+                Some(amount) => format!(
+                    "account has insufficient balance: {message}; \
+                     funding_required={{wal_frost:{},sui_mist:{}}}",
+                    amount.wal_frost, amount.sui_mist,
+                ),
+                None => format!("account has insufficient balance: {message}"),
+            };
             let mut err = S3Error::with_message(
                 S3ErrorCode::Custom(bytestring::ByteString::from("InsufficientBalance")),
-                format!("account has insufficient balance: {msg}"),
+                body,
             );
             err.set_status_code(hyper::StatusCode::PAYMENT_REQUIRED);
             err
@@ -53,11 +67,18 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             tracing::error!(error = %io_err, "blob store I/O error");
             S3Error::with_message(S3ErrorCode::InternalError, io_err.to_string())
         }
-        BlobStoreError::Http(ref msg) => {
-            tracing::error!(error = %msg, "blob store HTTP error");
+        BlobStoreError::Internal(ref msg) => {
+            tracing::error!(error = %msg, "blob store internal error");
             S3Error::with_message(S3ErrorCode::InternalError, msg.clone())
         }
-        BlobStoreError::Upstream {
+        BlobStoreError::Upstream(ref msg) => {
+            tracing::error!(error = %msg, "blob store upstream error");
+            let mut err =
+                S3Error::with_message(S3ErrorCode::InternalError, "upstream blob store error");
+            err.set_status_code(hyper::StatusCode::BAD_GATEWAY);
+            err
+        }
+        BlobStoreError::UpstreamStatus {
             status,
             ref message,
         } => {
@@ -786,4 +807,40 @@ pub fn build_s3_service(state: &AppState) -> s3s::service::S3Service {
     let mut builder = S3ServiceBuilder::new(s3);
     builder.set_auth(auth);
     builder.build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::blob_store::{BlobStoreError, FundingAmount};
+
+    #[test]
+    fn insufficient_balance_returns_402_with_funding_in_message() {
+        let err = blob_store_error(BlobStoreError::InsufficientBalance {
+            message: "could not find WAL coins".into(),
+            funding_required: Some(FundingAmount {
+                wal_frost: 12_345,
+                sui_mist: 10_000_000,
+            }),
+        });
+        assert_eq!(err.status_code(), Some(hyper::StatusCode::PAYMENT_REQUIRED));
+        let rendered = format!("{err}");
+        assert!(
+            rendered.contains("wal_frost:12345"),
+            "expected wal_frost in rendered S3Error, got: {rendered}",
+        );
+        assert!(
+            rendered.contains("sui_mist:10000000"),
+            "expected sui_mist in rendered S3Error, got: {rendered}",
+        );
+    }
+
+    #[test]
+    fn insufficient_balance_without_funding_still_402() {
+        let err = blob_store_error(BlobStoreError::InsufficientBalance {
+            message: "no balance".into(),
+            funding_required: None,
+        });
+        assert_eq!(err.status_code(), Some(hyper::StatusCode::PAYMENT_REQUIRED));
+    }
 }

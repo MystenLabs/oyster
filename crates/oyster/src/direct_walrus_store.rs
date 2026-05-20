@@ -34,11 +34,19 @@ use walrus_sui::{
 
 use crate::{
     AccountId,
-    blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
+    blob_store::{BlobId, BlobStore, BlobStoreError, FundingAmount, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,
     sui_transaction,
 };
+
+/// Fixed SUI buffer attached to every synchronous 402 response, in MIST.
+///
+/// Roughly ~10 PTBs of headroom at typical reference gas prices. Sized
+/// independently from `extension_cost::SUI_GAS_PER_EXTENSION_BUFFER_MIST`,
+/// which is the async extension worker's per-cycle hint. This constant is
+/// only used by the user-facing synchronous upload path.
+pub const SUI_GAS_PER_OP_BUFFER_MIST: u64 = 10_000_000;
 
 /// Check whether an error message indicates insufficient on-chain balance.
 fn is_insufficient_balance(msg: &str) -> bool {
@@ -55,6 +63,87 @@ fn is_insufficient_balance(msg: &str) -> bool {
         || lower.contains("cannot pay gas")
         || lower.contains("insufficient balance")
         || lower.contains("could not find") && lower.contains("coins")
+}
+
+/// Classify a `create_storage_pool` failure: balance shortfalls become 402
+/// (with the carried `funding_required` estimate); everything else stays a
+/// 502 [`BlobStoreError::PoolCreationFailed`].
+fn classify_create_pool_error(
+    raw: String,
+    funding_estimate: Option<FundingAmount>,
+) -> BlobStoreError {
+    if is_insufficient_balance(&raw) {
+        BlobStoreError::InsufficientBalance {
+            message: raw,
+            funding_required: funding_estimate,
+        }
+    } else {
+        BlobStoreError::PoolCreationFailed(raw)
+    }
+}
+
+/// Classify a generic "PTB build / submit" failure: balance shortfalls
+/// become 402 (with the carried `funding_required` estimate); everything
+/// else is bucketed as an upstream Sui/Walrus error → 502.
+fn classify_upstream_error(raw: String, funding_estimate: Option<FundingAmount>) -> BlobStoreError {
+    if is_insufficient_balance(&raw) {
+        BlobStoreError::InsufficientBalance {
+            message: raw,
+            funding_required: funding_estimate,
+        }
+    } else {
+        BlobStoreError::Upstream(raw)
+    }
+}
+
+/// Best-effort estimate of the WAL+SUI needed to reserve `encoded_size`
+/// bytes of `StoragePool` capacity for `epochs` epochs. Falls back to
+/// `None` if the storage price lookup itself fails — the caller surfaces
+/// `funding_required: None` in the response body and the client falls back
+/// to `/account/wallet`.
+async fn estimate_storage_funding(
+    read_client: &SuiReadClient,
+    encoded_size: u64,
+    epochs: u32,
+) -> Option<FundingAmount> {
+    match read_client.storage_price_per_unit_size().await {
+        Ok(price) => {
+            let wal_frost =
+                walrus_sui::utils::price_for_encoded_length(encoded_size, price, epochs);
+            Some(FundingAmount {
+                wal_frost,
+                sui_mist: SUI_GAS_PER_OP_BUFFER_MIST,
+            })
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "storage_price_per_unit_size lookup failed; \
+                returning funding_required: None");
+            None
+        }
+    }
+}
+
+/// Best-effort estimate of the WAL+SUI needed to register `encoded_size`
+/// bytes' worth of blob writes. See [`estimate_storage_funding`] for the
+/// failure-mode behavior.
+async fn estimate_write_funding(
+    read_client: &SuiReadClient,
+    encoded_size: u64,
+) -> Option<FundingAmount> {
+    match read_client.write_price_per_unit_size().await {
+        Ok(price) => {
+            let wal_frost = walrus_sui::utils::write_price_for_encoded_length(encoded_size, price);
+            Some(FundingAmount {
+                wal_frost,
+                sui_mist: SUI_GAS_PER_OP_BUFFER_MIST,
+            })
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "write_price_per_unit_size lookup failed; \
+                returning funding_required: None");
+            None
+        }
+    }
 }
 
 /// Find the first `ObjectChange::Created` in a transaction response whose
@@ -181,28 +270,33 @@ impl DirectWalrusBlobStore {
         sender: SuiAddress,
         current_epoch: Epoch,
     ) -> Result<StoragePoolState, BlobStoreError> {
+        // Pre-compute the per-account pool reservation cost so a balance
+        // shortfall at any of the build/submit sites below carries a
+        // `funding_required` block on the 402 response.
+        let funding_estimate = estimate_storage_funding(
+            &self.read_client,
+            self.pool_initial_encoded_capacity_bytes,
+            self.pool_initial_epochs_ahead,
+        )
+        .await;
+
         let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender);
         ptb.create_storage_pool(
             self.pool_initial_encoded_capacity_bytes,
             self.pool_initial_epochs_ahead,
         )
         .await
-        .map_err(|e| BlobStoreError::PoolCreationFailed(format!("create_storage_pool PTB: {e}")))?;
+        .map_err(|e| {
+            classify_create_pool_error(format!("create_storage_pool PTB: {e}"), funding_estimate)
+        })?;
         let tx_data = ptb
             .build_transaction_data(None)
             .await
-            .map_err(|e| BlobStoreError::PoolCreationFailed(format!("build tx: {e}")))?;
+            .map_err(|e| classify_create_pool_error(format!("build tx: {e}"), funding_estimate))?;
         let resp =
             sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
                 .await
-                .map_err(|e| {
-                    let msg = e.to_string();
-                    if is_insufficient_balance(&msg) {
-                        BlobStoreError::InsufficientBalance(msg)
-                    } else {
-                        BlobStoreError::PoolCreationFailed(msg)
-                    }
-                })?;
+                .map_err(|e| classify_create_pool_error(e.to_string(), funding_estimate))?;
 
         let pool_object_id = extract_created_by_type(&resp, |module, name| {
             module == "storage_pool" && name == "StoragePool"
@@ -227,9 +321,9 @@ impl DirectWalrusBlobStore {
             })
         })
         .ok_or_else(|| {
-            BlobStoreError::PoolCreationFailed(
-                "no StoragePool object in create_storage_pool response".into(),
-            )
+            // Server-internal invariant violation: the on-chain call succeeded
+            // but the response didn't carry the object we just created.
+            BlobStoreError::Internal("no StoragePool object in create_storage_pool response".into())
         })?;
 
         let end_epoch = (current_epoch as i64) + (self.pool_initial_epochs_ahead as i64);
@@ -260,7 +354,7 @@ impl DirectWalrusBlobStore {
             db::accounts::get_storage_pool(&self.db, account_id)
                 .await?
                 .ok_or_else(|| {
-                    BlobStoreError::Http(
+                    BlobStoreError::Internal(
                         "race: set_storage_pool returned false but get_storage_pool returned None"
                             .into(),
                     )
@@ -273,19 +367,22 @@ impl DirectWalrusBlobStore {
         data: &[u8],
         account_id: &AccountId,
     ) -> Result<StoreResult, BlobStoreError> {
+        // Pearl is a first-party internal service, so failures here are
+        // genuinely server-internal rather than Sui/Walrus upstream errors.
         let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
             .await
-            .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
+            .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
 
-        // 1. Encode the blob data.
+        // 1. Encode the blob data. Encoding runs locally — failures here
+        // are server-internal (RS2 encoder invariant), not upstream.
         let encoding_config = self.node_client.encoding_config();
         let encoding = encoding_config.get_for_type(walrus_core::EncodingType::RS2);
         let (sliver_pairs, metadata) = encoding
             .encode_with_metadata(data.to_vec())
-            .map_err(|e| BlobStoreError::Http(format!("encoding error: {e}")))?;
+            .map_err(|e| BlobStoreError::Internal(format!("encoding error: {e}")))?;
 
         let blob_obj_metadata = BlobObjectMetadata::try_from(&metadata)
-            .map_err(|e| BlobStoreError::Http(format!("blob metadata error: {e}")))?;
+            .map_err(|e| BlobStoreError::Internal(format!("blob metadata error: {e}")))?;
         let walrus_blob_id = *metadata.blob_id();
         let encoded_size = blob_obj_metadata.encoded_size;
         let unencoded_size = blob_obj_metadata.unencoded_size;
@@ -318,7 +415,7 @@ impl DirectWalrusBlobStore {
             .read_client
             .current_epoch()
             .await
-            .map_err(|e| BlobStoreError::Http(format!("current_epoch: {e}")))?;
+            .map_err(|e| BlobStoreError::Upstream(format!("current_epoch: {e}")))?;
         let pool_state = match db::accounts::get_storage_pool(&self.db, account_id).await? {
             Some(state) => state,
             None => {
@@ -327,27 +424,35 @@ impl DirectWalrusBlobStore {
             }
         };
 
-        let pool_object_id: ObjectID = pool_state
-            .object_id
-            .parse()
-            .map_err(|e| BlobStoreError::Http(format!("invalid pool ObjectID: {e}")))?;
+        let pool_object_id: ObjectID = pool_state.object_id.parse().map_err(|e| {
+            // Stored pool ObjectID isn't parsable — DB invariant violation.
+            BlobStoreError::Internal(format!("invalid pool ObjectID: {e}"))
+        })?;
 
         // 3. Register PTB: optional capacity bump + register_pooled_blobs.
         let remaining = pool_state.reserved_encoded_bytes - pool_state.used_encoded_bytes;
         let grow_by: u64 = grow_by_bytes(remaining, encoded_size);
         let remaining_epochs = (pool_state.end_epoch - current_epoch as i64).max(1) as u32;
 
+        // Best-effort funding estimates for the two distinct cost components
+        // we're about to submit: capacity growth (storage price × bytes ×
+        // remaining epochs) and the per-blob write fee.
+        let grow_funding = if grow_by > 0 {
+            estimate_storage_funding(&self.read_client, grow_by, remaining_epochs).await
+        } else {
+            None
+        };
+        let write_funding = estimate_write_funding(&self.read_client, encoded_size).await;
+
         let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
         if grow_by > 0 {
             ptb.increase_storage_pool_capacity(pool_object_id, grow_by, remaining_epochs)
                 .await
                 .map_err(|e| {
-                    let msg = format!("increase_storage_pool_capacity error: {e}");
-                    if is_insufficient_balance(&msg) {
-                        BlobStoreError::InsufficientBalance(msg)
-                    } else {
-                        BlobStoreError::Http(msg)
-                    }
+                    classify_upstream_error(
+                        format!("increase_storage_pool_capacity error: {e}"),
+                        grow_funding,
+                    )
                 })?;
         }
         ptb.register_pooled_blobs(
@@ -357,28 +462,17 @@ impl DirectWalrusBlobStore {
         )
         .await
         .map_err(|e| {
-            let msg = format!("register_pooled_blobs error: {e}");
-            if is_insufficient_balance(&msg) {
-                BlobStoreError::InsufficientBalance(msg)
-            } else {
-                BlobStoreError::Http(msg)
-            }
+            classify_upstream_error(format!("register_pooled_blobs error: {e}"), write_funding)
         })?;
-        let tx_data = ptb
-            .build_transaction_data(None)
-            .await
-            .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
+        let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
+            classify_upstream_error(format!("build_transaction_data error: {e}"), write_funding)
+        })?;
 
         let register_resp =
             sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
                 .await
                 .map_err(|e| {
-                    let msg = format!("register tx error: {e}");
-                    if is_insufficient_balance(&msg) {
-                        BlobStoreError::InsufficientBalance(msg)
-                    } else {
-                        BlobStoreError::Http(msg)
-                    }
+                    classify_upstream_error(format!("register tx error: {e}"), write_funding)
                 })?;
 
         tracing::info!("register tx digest: {:?}", register_resp.digest);
@@ -387,7 +481,7 @@ impl DirectWalrusBlobStore {
             module == "events" && name == "PooledBlobRegistered"
         })
         .ok_or_else(|| {
-            BlobStoreError::Http(
+            BlobStoreError::Internal(
                 "no PooledBlobRegistered event in register_pooled_blobs response".into(),
             )
         })?;
@@ -418,7 +512,7 @@ impl DirectWalrusBlobStore {
                 None,
             )
             .await
-            .map_err(|e| BlobStoreError::Http(format!("sliver upload error: {e}")))?;
+            .map_err(|e| BlobStoreError::Upstream(format!("sliver upload error: {e}")))?;
 
         // 5. Certify the PooledBlob on-chain.
         let pooled_blob = PooledBlob {
@@ -435,21 +529,18 @@ impl DirectWalrusBlobStore {
         let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
         ptb.certify_pooled_blobs(pool_object_id, &[(&pooled_blob, certificate)])
             .await
-            .map_err(|e| BlobStoreError::Http(format!("certify_pooled_blobs error: {e}")))?;
+            .map_err(|e| BlobStoreError::Upstream(format!("certify_pooled_blobs error: {e}")))?;
         let tx_data = ptb
             .build_transaction_data(None)
             .await
-            .map_err(|e| BlobStoreError::Http(format!("build_transaction_data error: {e}")))?;
+            .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data error: {e}")))?;
 
         sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
             .await
             .map_err(|e| {
-                let msg = format!("certify tx error: {e}");
-                if is_insufficient_balance(&msg) {
-                    BlobStoreError::InsufficientBalance(msg)
-                } else {
-                    BlobStoreError::Http(msg)
-                }
+                // Certify doesn't take new funds (it consumes the registered
+                // blob slot), so we don't attach a funding estimate here.
+                classify_upstream_error(format!("certify tx error: {e}"), None)
             })?;
 
         Ok(StoreResult {
@@ -489,7 +580,7 @@ impl BlobStore for DirectWalrusBlobStore {
                     ClientErrorKind::BlobIdDoesNotExist => {
                         Err(BlobStoreError::NotFound(blob_id.to_string()))
                     }
-                    _ => Err(BlobStoreError::Http(format!("walrus read error: {e}"))),
+                    _ => Err(BlobStoreError::Upstream(format!("walrus read error: {e}"))),
                 },
             }
         })
@@ -516,33 +607,31 @@ impl BlobStore for DirectWalrusBlobStore {
             };
             let pool_object_id: ObjectID = pool_id_str
                 .parse()
-                .map_err(|e| BlobStoreError::Http(format!("invalid pool_id: {e}")))?;
+                .map_err(|e| BlobStoreError::Internal(format!("invalid pool_id: {e}")))?;
             let walrus_blob_id: walrus_core::BlobId = blob_id
                 .as_str()
                 .parse()
-                .map_err(|e| BlobStoreError::Http(format!("invalid walrus blob_id: {e}")))?;
+                .map_err(|e| BlobStoreError::Internal(format!("invalid walrus blob_id: {e}")))?;
 
             let sender_address = sui_transaction::resolve_sender_address(&self.pearl, &account_id)
                 .await
-                .map_err(|e| BlobStoreError::Http(format!("resolve sender address: {e}")))?;
+                .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
 
             let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
             ptb.delete_pooled_blob(pool_object_id, walrus_blob_id)
                 .await
-                .map_err(|e| BlobStoreError::Http(format!("delete_pooled_blob PTB: {e}")))?;
+                .map_err(|e| BlobStoreError::Upstream(format!("delete_pooled_blob PTB: {e}")))?;
             let tx_data = ptb
                 .build_transaction_data(None)
                 .await
-                .map_err(|e| BlobStoreError::Http(format!("build_transaction_data: {e}")))?;
+                .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data: {e}")))?;
             sui_transaction::sign_and_submit(&self.pearl, &account_id, &self.rpc_url, tx_data)
                 .await
                 .map_err(|e| {
-                    let msg = format!("delete tx: {e}");
-                    if is_insufficient_balance(&msg) {
-                        BlobStoreError::InsufficientBalance(msg)
-                    } else {
-                        BlobStoreError::Http(msg)
-                    }
+                    // The delete path only needs SUI gas; the FE can already
+                    // infer the SUI buffer from `/account/wallet`, so we
+                    // intentionally don't attach a WAL funding estimate here.
+                    classify_upstream_error(format!("delete tx: {e}"), None)
                 })?;
 
             if encoded_size > 0 {
@@ -568,7 +657,7 @@ impl BlobStore for DirectWalrusBlobStore {
                 // certified (Permanent or Deletable) and not Nonexistent/Invalid.
                 Ok(status) => Ok(status.initial_certified_epoch().is_some()),
                 Err(e) if matches!(e.kind(), ClientErrorKind::BlobIdDoesNotExist) => Ok(false),
-                Err(e) => Err(BlobStoreError::Http(format!(
+                Err(e) => Err(BlobStoreError::Upstream(format!(
                     "walrus blob status error: {e}"
                 ))),
             }
@@ -621,5 +710,73 @@ mod tests {
         // 32-byte URL-safe-base64 (no padding) — well-formed by construction.
         let s = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([0u8; 32]);
         parse_walrus_blob_id(&BlobId(s)).expect("well-formed id should parse");
+    }
+
+    /// Reproduces the staging incident: `create_storage_pool` PTB-build
+    /// failed with "could not find WAL coins with sufficient balance" but
+    /// was bucketed as `PoolCreationFailed` → 502. After Phase A it must
+    /// classify as `InsufficientBalance` → 402.
+    #[test]
+    fn classify_create_pool_error_recognizes_walrus_balance_message() {
+        let err = classify_create_pool_error(
+            "create_storage_pool PTB: could not find WAL coins with sufficient balance".into(),
+            None,
+        );
+        assert!(
+            matches!(err, BlobStoreError::InsufficientBalance { .. }),
+            "expected InsufficientBalance, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn classify_create_pool_error_passes_through_funding_estimate() {
+        let funding = FundingAmount {
+            wal_frost: 12_345,
+            sui_mist: SUI_GAS_PER_OP_BUFFER_MIST,
+        };
+        let err =
+            classify_create_pool_error("...could not find WAL coins...".into(), Some(funding));
+        match err {
+            BlobStoreError::InsufficientBalance {
+                funding_required: Some(amount),
+                ..
+            } => {
+                assert_eq!(amount, funding);
+            }
+            other => panic!("expected InsufficientBalance with funding, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_create_pool_error_other_failures_stay_pool_creation_failed() {
+        let err = classify_create_pool_error("internal walrus contract assertion".into(), None);
+        assert!(
+            matches!(err, BlobStoreError::PoolCreationFailed(_)),
+            "expected PoolCreationFailed, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn classify_upstream_error_recognizes_balance_shortfall() {
+        let err = classify_upstream_error(
+            "register tx error: InsufficientCoinBalance".into(),
+            Some(FundingAmount {
+                wal_frost: 1,
+                sui_mist: 2,
+            }),
+        );
+        assert!(
+            matches!(err, BlobStoreError::InsufficientBalance { .. }),
+            "expected InsufficientBalance, got {err:?}",
+        );
+    }
+
+    #[test]
+    fn classify_upstream_error_buckets_other_failures_as_upstream() {
+        let err = classify_upstream_error("walrus storage node 500".into(), None);
+        assert!(
+            matches!(err, BlobStoreError::Upstream(_)),
+            "expected Upstream, got {err:?}",
+        );
     }
 }

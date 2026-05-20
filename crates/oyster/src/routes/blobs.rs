@@ -16,6 +16,7 @@ use crate::{
         BlobMetadata,
         BlobTagsResponse,
         ErrorResponse,
+        InsufficientBalanceErrorResponse,
         PaginatedResponse,
         PaginationParams,
         PatchTagsRequest,
@@ -122,6 +123,13 @@ fn check_json_conditions(
     responses(
         (status = 201, description = "Blob stored", body = StoreBlobResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (
+            status = 402,
+            description = "Insufficient on-chain balance to fund the upload. \
+                Body carries a `funding_required` block hinting at how much \
+                WAL (FROST) and SUI (MIST) the Pearl-derived wallet needs.",
+            body = InsufficientBalanceErrorResponse,
+        ),
         (status = 404, description = "Bucket not found", body = ErrorResponse),
         (status = 413, description = "Payload too large", body = ErrorResponse),
     ),

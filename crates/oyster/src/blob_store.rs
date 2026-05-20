@@ -34,43 +34,90 @@ impl std::fmt::Display for BlobId {
     }
 }
 
+/// Funding estimate attached to a synchronous 402 response so the caller
+/// (Harbor, the FE) knows how much WAL and SUI to top up without
+/// round-tripping to `/account/wallet`.
+///
+/// Carries raw `u64` units (FROST / MIST). Intentionally distinct from
+/// [`crate::webhook::FundingAmount`], which serializes amounts as decimal
+/// strings for transport — we don't want to entangle the webhook payload
+/// shape with sync-error internals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FundingAmount {
+    /// Required WAL, in FROST units (1 WAL = 1e9 FROST).
+    pub wal_frost: u64,
+    /// Required SUI, in MIST units (1 SUI = 1e9 MIST).
+    pub sui_mist: u64,
+}
+
 /// Errors that can occur during blob storage operations.
+///
+/// The HTTP mapping for each variant is owned by
+/// [`crate::error::AppError::into_response`]; see the doc-comment table
+/// immediately above that `impl` for the per-variant rationale.
 #[derive(Debug, thiserror::Error)]
 pub enum BlobStoreError {
-    /// The requested blob was not found.
+    /// The requested blob was not found. Maps to 404.
     #[error("blob not found: {0}")]
     NotFound(String),
     /// The supplied blob ID could not be parsed by the backing store
     /// (e.g. not a valid Walrus BlobId). Maps to 400.
     #[error("invalid blob_id: {0}")]
     InvalidBlobId(String),
-    /// An I/O error occurred.
+    /// A local I/O error occurred (filesystem-backed `LocalBlobStore` paths
+    /// only). Maps to 500.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    /// An HTTP or network error occurred.
-    #[error("http error: {0}")]
-    Http(String),
+    /// A genuinely server-internal failure that wasn't an upstream call —
+    /// invariant violations, malformed DB values, missing expected events,
+    /// race conditions, encoding bugs. Maps to 500.
+    #[error("internal error: {0}")]
+    Internal(String),
+    /// An upstream Sui/Walrus/Pearl-adjacent call failed (sliver upload,
+    /// `current_epoch`, PTB build, etc.). Maps to 502.
+    #[error("upstream error: {0}")]
+    Upstream(String),
     /// The upstream blob store was unreachable before returning a status
-    /// (connection refused, DNS failure, request timeout). Surfaces as 502.
+    /// (connection refused, DNS failure, request timeout). Maps to 502.
     #[error("upstream blob store unreachable: {0}")]
     Unreachable(String),
     /// The upstream blob store (Walrus aggregator) returned a non-success HTTP
     /// status other than 404. Carries the original status so the HTTP layer can
     /// decide whether to pass it through (4xx) or mask it as 502 (5xx).
     #[error("upstream blob store returned {status}: {message}")]
-    Upstream {
+    UpstreamStatus {
         /// Original HTTP status code returned by the upstream.
         status: u16,
         /// Response body (or empty when the request had no body, e.g. HEAD).
         message: String,
     },
-    /// The account has insufficient on-chain balance to complete the operation.
-    #[error("insufficient balance: {0}")]
-    InsufficientBalance(String),
-    /// Lazy creation of a `StoragePool` failed on-chain. Maps to 502 Bad Gateway.
+    /// The account has insufficient on-chain balance to complete the
+    /// operation. Maps to 402 Payment Required. The optional
+    /// `funding_required` block is surfaced in the response body so the
+    /// caller (Harbor, the FE) can top up the Pearl-derived wallet without
+    /// an extra round-trip to `/account/wallet`.
+    ///
+    /// For the initial-pool creation path the estimate covers the one-time
+    /// `pool_initial_encoded_capacity_bytes * pool_initial_epochs_ahead`
+    /// reservation, which may exceed the bytes the user was trying to
+    /// upload — that gap is the per-account pool deposit, not blob storage.
+    #[error("insufficient balance: {message}")]
+    InsufficientBalance {
+        /// Raw error message surfaced by the failing PTB-build or submit.
+        message: String,
+        /// WAL/SUI top-up estimate, best-effort. `None` when the price
+        /// lookup itself failed during error formatting.
+        funding_required: Option<FundingAmount>,
+    },
+    /// Lazy creation of a `StoragePool` failed on-chain during PTB build or
+    /// submit and wasn't a balance shortfall. Maps to 502 Bad Gateway.
+    ///
+    /// The "no `StoragePool` object in create_storage_pool response" case
+    /// is treated as a server-internal invariant violation and surfaces as
+    /// [`BlobStoreError::Internal`] (→ 500) instead.
     #[error("pool creation failed: {0}")]
     PoolCreationFailed(String),
-    /// Error bookkeeping pool/blob state in the Oyster database.
+    /// Error bookkeeping pool/blob state in the Oyster database. Maps to 500.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
 }

@@ -2827,7 +2827,7 @@ async fn blob_store_unreachable_maps_to_502() {
 /// A malformed blob_id surfaced by a backing store as `InvalidBlobId`
 /// must map to 400 (not 500). Guards against regressing the
 /// `DirectWalrusBlobStore::read` parse-failure path back to
-/// `BlobStoreError::Http` (500).
+/// `BlobStoreError::Upstream` (502) or `Internal` (500).
 #[tokio::test]
 async fn blob_store_invalid_blob_id_maps_to_400() {
     use axum::response::IntoResponse;
