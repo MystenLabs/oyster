@@ -2,6 +2,67 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-05-20
+
+### Breaking Changes
+- `BlobStoreError::Http(String)` split into `Upstream(String)` (502, for
+  Sui/Walrus/sliver-upload failures) and `Internal(String)` (500, for
+  server-internal invariant violations). The previous
+  `Upstream { status, message }` struct variant is renamed to
+  `UpstreamStatus { status, message }` to free the `Upstream` name.
+- `BlobStoreError::InsufficientBalance(String)` reshaped to struct
+  variant `{ message: String, funding_required: Option<FundingAmount> }`.
+- `webhook::FundingAmount` removed; use `oyster::FundingAmount` (re-exported
+  from the new `oyster::funding` module). Fields are now `u64` (`wal_frost`,
+  `sui_mist`) rather than `String`; on-the-wire JSON shape is preserved by a
+  custom `Serialize` impl that emits decimal strings.
+- `extension_cost::ExtensionCost` removed; `compute_extension_cost` now
+  returns `oyster::FundingAmount`.
+- `models::FundingRequiredResponse` removed;
+  `InsufficientBalanceErrorResponse.funding_required` is now
+  `Option<FundingAmount>`.
+- PTB-build balance shortfalls (e.g. under-funded `create_storage_pool`)
+  now surface as **402 Payment Required** instead of 502 Bad Gateway.
+  Clients that retried on 502 must treat 402 as the funding signal.
+- Walrus dependencies bumped from rev `7ecb6720` to tag
+  `testnet-v1.48.1`. Embedders pinning the same revs must update.
+  Upstream walrus PR #3332 dropped `checkpoint_wait_timeout` from
+  `SuiReadClient::new_for_rpc_urls`; the corresponding argument is
+  removed from `oyster::sui_transaction::build_sui_read_client`.
+- All workspace crates marked `publish = false` to prevent accidental
+  `cargo publish` uploads.
+
+### Added
+- 402 Payment Required responses now include a `funding_required:
+  { wal_frost, sui_mist }` block (decimal strings) so callers can top
+  up the Pearl-derived wallet without a round-trip to
+  `/account/wallet`.
+- New `oyster::FundingAmount` type shared between the synchronous 402
+  body and the asynchronous `account.funding_required` webhook payload.
+- `InsufficientBalanceErrorResponse` schema documented in OpenAPI; the
+  `store_blob` route annotated with a 402 response.
+- S3 `InsufficientBalance` error message renders the `funding_required`
+  hint inline (`funding_required={wal_frost:N,sui_mist:M}`).
+
+### Changed
+- `AppError::into_response` documented with a per-variant status-code
+  mapping table.
+- Balance-shortfall classification consolidated into
+  `classify_create_pool_error` / `classify_upstream_error` at every
+  PTB build and submit site in `direct_walrus_store`.
+- "No `StoragePool` object in `create_storage_pool` response" now
+  classified as `BlobStoreError::Internal` (500) rather than
+  `PoolCreationFailed` (502) — it is a server-internal invariant
+  violation, not an upstream failure.
+- Pearl resolve failures, DB-stored ObjectID parse failures, and local
+  encoding failures classified as `Internal` (500); `current_epoch`,
+  sliver upload, and PTB submit failures classified as `Upstream` (502).
+
+### Fixed
+- Staging incident "502 Bad Gateway pool creation failed" on
+  under-funded accounts: the `create_storage_pool` balance-shortfall
+  path now correctly returns 402 with a top-up hint.
+
 ## [0.9.0] - 2026-05-13
 
 ### Breaking Changes
