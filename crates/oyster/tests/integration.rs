@@ -1089,6 +1089,31 @@ async fn store_blob_passes_account_id() {
 }
 
 #[tokio::test]
+async fn store_blob_accepts_5mib_body() {
+    // Regression: before the per-route DefaultBodyLimit override on
+    // PUT /api/v1/buckets/{bucket}/blobs/{key}, axum's 2 MiB default
+    // rejected anything over ~2 MiB with axum-core's
+    // `LengthLimitError` ("Failed to buffer the request body: length
+    // limit exceeded") *before* the in-handler MAX_BLOB_SIZE check
+    // ran. Any 5 MiB upload must now succeed and return Oyster's
+    // documented 201 + StoreBlobResponse JSON.
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket = create_test_bucket(&app, &key, "big-uploads").await;
+
+    let body_len = 5 * 1024 * 1024;
+    let body = vec![0u8; body_len];
+    let req = Request::put(format!("/api/v1/buckets/{bucket}/blobs/big.bin"))
+        .header("authorization", format!("Bearer {key}"))
+        .header("content-type", "application/octet-stream")
+        .body(Body::from(body))
+        .unwrap();
+    let (status, response) = json_response(&app, req).await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(response["size"].as_u64().unwrap(), body_len as u64);
+}
+
+#[tokio::test]
 async fn store_blob_distinguishes_accounts() {
     let tmp = TempDir::new().unwrap();
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();

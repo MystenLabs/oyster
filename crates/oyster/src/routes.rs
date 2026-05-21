@@ -11,7 +11,7 @@ pub mod health;
 /// Prometheus metrics endpoint.
 pub mod metrics;
 
-use axum::Router;
+use axum::{Router, extract::DefaultBodyLimit};
 use utoipa::{
     Modify,
     OpenApi,
@@ -127,11 +127,12 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(buckets::delete_bucket))
         // Blobs
         .routes(routes!(blobs::list_blobs))
-        .routes(routes!(
-            blobs::store_blob,
-            blobs::read_blob,
-            blobs::delete_blob
-        ))
+        .merge(
+            OpenApiRouter::new()
+                .routes(routes!(blobs::store_blob))
+                .layer(DefaultBodyLimit::max(blobs::MAX_BLOB_SIZE)),
+        )
+        .routes(routes!(blobs::read_blob, blobs::delete_blob))
         .routes(routes!(blobs::update_blob_metadata))
         .routes(routes!(blobs::read_blob_by_blob_id))
         .routes(routes!(

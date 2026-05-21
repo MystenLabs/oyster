@@ -28,7 +28,11 @@ use crate::{
     validation,
 };
 
-const MAX_BLOB_SIZE: usize = 1_073_741_824; // 1 GB
+/// Maximum blob payload size accepted by `store_blob` (1 GiB).
+/// Mirrored on the upload route via `DefaultBodyLimit::max` in
+/// `crate::routes::build_router` so axum's transport-layer cap matches
+/// the in-handler check below.
+pub const MAX_BLOB_SIZE: usize = 1_073_741_824;
 
 /// Parse all `x-oyster-tag` header values into a tag list.
 ///
