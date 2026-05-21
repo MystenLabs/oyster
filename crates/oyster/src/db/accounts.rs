@@ -345,6 +345,31 @@ pub async fn bump_pool_end_epoch(
     Ok(())
 }
 
+/// Overwrite `pool_reserved_encoded_bytes` and `pool_used_encoded_bytes`
+/// to match an authoritative on-chain reading. Used to reconcile DB
+/// drift after a `register_pooled_blobs` PTB aborts with
+/// `EInsufficientCapacity` — the on-chain `StoragePoolInnerV1` is the
+/// source of truth in that case.
+pub async fn reconcile_pool_after_drift(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    reserved_encoded_bytes: i64,
+    used_encoded_bytes: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&super::sql(
+        "UPDATE accounts SET \
+             pool_reserved_encoded_bytes = ?, \
+             pool_used_encoded_bytes = ? \
+         WHERE id = ?",
+    ))
+    .bind(reserved_encoded_bytes)
+    .bind(used_encoded_bytes)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Decrement the used-byte counter after a successful `delete_pooled_blob`.
 pub async fn update_pool_after_delete(
     pool: &super::DbPool,
@@ -486,6 +511,28 @@ mod tests {
             .expect("pool state must be present");
         assert_eq!(state.reserved_encoded_bytes, 1_500);
         assert_eq!(state.used_encoded_bytes, 300);
+    }
+
+    #[tokio::test]
+    async fn reconcile_pool_after_drift_overwrites_counters() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        // Prime with drifted counters.
+        set_storage_pool(&pool, &account.id, "0xabc", 42, 999_999, 888_888)
+            .await
+            .unwrap();
+        reconcile_pool_after_drift(&pool, &account.id, 1_000, 400)
+            .await
+            .unwrap();
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        // Reserved + used are overwritten absolutely; object_id and end_epoch untouched.
+        assert_eq!(state.object_id, "0xabc");
+        assert_eq!(state.end_epoch, 42);
+        assert_eq!(state.reserved_encoded_bytes, 1_000);
+        assert_eq!(state.used_encoded_bytes, 400);
     }
 
     #[tokio::test]

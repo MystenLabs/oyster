@@ -38,6 +38,7 @@ use crate::{
     blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,
+    sui_object_reader,
     sui_transaction::{self, SignedTxOutcome},
 };
 
@@ -509,12 +510,121 @@ impl DirectWalrusBlobStore {
             classify_upstream_error(format!("build_transaction_data error: {e}"), write_funding)
         })?;
 
-        let register_resp =
-            sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
+        // Cross-replica races on the per-account `StoragePool` can leave
+        // the DB's `pool_*` counters ahead of the on-chain truth, so two
+        // replicas each compute `grow_by = 0` and the second register PTB
+        // aborts inside `storage_pool::add_blob` (`EInsufficientCapacity`,
+        // code 6). On that specific abort, refresh the on-chain inner
+        // state, reconcile the DB to match, recompute `grow_by`, and
+        // resubmit a fresh register PTB once. The retry result is
+        // `(SignedTxOutcome, applied_grow_by_bytes)`; we use
+        // `applied_grow_by` in the eventual `update_pool_after_register`
+        // delta below so the counters land at the correct post-state
+        // whether or not we retried.
+        let (register_resp, applied_grow_by) =
+            match sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
                 .await
-                .map_err(|e| {
-                    classify_upstream_error(format!("register tx error: {e}"), write_funding)
-                })?;
+            {
+                Ok(resp) => (resp, grow_by),
+                Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
+                    if f.is_move_abort("storage_pool", "add_blob", 6) =>
+                {
+                    tracing::warn!(
+                        account_id = %account_id,
+                        pool_object_id = %pool_object_id,
+                        abort = %f,
+                        db_reserved = pool_state.reserved_encoded_bytes,
+                        db_used = pool_state.used_encoded_bytes,
+                        "register PTB aborted with EInsufficientCapacity; \
+                         refreshing pool state from chain and retrying once",
+                    );
+                    let on_chain =
+                        sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
+                            .await
+                            .map_err(|e| {
+                                BlobStoreError::Upstream(format!(
+                                    "on-chain pool refresh after EInsufficientCapacity failed: {e}"
+                                ))
+                            })?;
+                    db::accounts::reconcile_pool_after_drift(
+                        &self.db,
+                        account_id,
+                        on_chain.reserved_encoded_bytes as i64,
+                        on_chain.used_encoded_bytes as i64,
+                    )
+                    .await?;
+
+                    // Recompute grow_by from the on-chain truth.
+                    let on_chain_remaining = (on_chain.reserved_encoded_bytes as i64)
+                        - (on_chain.used_encoded_bytes as i64);
+                    let retry_grow_by = grow_by_bytes(on_chain_remaining, encoded_size);
+                    let retry_grow_funding = if retry_grow_by > 0 {
+                        estimate_storage_funding(&self.read_client, retry_grow_by, remaining_epochs)
+                            .await
+                    } else {
+                        None
+                    };
+
+                    // Rebuild the PTB. The original `blob_obj_metadata`
+                    // was moved into the first builder, so reconstruct
+                    // it from `metadata` (same source as the first
+                    // attempt, just one extra cheap clone).
+                    let blob_obj_metadata_retry =
+                        BlobObjectMetadata::try_from(&metadata).map_err(|e| {
+                            BlobStoreError::Internal(format!("retry blob metadata error: {e}"))
+                        })?;
+                    let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
+                    if retry_grow_by > 0 {
+                        ptb.increase_storage_pool_capacity(
+                            pool_object_id,
+                            retry_grow_by,
+                            remaining_epochs,
+                        )
+                        .await
+                        .map_err(|e| {
+                            classify_upstream_error(
+                                format!("retry increase_storage_pool_capacity: {e}"),
+                                retry_grow_funding,
+                            )
+                        })?;
+                    }
+                    ptb.register_pooled_blobs(
+                        pool_object_id,
+                        vec![blob_obj_metadata_retry],
+                        BlobPersistence::Deletable,
+                    )
+                    .await
+                    .map_err(|e| {
+                        classify_upstream_error(
+                            format!("retry register_pooled_blobs: {e}"),
+                            write_funding,
+                        )
+                    })?;
+                    let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
+                        classify_upstream_error(
+                            format!("retry build_transaction_data: {e}"),
+                            write_funding,
+                        )
+                    })?;
+                    let resp = sui_transaction::sign_and_submit(
+                        &self.pearl,
+                        account_id,
+                        &self.rpc_url,
+                        tx_data,
+                    )
+                    .await
+                    .map_err(|e| {
+                        classify_upstream_error(format!("retry register tx: {e}"), write_funding)
+                    })?;
+                    (resp, retry_grow_by)
+                }
+                Err(e) => {
+                    return Err(classify_upstream_error(
+                        format!("register tx error: {e}"),
+                        write_funding,
+                    ));
+                }
+            };
 
         tracing::info!(tx_digest = %register_resp.digest, "register tx submitted");
 
@@ -530,7 +640,7 @@ impl DirectWalrusBlobStore {
         db::accounts::update_pool_after_register(
             &self.db,
             account_id,
-            grow_by as i64,
+            applied_grow_by as i64,
             encoded_size as i64,
         )
         .await?;

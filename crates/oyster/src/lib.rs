@@ -38,6 +38,8 @@ pub mod pearl_client;
 pub mod routes;
 /// S3-compatible API implementation backed by Oyster's DB and blob store.
 pub mod s3;
+/// Read on-chain Sui object state (e.g. `StoragePoolInnerV1`) over gRPC.
+pub mod sui_object_reader;
 /// Sui transaction building, signing, and submission helpers.
 pub mod sui_transaction;
 /// Input validation helpers (e.g. bucket name rules).

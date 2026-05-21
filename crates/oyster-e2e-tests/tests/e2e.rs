@@ -794,3 +794,86 @@ fn e2e_refcounted_delete_frees_pool_capacity() {
         );
     });
 }
+
+/// Phase 2 regression: when DB-side pool accounting drifts above the
+/// on-chain reservation (e.g. cross-replica race), the first
+/// register_pooled_blobs PTB aborts with EInsufficientCapacity; Oyster
+/// must refresh on-chain truth, reconcile the DB, and retry once.
+#[test]
+fn store_blob_retries_after_einsufficient_capacity_drift() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("drift-test").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "drift-bucket").await;
+
+        // 1. First upload — establishes the StoragePool on-chain and in DB.
+        //    Small body so the initial 1 MiB reservation isn't grown.
+        let body_a = put_blob(app, &api_key, &bucket_id, "a.txt", b"hello a").await;
+        let blob_id_a = body_a["blob_id"].as_str().unwrap().to_string();
+
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        let post_a = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("pool state after blob A");
+        let on_chain_reserved = post_a.reserved_encoded_bytes;
+        let used_a = post_a.used_encoded_bytes;
+
+        // 2. Drift: pretend reserved capacity is much larger than on-chain,
+        //    while leaving `used` at the post-A truth. This is the
+        //    cross-replica race state that confused the pre-fix code:
+        //    `grow_by_bytes` reads from DB, sees plenty of headroom, and
+        //    submits a register PTB with no growth.
+        let inflated_reserved: i64 = on_chain_reserved + 100 * 1024 * 1024;
+        oyster::db::accounts::reconcile_pool_after_drift(
+            &harness.db,
+            &account_id,
+            inflated_reserved,
+            used_a,
+        )
+        .await
+        .expect("inflate pool_reserved_encoded_bytes");
+
+        // 3. Second upload — a body large enough that its encoded size
+        //    can't fit alongside blob A's used bytes inside the on-chain
+        //    1 MiB reservation. With DB drift in place, the first
+        //    register_pooled_blobs PTB must abort with EInsufficientCapacity;
+        //    Oyster must then refresh on-chain state, reconcile, and
+        //    retry once with a recomputed `grow_by`.
+        let body_b_data = vec![b'B'; 2 * 1024 * 1024];
+        let body_b = put_blob(app, &api_key, &bucket_id, "b.bin", &body_b_data).await;
+        let blob_id_b = body_b["blob_id"].as_str().unwrap().to_string();
+        assert_ne!(blob_id_a, blob_id_b, "blob_ids must be distinct");
+
+        // 4. DB has been reconciled to on-chain truth + the retry's grow.
+        let post_b = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("pool state after blob B");
+        // Used bumped by exactly one blob's encoded_size (blob B).
+        assert!(
+            post_b.used_encoded_bytes > used_a,
+            "used must increase: {} → {}",
+            used_a,
+            post_b.used_encoded_bytes
+        );
+        // Reserved is no longer the inflated drift value — it reflects
+        // the on-chain reservation plus any grow the retry applied.
+        assert!(
+            post_b.reserved_encoded_bytes < inflated_reserved,
+            "reserved must be reconciled: {} (was drifted to {})",
+            post_b.reserved_encoded_bytes,
+            inflated_reserved
+        );
+        assert!(
+            post_b.reserved_encoded_bytes >= post_b.used_encoded_bytes,
+            "reserved must cover used"
+        );
+    });
+}
