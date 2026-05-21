@@ -732,6 +732,25 @@ mod tests {
     }
 
     #[test]
+    fn parse_object_type_round_trip() {
+        assert_eq!(
+            parse_object_type("0x123::storage_pool::StoragePool"),
+            Some(("storage_pool", "StoragePool"))
+        );
+        // Real-world type with a generic argument keeps the inner `::`
+        // split correctly via `rsplitn(3, ...)`.
+        assert_eq!(
+            parse_object_type("0xabc::events::PooledBlobRegistered"),
+            Some(("events", "PooledBlobRegistered"))
+        );
+        // No leading package address.
+        assert_eq!(parse_object_type("storage_pool::StoragePool"), None);
+        // Too few components.
+        assert_eq!(parse_object_type("0x123::foo"), None);
+        assert_eq!(parse_object_type("nope"), None);
+    }
+
+    #[test]
     fn parse_walrus_blob_id_rejects_malformed_with_invalid_blob_id() {
         // The route handler hands the raw path param straight to the store,
         // so a malformed id must surface as `InvalidBlobId` (→ HTTP 400) and
