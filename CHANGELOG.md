@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-05-21
+
+### Fixed
+- `PUT /api/v1/buckets/{bucket}/blobs/{key}` no longer rejects bodies
+  larger than ~2 MiB with axum-core's `LengthLimitError`. The blob
+  upload route now applies `DefaultBodyLimit::max(MAX_BLOB_SIZE)` (1
+  GiB), restoring the documented contract and letting the in-handler
+  size check run as intended. Other routes keep the safe 2 MiB default.
+
 ## [0.10.1] - 2026-05-20
 
 ### Added
