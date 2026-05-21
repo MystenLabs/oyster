@@ -11,7 +11,7 @@
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use sui_sdk::rpc_types::ObjectChange;
+use sui_rpc::proto::sui::rpc::v2;
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_core::{Epoch, encoding::EncodingFactory as _, messages::BlobPersistenceType};
 use walrus_sdk::{
@@ -38,7 +38,7 @@ use crate::{
     blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,
-    sui_transaction,
+    sui_transaction::{self, SignedTxOutcome},
 };
 
 /// Fixed SUI buffer attached to every synchronous 402 response, in MIST.
@@ -149,52 +149,96 @@ async fn estimate_write_funding(
     }
 }
 
-/// Find the first `ObjectChange::Created` in a transaction response whose
-/// Move struct `module::name` matches the predicate, returning its ObjectID.
-fn extract_created_by_type<F>(
-    resp: &sui_sdk::rpc_types::SuiTransactionBlockResponse,
-    mut pred: F,
-) -> Option<ObjectID>
+/// Find the first newly-created object in a gRPC transaction outcome
+/// whose Move struct `module::name` matches the predicate, returning
+/// its ObjectID.
+fn extract_created_by_type<F>(outcome: &SignedTxOutcome, mut pred: F) -> Option<ObjectID>
 where
     F: FnMut(&str, &str) -> bool,
 {
-    resp.object_changes.as_ref()?.iter().find_map(|c| {
-        if let ObjectChange::Created {
-            object_type,
-            object_id,
-            ..
-        } = c
-            && pred(object_type.module.as_str(), object_type.name.as_str())
-        {
-            Some(*object_id)
-        } else {
-            None
+    outcome.changed_objects.iter().find_map(|c| {
+        if c.id_operation() != v2::changed_object::IdOperation::Created {
+            return None;
         }
+        let object_type = c.object_type.as_deref()?;
+        let (module, name) = parse_object_type(object_type)?;
+        if !pred(module, name) {
+            return None;
+        }
+        c.object_id.as_deref()?.parse().ok()
     })
 }
 
-/// Find the first emitted event in `resp` whose Move struct `module::name`
-/// matches the predicate and return the `objectId` / `object_id` field
-/// from its `parsed_json` payload, parsed as an `ObjectID`.
-fn extract_object_id_from_event<F>(
-    resp: &sui_sdk::rpc_types::SuiTransactionBlockResponse,
-    mut pred: F,
-) -> Option<ObjectID>
+/// Find the first emitted event in `outcome` whose Move struct
+/// `module::name` matches the predicate and return the `object_id` /
+/// `objectId` field from its JSON payload, parsed as an `ObjectID`.
+fn extract_object_id_from_event<F>(outcome: &SignedTxOutcome, mut pred: F) -> Option<ObjectID>
 where
     F: FnMut(&str, &str) -> bool,
 {
-    let events = resp.events.as_ref()?;
-    for event in &events.data {
-        if pred(event.type_.module.as_str(), event.type_.name.as_str()) {
-            let obj = event.parsed_json.as_object()?;
-            let raw = obj
-                .get("object_id")
-                .or_else(|| obj.get("objectId"))
-                .and_then(|v| v.as_str())?;
-            return raw.parse().ok();
+    for event in &outcome.events {
+        let event_type = match event.event_type.as_deref() {
+            Some(s) => s,
+            None => continue,
+        };
+        let (module, name) = match parse_object_type(event_type) {
+            Some(parts) => parts,
+            None => continue,
+        };
+        if !pred(module, name) {
+            continue;
+        }
+        if let Some(id) = pluck_object_id_from_event_json(event.json.as_deref()) {
+            return Some(id);
         }
     }
     None
+}
+
+/// Parse `"0x…::module::Name"` into `("module", "Name")`. Returns
+/// `None` on malformed input or fewer than three `::`-separated parts.
+fn parse_object_type(s: &str) -> Option<(&str, &str)> {
+    let mut parts = s.rsplitn(3, "::");
+    let name = parts.next()?;
+    let module = parts.next()?;
+    parts.next()?;
+    if name.is_empty() || module.is_empty() {
+        return None;
+    }
+    Some((module, name))
+}
+
+/// Pluck the `object_id` (or `objectId`) string field from an event's
+/// JSON payload (a `prost_types::Value`) and parse it as an `ObjectID`.
+fn pluck_object_id_from_event_json(value: Option<&prost_types::Value>) -> Option<ObjectID> {
+    let kind = value?.kind.as_ref()?;
+    let prost_types::value::Kind::StructValue(s) = kind else {
+        return None;
+    };
+    let raw = s
+        .fields
+        .get("object_id")
+        .or_else(|| s.fields.get("objectId"))?
+        .kind
+        .as_ref()?;
+    let prost_types::value::Kind::StringValue(s) = raw else {
+        return None;
+    };
+    s.parse().ok()
+}
+
+/// Pluck a string field from an event's JSON payload by key, parsed as
+/// an `ObjectID`.
+fn pluck_string_from_event_json(value: Option<&prost_types::Value>, key: &str) -> Option<ObjectID> {
+    let kind = value?.kind.as_ref()?;
+    let prost_types::value::Kind::StructValue(s) = kind else {
+        return None;
+    };
+    let raw = s.fields.get(key)?.kind.as_ref()?;
+    let prost_types::value::Kind::StringValue(s) = raw else {
+        return None;
+    };
+    s.parse().ok()
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -307,17 +351,11 @@ impl DirectWalrusBlobStore {
         .or_else(|| {
             // Fall back to the StoragePoolCreated event, whose `storage_pool_id`
             // field names the newly-created pool.
-            let events = resp.events.as_ref()?;
-            events.data.iter().find_map(|event| {
-                if event.type_.module.as_str() == "events"
-                    && event.type_.name.as_str() == "StoragePoolCreated"
-                {
-                    event
-                        .parsed_json
-                        .as_object()
-                        .and_then(|o| o.get("storage_pool_id"))
-                        .and_then(|v| v.as_str())
-                        .and_then(|s| s.parse().ok())
+            resp.events.iter().find_map(|event| {
+                let event_type = event.event_type.as_deref()?;
+                let (module, name) = parse_object_type(event_type)?;
+                if module == "events" && name == "StoragePoolCreated" {
+                    pluck_string_from_event_json(event.json.as_deref(), "storage_pool_id")
                 } else {
                     None
                 }
@@ -478,7 +516,7 @@ impl DirectWalrusBlobStore {
                     classify_upstream_error(format!("register tx error: {e}"), write_funding)
                 })?;
 
-        tracing::info!("register tx digest: {:?}", register_resp.digest);
+        tracing::info!(tx_digest = %register_resp.digest, "register tx submitted");
 
         let pooled_blob_object_id = extract_object_id_from_event(&register_resp, |module, name| {
             module == "events" && name == "PooledBlobRegistered"

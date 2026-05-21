@@ -34,6 +34,7 @@ http-body-util = "0.1.3"
 metrics = "0.24.3"
 metrics-exporter-prometheus = "0.18.1"
 prost = "0.14.3"
+prost-types = "0.14.3"
 rand = "0.10.0"
 rustls = { version = "0.23.37", features = ["aws-lc-rs"] }
 s3s = "0.13.0"
@@ -58,6 +59,7 @@ zeroize = "1.8.2"
 # Sui ecosystem — single version across workspace
 fastcrypto = { git = "https://github.com/MystenLabs/fastcrypto", rev = "5f87e04bb21d295ef6b39375a06615d45cbb906c" }
 shared-crypto = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.71.0" }
+sui-rpc = { git = "https://github.com/MystenLabs/sui-rust-sdk.git", rev = "e494a36a76a0aab8c5d66d5557995faee5c1fb09", default-features = false }
 sui-sdk = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.71.0" }
 sui-types = { git = "https://github.com/MystenLabs/sui", tag = "testnet-v1.71.0" }
 
