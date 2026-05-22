@@ -902,6 +902,111 @@ fn store_blob_retries_after_einsufficient_capacity_drift() {
     });
 }
 
+/// Self-heal regression: an on-chain `PooledBlob` whose DB row was
+/// dropped (e.g., a prior delete tx failed but the DB delete proceeded
+/// anyway to preserve idempotent semantics) must not block a re-upload
+/// of the same content. The register PTB aborts with
+/// `dynamic_field::add` code 0 (`EFieldAlreadyExists`); Oyster must
+/// look up the existing `PooledBlob` on-chain and return Ok, leaving
+/// the on-chain `used_encoded_bytes` untouched.
+#[test]
+fn store_blob_self_heals_on_orphaned_pooled_blob() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("self-heal-test").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "self-heal-bucket").await;
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+
+        let data = b"orphan-recovery";
+
+        // 1. First upload registers the PooledBlob on-chain.
+        let body_a = put_blob(app, &api_key, &bucket_id, "a.txt", data).await;
+        let blob_id = body_a["blob_id"].as_str().unwrap().to_string();
+        let original_pooled_id = body_a["pooled_blob_object_id"]
+            .as_str()
+            .expect("first PUT must carry a PooledBlob ObjectID")
+            .to_string();
+
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query pool")
+            .expect("pool after first upload");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            pool_state.object_id.parse().expect("parse pool ObjectID");
+        let used_before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status before")
+            .used_encoded_bytes;
+
+        // 2. Drop the DB row directly, leaving the on-chain PooledBlob
+        //    orphaned. This is the steady-state outcome of a
+        //    delete-tx-failed → DB-delete-only branch in routes/blobs.rs.
+        oyster::db::blobs::delete_blob(&harness.db, &bucket_id, "a.txt", &account_id)
+            .await
+            .expect("DB-only delete of blob a.txt")
+            .expect("row existed");
+        assert!(
+            oyster::db::blobs::find_pooled_blob_object_id_for_account(
+                &harness.db,
+                &account_id,
+                &blob_id
+            )
+            .await
+            .expect("dedup query")
+            .is_none(),
+            "DB dedup index must be empty before the re-upload",
+        );
+
+        // 3. Re-upload the same content under a different key. The
+        //    register PTB aborts with EFieldAlreadyExists; the
+        //    self-heal arm must catch it and return Ok with the
+        //    existing on-chain PooledBlob ID.
+        let body_b = put_blob(app, &api_key, &bucket_id, "b.txt", data).await;
+        let recovered_pooled_id = body_b["pooled_blob_object_id"]
+            .as_str()
+            .expect("self-heal PUT must carry a PooledBlob ObjectID")
+            .to_string();
+        assert_eq!(
+            recovered_pooled_id, original_pooled_id,
+            "self-heal must return the existing on-chain PooledBlob ObjectID",
+        );
+
+        // 4. The new DB row must carry the recovered PooledBlob ID so
+        //    a follow-up delete actually clears the orphan on-chain.
+        let row = oyster::db::blobs::get_blob_by_key(&harness.db, &bucket_id, "b.txt")
+            .await
+            .expect("query b.txt")
+            .expect("b.txt row exists");
+        assert_eq!(
+            row.pooled_blob_object_id.as_deref(),
+            Some(original_pooled_id.as_str()),
+            "b.txt's DB row must reference the recovered PooledBlob",
+        );
+
+        // 5. The on-chain pool's used_encoded_bytes must NOT have
+        //    bumped — we recovered an existing PooledBlob, no new
+        //    storage was registered.
+        let used_after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after")
+            .used_encoded_bytes;
+        assert_eq!(
+            used_after, used_before,
+            "self-heal must not register additional encoded bytes",
+        );
+    });
+}
+
 /// An over-cap upload must be rejected with 400 *before* any Sui tx
 /// is submitted. Because `new_unencoded > max_unencoded` is checked
 /// before lazy-creating the on-chain `StoragePool`, no pool should

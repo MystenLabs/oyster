@@ -66,6 +66,28 @@ pub const INSUFFICIENT_FUNDS_RESPONSES_TOTAL: &str = "oyster_insufficient_funds_
 /// fires when it exceeds the per-`n_shards` Walrus encoder ceiling.
 pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_responses_total";
 
+/// Counter: register-PTB self-heal hits, labelled by `cause` ∈
+/// {`db_miss`, `orphan_recovered`}. Incremented when a register PTB
+/// aborts with `dynamic_field::add` code 0 (`EFieldAlreadyExists`) and
+/// Oyster recovers by reading the existing on-chain `PooledBlob`
+/// instead of returning 502. `db_miss` indicates a TOCTOU race against
+/// the DB-side dedup index; `orphan_recovered` indicates the on-chain
+/// `PooledBlob` outlived its DB row (typically a prior delete tx that
+/// failed but whose DB row was dropped anyway — see
+/// [`DELETE_DB_ONLY_TOTAL`]).
+pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_heal_total";
+
+/// Counter: `delete_blob` calls where the on-chain Sui delete tx
+/// failed with a non-`InsufficientBalance` error but Oyster still
+/// removed the DB row to preserve idempotent DELETE semantics.
+/// Labelled by `reason` ∈ {`upstream_error`, `internal_error`,
+/// `other`} — bucketed coarsely on purpose to avoid unbounded
+/// label cardinality from on-chain error messages. A non-zero rate
+/// here means on-chain `PooledBlob` orphans are accumulating and is
+/// the upstream of register-tx `EFieldAlreadyExists` aborts (see
+/// [`REGISTER_DEDUP_SELF_HEAL_TOTAL`]).
+pub const DELETE_DB_ONLY_TOTAL: &str = "oyster_delete_db_only_total";
+
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {
     metrics_exporter_prometheus::PrometheusBuilder::new()

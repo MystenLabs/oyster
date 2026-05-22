@@ -27,6 +27,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -783,6 +784,75 @@ CAP_BLOB_SIZE = 300_000
 CAP_MAX_TRIES = 20            # hard ceiling so a regression can't hang
 
 
+def scenario_self_heal(base, auth, ctx):
+    """Concurrent same-content PUTs both succeed (register-PTB self-heal)."""
+    heading("self-heal", "Register-PTB Self-Heal on Concurrent Same-Content PUTs")
+    bucket = f"selfheal-{int(time.time())}"
+    status, _, body = request(
+        "POST", f"{base}/api/v1/buckets",
+        body={"name": bucket}, headers=auth,
+    )
+    if status != 201:
+        fail(f"POST /buckets returned {status} (expected 201): {body!r}")
+        return False
+    put_hdrs = {**auth, "Content-Type": "application/octet-stream"}
+    payload = os.urandom(256 * 1024)
+    results = [None, None]
+
+    def worker(idx, key):
+        status, _, body = request(
+            "PUT",
+            f"{base}/api/v1/buckets/{bucket}/blobs/{key}",
+            body=payload, headers=put_hdrs,
+        )
+        results[idx] = (status, body)
+
+    threads = [
+        threading.Thread(target=worker, args=(0, "concurrent-a.bin")),
+        threading.Thread(target=worker, args=(1, "concurrent-b.bin")),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    passed = True
+    blob_ids = []
+    try:
+        for idx, (status, body) in enumerate(results):
+            if status != 201:
+                fail(
+                    f"concurrent PUT #{idx} returned {status} "
+                    f"(expected 201, body={body!r}). Before the self-heal "
+                    f"fix, a TOCTOU dedup race could surface as 502."
+                )
+                passed = False
+                continue
+            parsed = json_body(body) or {}
+            blob_ids.append(parsed.get("blob_id"))
+        if passed and len(set(blob_ids)) != 1:
+            fail(
+                f"concurrent PUTs of identical content should produce one "
+                f"blob_id, got {blob_ids!r}"
+            )
+            passed = False
+        elif passed:
+            ok(
+                f"both concurrent PUTs returned 201 with shared blob_id "
+                f"{blob_ids[0]}"
+            )
+    finally:
+        # Cleanup: drain the two blobs, then delete the bucket.
+        for key in ("concurrent-a.bin", "concurrent-b.bin"):
+            request(
+                "DELETE",
+                f"{base}/api/v1/buckets/{bucket}/blobs/{key}",
+                headers=auth,
+            )
+        request("DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth)
+    return passed
+
+
 def scenario_storage_cap(base, auth, ctx):
     """Per-account max_unencoded_bytes cap (lower, hit, raise, recover)."""
     heading("cap", "Per-account Storage Cap")
@@ -1230,6 +1300,7 @@ def main():
         ("API Key Management", lambda: scenario_9(base, auth, ctx, admin)),
         ("Multi-account Isolation", lambda: scenario_isolation(base, auth, admin)),
         ("Per-account Storage Cap", lambda: scenario_storage_cap(base, auth, ctx)),
+        ("Register-PTB Self-Heal", lambda: scenario_self_heal(base, auth, ctx)),
         ("Error Cases", lambda: scenario_10(base, auth)),
     ]
 

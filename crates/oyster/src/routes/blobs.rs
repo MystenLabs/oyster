@@ -513,6 +513,16 @@ pub async fn delete_blob(
                     "operation" => "delete", "result" => "error"
                 )
                 .increment(1);
+                let reason = match &e {
+                    crate::blob_store::BlobStoreError::Upstream(_) => "upstream_error",
+                    crate::blob_store::BlobStoreError::Internal(_) => "internal_error",
+                    _ => "other",
+                };
+                metrics::counter!(
+                    crate::metrics::DELETE_DB_ONLY_TOTAL,
+                    "reason" => reason,
+                )
+                .increment(1);
                 tracing::warn!(
                     error = %e,
                     "blob store delete failed; proceeding with DB delete to preserve idempotent semantics",

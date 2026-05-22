@@ -700,6 +700,81 @@ impl DirectWalrusBlobStore {
                     })?;
                     (resp, retry_grow_by)
                 }
+                Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
+                    if f.is_move_abort("dynamic_field", "add", 0) =>
+                {
+                    // `EFieldAlreadyExists` from `storage_pool::add_blob` —
+                    // a `PooledBlob` for `walrus_blob_id` is already
+                    // present in this pool's `blobs: ObjectTable<u256,
+                    // PooledBlob>`. Self-heal: look it up on-chain and
+                    // return Ok with the existing object ID. This
+                    // covers TOCTOU dedup races (two concurrent uploads
+                    // of the same content for one account both miss
+                    // the DB dedup) and orphans left behind when a
+                    // prior delete tx failed but its DB row was
+                    // dropped anyway.
+                    tracing::warn!(
+                        account_id = %account_id,
+                        pool_object_id = %pool_object_id,
+                        walrus_blob_id = %walrus_blob_id_str,
+                        abort = %f,
+                        "register PTB aborted with EFieldAlreadyExists; \
+                         self-healing via on-chain blob lookup",
+                    );
+                    let recovered = sui_object_reader::lookup_pooled_blob_object_id(
+                        &self.rpc_url,
+                        pool_object_id,
+                        &walrus_blob_id,
+                    )
+                    .await
+                    .map_err(|e| {
+                        BlobStoreError::Upstream(format!(
+                            "on-chain blob lookup after EFieldAlreadyExists failed: {e}"
+                        ))
+                    })?
+                    .ok_or_else(|| {
+                        BlobStoreError::Internal(format!(
+                            "dynamic_field::add abort but blob {walrus_blob_id_str} not \
+                             found in pool {pool_object_id}"
+                        ))
+                    })?;
+
+                    // Label the cause from what the DB knows. If a row
+                    // for this (account, blob_id) carrying a non-NULL
+                    // `pooled_blob_object_id` exists, the DB dedup
+                    // simply lost a TOCTOU race. Otherwise the on-chain
+                    // `PooledBlob` is an orphan from a prior
+                    // delete-tx-failed → DB-delete-only path.
+                    let cause = if db::blobs::find_pooled_blob_object_id_for_account(
+                        &self.db,
+                        account_id,
+                        &walrus_blob_id_str,
+                    )
+                    .await?
+                    .is_some()
+                    {
+                        "db_miss"
+                    } else {
+                        "orphan_recovered"
+                    };
+                    metrics::counter!(
+                        crate::metrics::REGISTER_DEDUP_SELF_HEAL_TOTAL,
+                        "cause" => cause,
+                    )
+                    .increment(1);
+
+                    // Skip `update_pool_after_register` and the certify
+                    // step: the on-chain `used_encoded_bytes` already
+                    // accounts for this PooledBlob, and re-certifying
+                    // an already-registered blob is unnecessary (the
+                    // existing DB-dedup short-circuit above also skips
+                    // certify).
+                    return Ok(StoreResult {
+                        blob_id: BlobId(walrus_blob_id_str),
+                        pooled_blob_object_id: Some(recovered.to_string()),
+                        encoded_size: Some(encoded_size),
+                    });
+                }
                 Err(e) => {
                     return Err(classify_upstream_error(
                         format!("register tx error: {e}"),
