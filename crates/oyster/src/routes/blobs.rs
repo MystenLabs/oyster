@@ -18,6 +18,7 @@ use crate::{
     models::{
         BlobMetadata,
         BlobTagsResponse,
+        CapExceededErrorResponse,
         ErrorResponse,
         InsufficientBalanceErrorResponse,
         PaginatedResponse,
@@ -130,6 +131,14 @@ fn check_json_conditions(
     request_body(content = Vec<u8>, content_type = "application/octet-stream"),
     responses(
         (status = 201, description = "Blob stored", body = StoreBlobResponse),
+        (
+            status = 400,
+            description = "Upload would push the account past its \
+                per-account `max_unencoded_bytes` cap. Body carries a \
+                `cap_exceeded` block; the admin can raise the cap via \
+                `PUT /api/v1/accounts/{account_id}/max-storage`.",
+            body = CapExceededErrorResponse,
+        ),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (
             status = 402,

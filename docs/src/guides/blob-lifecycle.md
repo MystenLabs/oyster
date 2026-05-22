@@ -77,6 +77,58 @@ wallet is still underfunded, another webhook fires. See
 [Webhooks](webhooks.md) for the full payload schema, retry policy,
 circuit-breaker behavior, and receiver examples.
 
+## Auto-grow
+
+The pool's encoded-bytes reservation grows on demand. The first
+upload that doesn't fit in the current reservation submits a
+`register_pooled_blobs` PTB whose `grow_by` reserves the missing
+capacity in the same transaction.
+
+### When auto-grow retries
+
+In a horizontally scaled Oyster deployment, two replicas can each
+compute `grow_by` against the same on-chain snapshot, then race to
+submit their register PTBs. The replica that lands second sees its
+`storage_pool::add_blob` Move call abort with `EInsufficientCapacity`
+(code `6`) because the first replica already consumed the reserve.
+
+Oyster handles this by:
+
+1. Refreshing the on-chain `StoragePoolInnerV1` via the Sui RPC's
+   gRPC `StateService.ListDynamicFields`.
+2. Reconciling the DB's `pool_reserved_encoded_bytes` and
+   `pool_used_encoded_bytes` counters against on-chain truth (the
+   chain is authoritative — a stale DB counter is overwritten).
+3. Recomputing `grow_by` from the reconciled state.
+4. Resubmitting the register PTB exactly once.
+
+If the resubmit also aborts with `EInsufficientCapacity`, the error
+is surfaced to the caller (no second self-heal — a steady-state of
+cross-replica thrash is not a normal failure mode and the operator
+should look).
+
+### Interaction with the per-account cap
+
+Auto-grow runs *after* the per-account
+[`max_unencoded_bytes` cap](../json-api/blobs.md#store-blob) is
+checked. The cap pre-check uses the same forward encoder
+(`f = encoded_blob_length_for_n_shards`) the upload path uses to
+project the post-upload encoded total, so a successful cap check
+already accounts for the would-be `grow_by` — auto-grow can never
+push the account's encoded-bytes usage past the threshold the cap
+implies. (On small-shard / large-cap testbeds where the forward
+encoder would overflow `i64`, the pre-check falls back to a
+saturating comparison rather than a `500`.)
+
+### Why no per-process lock
+
+Oyster scales horizontally: a `Mutex` inside one replica can't
+coordinate with another replica's process, and chain-side state
+would still drift under concurrent uploads. The on-chain
+`StoragePoolInnerV1` is the source of truth; the one-shot
+reconcile-and-retry above absorbs the inevitable drift without
+serializing uploads.
+
 ## Blob States
 
 A blob's lifetime is bound to its account's `StoragePool`:

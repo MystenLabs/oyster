@@ -23,13 +23,15 @@ is generated automatically.
 
 ```json
 {
-  "name": "my-app-user"
+  "name": "my-app-user",
+  "max_unencoded_bytes": 5000000000
 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `name` | string | no | Human-readable account name; defaults to the account ID if omitted |
+| `max_unencoded_bytes` | integer | no | Per-account storage cap, in *unencoded* bytes. Defaults to `5_000_000_000` (5 × 10⁹) when omitted. Must be strictly positive; `0` and negative values are rejected with `400` |
 
 **Example:**
 
@@ -70,7 +72,133 @@ curl -s -X POST \
 
 | Status | Condition |
 |--------|-----------|
+| `400` | `max_unencoded_bytes` must be a positive integer |
 | `401` | Missing or invalid admin key |
+
+### Update Storage Cap
+
+```
+PUT /api/v1/accounts/{account_id}/max-storage
+```
+
+Raises or lowers the per-account `max_unencoded_bytes` cap. Lowering
+the cap below the account's current on-chain encoded usage is
+rejected; lowering between current usage and current pool capacity
+submits an on-chain shrink transaction to release the freed reserve
+back to the Pearl-derived wallet.
+
+**Path parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `account_id` | string | UUID of the account |
+
+**Request body:**
+
+```json
+{ "max_unencoded_bytes": 10000000000 }
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `max_unencoded_bytes` | integer | yes | New per-account cap, in *unencoded* bytes. Must be strictly positive |
+
+**Example:**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"max_unencoded_bytes": 10000000000}' \
+  "$OYSTER_URL/api/v1/accounts/550e8400-e29b-41d4-a716-446655440000/max-storage" | jq
+```
+
+**Response** (`200 OK`):
+
+```json
+{
+  "account_id": "550e8400-e29b-41d4-a716-446655440000",
+  "max_unencoded_bytes": 10000000000,
+  "pool": {
+    "reserved_encoded_bytes": 8000000000,
+    "used_encoded_bytes": 4123456789
+  },
+  "shrink_tx_digest": "5jK...digest"
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `account_id` | string | The account whose cap was updated |
+| `max_unencoded_bytes` | integer | The new cap, in *unencoded* bytes |
+| `pool` | object or null | On-chain `StoragePool` snapshot after the (optional) shrink. `null` when the account has never lazy-created a pool (DB-only fast path — no on-chain read was performed) |
+| `pool.reserved_encoded_bytes` | integer | `storage.storage_size` — encoded bytes reserved by the pool |
+| `pool.used_encoded_bytes` | integer | Encoded bytes currently consumed by registered blobs |
+| `shrink_tx_digest` | string or null | Digest of the submitted `decrease_storage_pool_capacity_by_size` PTB, or `null` when no shrink was needed |
+
+When the account has no pool yet (no upload has lazy-created one),
+the cap is updated in the DB only — `pool` and `shrink_tx_digest`
+are both `null`. When the new cap covers the existing pool's reserved
+bytes, the same DB-only path runs (`shrink_tx_digest` is `null`,
+`pool` is populated from the on-chain read).
+
+**On-chain shrink semantics.** When the new cap is lower than the
+pool's current reserved capacity and at least one encoded byte can
+be freed without orphaning data, Oyster submits a Pearl-signed
+`system::decrease_storage_pool_capacity_by_size` PTB. The contract
+extracts a `Storage` object covering the freed bytes and transfers
+it back to the pool's owner (the Pearl-managed sender). Over time
+these extracted `Storage` objects accumulate in the wallet[^orphan].
+
+[^orphan]: Tooling for absorbing accumulated `Storage` objects back
+    into a pool is planned but not yet present — see the project's
+    `PLAN.md` for the "Recycle orphaned Storage objects" item.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `400` | Body invalid (`max_unencoded_bytes` ≤ 0), `would_orphan` (the new cap is below the account's current on-chain encoded usage), or `shrink_aborted` (a concurrent upload re-consumed the freed capacity between the on-chain read and the PTB submission) |
+| `401` | Missing or invalid admin key |
+| `403` | Account does not belong to the authenticated app |
+| `404` | Account not found |
+| `503` | Pearl or Sui RPC unavailable while performing the on-chain read or PTB submission |
+
+**`would_orphan` body** — emitted when lowering would drop the cap
+below current on-chain usage:
+
+```json
+{
+  "error": "max-storage update would orphan stored data: ...",
+  "would_orphan": {
+    "max_unencoded_bytes": 1000000000,
+    "used_encoded_bytes": 4123456789,
+    "threshold_encoded": 1500000000
+  }
+}
+```
+
+**`shrink_aborted` body** — emitted when the shrink PTB aborted
+because another replica's upload raced and re-consumed the
+capacity Oyster was about to extract:
+
+```json
+{
+  "error": "max-storage shrink aborted: ...",
+  "shrink_aborted": {
+    "move_abort_description": "EInsufficientCapacity in storage_pool::extract_storage",
+    "max_unencoded_bytes": 2000000000,
+    "extract_size": 1234567890
+  }
+}
+```
+
+Both `would_orphan` and `shrink_aborted` are safe to retry after
+the underlying state has settled (e.g., delete some blobs to lower
+`used_encoded_bytes`, or wait for the concurrent upload to finish).
+
+A successful cap change writes an `account.max_storage_updated`
+audit event.
 
 ## API Keys
 

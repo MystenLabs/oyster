@@ -56,6 +56,33 @@ All errors return a JSON body with a single `error` field:
 | `501` | Not Implemented — endpoint exists but isn't functional yet |
 | `503` | Service Unavailable — a dependent service is unreachable |
 
+### Cross-Cutting Error Contracts
+
+A few error bodies are shared across multiple routes and carry a
+structured block alongside the standard `error` string. Document
+once here; per-route docs link back.
+
+- **`InsufficientBalance` (402)** — the Pearl-derived wallet
+  doesn't hold enough WAL or SUI to fund the on-chain action.
+  Body carries a `funding_required: { wal_frost, sui_mist }`
+  block (both decimal strings). Currently fires on
+  `PUT /buckets/{bucket}/blobs/{key}` (see
+  [Store Blob](blobs.md#store-blob)) and
+  `DELETE /buckets/{bucket}/blobs/{key}` (see
+  [Delete Blob](blobs.md#delete-blob)). When the lookup itself
+  fails, `funding_required` is `null`.
+- **`CapExceeded` (400)** — the upload would push the account
+  past its per-account `max_unencoded_bytes` cap. Body carries a
+  `cap_exceeded` block pointing at the admin endpoint that can
+  raise the cap. Currently fires on
+  `PUT /buckets/{bucket}/blobs/{key}` (see
+  [Store Blob](blobs.md#store-blob)).
+
+The admin-side on-chain shrink endpoint
+([`PUT /accounts/{account_id}/max-storage`](admin.md#update-storage-cap))
+has its own 400 variants (`would_orphan`, `shrink_aborted`)
+documented in the admin reference.
+
 ## Pagination
 
 List endpoints use **cursor-based pagination**:

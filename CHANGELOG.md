@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+### Added
+- Per-account `max_unencoded_bytes` storage cap (default
+  `5 × 10⁹`). Migration `018_max_unencoded_bytes` adds the column
+  and widens `pool_end_epoch` / `pool_reserved_encoded_bytes` /
+  `pool_used_encoded_bytes` to `BIGINT` on Postgres. The upload
+  path short-circuits 400 with a structured `cap_exceeded` body
+  before any on-chain work; `BlobStoreError::CapExceeded` is the
+  new variant.
+- `POST /api/v1/accounts` accepts optional `max_unencoded_bytes`
+  (rejected with 400 when `≤ 0`).
+- `PUT /api/v1/accounts/{account_id}/max-storage` admin endpoint
+  for raising/lowering the cap. When a pool exists and the new
+  cap is lower, Oyster reads on-chain truth, rejects 400 with a
+  `would_orphan` block if lowering would orphan data, otherwise
+  submits a Pearl-signed `decrease_storage_pool_capacity_by_size`
+  PTB. A concurrent-upload race surfaces as 400 with a
+  `shrink_aborted` block carrying the chain's MoveAbort
+  description. New `account.max_storage_updated` audit event.
+- Auto-grow + one-time retry on `register_pooled_blobs` aborting
+  with `storage_pool::add_blob` code 6 (`EInsufficientCapacity`).
+  Reconciles DB pool counters to on-chain `StoragePoolInnerV1`
+  (read via gRPC `StateService.ListDynamicFields`) before
+  recomputing `grow_by` and resubmitting. Handles cross-replica
+  drift without process-local locking.
+- `BlobStoreError::InsufficientBalance` now propagates out of
+  `delete_blob` (JSON) and `delete_object` (S3) as 402 with the
+  `funding_required` body; the DB row is left intact so the
+  caller can fund and retry. Other on-chain delete errors are
+  still swallowed to preserve idempotent-delete semantics.
+
 ## [0.10.2] - 2026-05-21
 
 ### Fixed

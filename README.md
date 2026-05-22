@@ -68,7 +68,9 @@ API, and `oysterd extend` runs the blob extension background worker.
 ### Data model
 
 - **Account** -- Top-level identity. Has API keys and a Pearl-derived wallet (keyed by
-  account ID).
+  account ID). Each account has a `max_unencoded_bytes` cap (default 5 × 10⁹ bytes) that
+  gates uploads against on-chain encoded usage; raise or lower it via the admin
+  `PUT /accounts/{account_id}/max-storage` route.
 - **API Key** -- Bearer token for authentication. Stored as a Blake2s-256 hash. Multiple keys
   per account.
 - **Bucket** -- Named container scoped to an account. Bucket names are unique per account.
@@ -92,6 +94,7 @@ API, and `oysterd extend` runs the blob extension background worker.
 |--------|------|------|-------------|
 | `POST` | `/api/v1/accounts` | Admin Key | Create account |
 | `GET` | `/api/v1/accounts` | Admin Key | List accounts with active api-key counts |
+| `PUT` | `/api/v1/accounts/{account_id}/max-storage` | Admin Key | Raise/lower per-account `max_unencoded_bytes` cap (on-chain shrink if needed) |
 | `POST` | `/api/v1/accounts/{account_id}/api-keys` | Admin Key | Generate API key for account |
 | `GET` | `/api/v1/accounts/{account_id}/api-keys` | Admin Key | List api-key metadata for an account |
 | `DELETE` | `/api/v1/accounts/{account_id}/api-keys/{key_id}` | Admin Key | Revoke API key |
@@ -144,7 +147,9 @@ Oyster selects a blob store at startup based on environment variables:
    persists the resulting `StoragePool` `ObjectID` on the account row (lazy, first-writer wins).
 3. Builds the upload PTB — optionally prepending `increase_storage_pool_capacity` (rounded up
    to Walrus's 1 MiB `BYTES_PER_UNIT_SIZE`) when the new blob would exceed the pool's remaining
-   capacity — and calls `register_pooled_blobs`. Submits via Pearl.
+   capacity — and calls `register_pooled_blobs`. Submits via Pearl. If the register PTB aborts
+   with `EInsufficientCapacity` because of cross-replica drift, Oyster refreshes on-chain pool
+   state, reconciles the DB counters, recomputes `grow_by`, and retries the register PTB once.
 4. Uploads slivers to Walrus storage nodes and collects a certificate.
 5. Builds a `certify_pooled_blobs` PTB and submits via Pearl.
 6. Returns the content-addressed `blob_id` and the `pooled_blob_object_id` of the registered

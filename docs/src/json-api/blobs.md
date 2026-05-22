@@ -113,10 +113,40 @@ The response includes an `ETag` header containing the quoted MD5 digest
 
 | Status | Condition |
 |--------|-----------|
+| `400` | Upload would push the account past its per-account `max_unencoded_bytes` cap (body carries a `cap_exceeded` block) |
 | `401` | Missing or invalid API key |
+| `402` | Pearl-derived wallet lacks WAL/SUI to fund the upload (body carries a `funding_required` block — see [Cross-Cutting Error Contracts](README.md#cross-cutting-error-contracts)) |
 | `404` | Bucket not found |
 | `412` | `If-Match` or `If-None-Match` condition failed |
-| `413` | Payload exceeds 1 GB |
+| `413` | Payload exceeds 1 GB, or exceeds the Walrus encoder's per-blob ceiling for the network's `n_shards` (body carries a `payload_too_large` block) |
+
+When the cap is exceeded the response body looks like:
+
+```json
+{
+  "error": "storage cap exceeded: ...",
+  "cap_exceeded": {
+    "max_unencoded_bytes": 5000000000,
+    "used_encoded_bytes": 4998123456,
+    "new_unencoded_bytes": 16384,
+    "admin_endpoint": "PUT /api/v1/accounts/{account_id}/max-storage"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `max_unencoded_bytes` | integer | Configured per-account cap, in *unencoded* bytes |
+| `used_encoded_bytes` | integer | On-chain encoded usage observed at check time |
+| `new_unencoded_bytes` | integer | Unencoded size of the rejected upload |
+| `admin_endpoint` | string | Admin route that can raise the cap |
+
+The cap is enforced in unencoded bytes against on-chain encoded usage
+via the same `f = encoded_blob_length_for_n_shards` that the upload
+path uses to project the post-upload encoded total — so the
+short-circuit fires before any on-chain work. Raise (or lower) the
+cap via the admin
+[Update Storage Cap](admin.md#update-storage-cap) endpoint.
 
 ## Read Blob by Key
 
@@ -357,5 +387,26 @@ curl -s -X DELETE \
 | Status | Condition |
 |--------|-----------|
 | `401` | Missing or invalid API key |
+| `402` | Insufficient on-chain balance to clear the `PooledBlob`; the DB row is left intact for retry |
 | `404` | Blob not found |
 | `412` | `If-Match` or `If-None-Match` condition failed |
+
+A `402` carries the same `funding_required` block as the upload path:
+
+```json
+{
+  "error": "insufficient balance: ...",
+  "funding_required": {
+    "wal_frost": "1234567890",
+    "sui_mist": "98765432"
+  }
+}
+```
+
+`wal_frost` and `sui_mist` are decimal strings (Pearl-derived
+wallet's owed top-up); inspect your wallet via
+[Get Wallet Address](wallet.md). When `delete_blob` returns `402`,
+the DB row is left intact on purpose so the client can fund the
+Pearl-derived wallet and retry the same `DELETE` — other on-chain
+delete errors are still swallowed to preserve idempotent-delete
+semantics.

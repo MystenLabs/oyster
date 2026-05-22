@@ -378,6 +378,32 @@ pub struct InsufficientBalanceErrorResponse {
     pub funding_required: Option<FundingAmount>,
 }
 
+/// Body returned with a 400 Bad Request when an upload would push the
+/// account past its `max_unencoded_bytes` cap. Emitted by `store_blob`
+/// (JSON) and `put_object` (S3 surface mirrors the message text). The
+/// `cap_exceeded` block points the caller at the admin endpoint that
+/// can raise the cap.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CapExceededErrorResponse {
+    /// Human-readable error message.
+    pub error: String,
+    /// Structured details for the cap-exceeded case.
+    pub cap_exceeded: CapExceededDetails,
+}
+
+/// Details accompanying a 400 from the storage-cap path.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CapExceededDetails {
+    /// Configured per-account cap, in *unencoded* bytes.
+    pub max_unencoded_bytes: i64,
+    /// On-chain encoded usage observed at check time.
+    pub used_encoded_bytes: i64,
+    /// Unencoded size of the rejected upload.
+    pub new_unencoded_bytes: i64,
+    /// Admin route that can raise the cap.
+    pub admin_endpoint: String,
+}
+
 /// Body returned with a 413 Payload Too Large when an upload
 /// exceeds the network's per-blob encoder ceiling. Distinct from
 /// the static `MAX_BLOB_SIZE` body-limit 413 (which has no structured
