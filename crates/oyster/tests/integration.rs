@@ -39,6 +39,10 @@ struct SpyBlobStore {
     calls: Mutex<Vec<AccountId>>,
     /// Each `delete()` call appends (blob_id, pool_id, account_id) here.
     delete_calls: Mutex<Vec<DeleteCall>>,
+    /// If `Some(err)`, the next `delete()` call returns `err` (taken)
+    /// without touching the inner store. Used to exercise error
+    /// propagation paths.
+    next_delete_error: Mutex<Option<BlobStoreError>>,
 }
 
 impl SpyBlobStore {
@@ -47,6 +51,7 @@ impl SpyBlobStore {
             inner,
             calls: Mutex::new(Vec::new()),
             delete_calls: Mutex::new(Vec::new()),
+            next_delete_error: Mutex::new(None),
         }
     }
 
@@ -56,6 +61,10 @@ impl SpyBlobStore {
 
     fn recorded_delete_calls(&self) -> Vec<DeleteCall> {
         self.delete_calls.lock().unwrap().clone()
+    }
+
+    fn fail_next_delete(&self, err: BlobStoreError) {
+        *self.next_delete_error.lock().unwrap() = Some(err);
     }
 }
 
@@ -87,6 +96,9 @@ impl BlobStore for SpyBlobStore {
             pool_id.map(|s| s.to_string()),
             *account_id,
         ));
+        if let Some(err) = self.next_delete_error.lock().unwrap().take() {
+            return Box::pin(async move { Err(err) });
+        }
         self.inner
             .delete(blob_id, pool_id, encoded_size, account_id)
     }
@@ -1182,6 +1194,114 @@ async fn delete_blob_threads_account_id() {
     assert_eq!(*pool_id, None);
 }
 
+#[tokio::test]
+async fn delete_blob_propagates_insufficient_balance_as_402() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "ins-bal-test").await;
+    let (blob_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "needs-funding.txt",
+        "text/plain",
+        b"keep me until paid",
+    )
+    .await;
+
+    // Inject an InsufficientBalance error on the next delete().
+    spy.fail_next_delete(BlobStoreError::InsufficientBalance {
+        message: "no WAL".into(),
+        funding_required: Some(oyster::FundingAmount {
+            wal_frost: 100,
+            sui_mist: 5,
+        }),
+        operation: "unknown",
+    });
+
+    let (status, body) = json_response(
+        &app,
+        Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYMENT_REQUIRED);
+    assert!(
+        body["error"]
+            .as_str()
+            .expect("error field present")
+            .contains("insufficient balance"),
+        "body error did not mention insufficient balance: {body}",
+    );
+    assert_eq!(body["funding_required"]["wal_frost"], "100");
+    assert_eq!(body["funding_required"]["sui_mist"], "5");
+
+    // The DB row must still exist so the client can retry after funding.
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let blobs = body["data"].as_array().unwrap();
+    assert_eq!(blobs.len(), 1, "expected the blob row to be intact");
+    assert_eq!(blobs[0]["key"].as_str().unwrap(), blob_key);
+}
+
+#[tokio::test]
+async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "upstream-fail-test").await;
+    let (blob_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "transient.txt",
+        "text/plain",
+        b"upstream hiccup",
+    )
+    .await;
+
+    spy.fail_next_delete(BlobStoreError::Upstream("walrus down".into()));
+
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+
+    // DB row should be gone — idempotent delete contract preserved for
+    // transient upstream errors.
+    let (status, _) = raw_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
 // ---------------------------------------------------------------------------
 // Metrics endpoint tests
 // ---------------------------------------------------------------------------
@@ -1488,6 +1608,122 @@ async fn s3_put_get_delete_object() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchKey);
+}
+
+/// Like `test_s3_with_account` but backs the state with the provided
+/// `SpyBlobStore` so tests can inject failures into `delete()`.
+async fn test_s3_with_spy(spy: Arc<SpyBlobStore>) -> (OysterS3, String, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path,
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        pool_initial_epochs_ahead: 5,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
+        pool_extend_epochs: 5,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
+        extension_metrics_bind_addr: "unused".into(),
+        allow_http_webhook_scheme: true,
+    };
+
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: spy as Arc<dyn BlobStore>,
+        pearl: None,
+        read_client: None,
+        config,
+        metrics_handle: None,
+    };
+
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None)
+        .await
+        .unwrap();
+    let access_key = db::access_keys::create_access_key(&pool, &account.id)
+        .await
+        .unwrap();
+
+    let s3 = OysterS3::new(state);
+    (s3, access_key.access_key_id, tmp)
+}
+
+#[tokio::test]
+async fn s3_delete_object_propagates_insufficient_balance_as_402() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (s3, ak, _tmp) = test_s3_with_spy(spy.clone()).await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "ins-bal".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"needs funding".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "ins-bal".into(),
+            key: "obj.txt".into(),
+            body: Some(body),
+            content_type: Some("text/plain".into()),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    spy.fail_next_delete(BlobStoreError::InsufficientBalance {
+        message: "no WAL".into(),
+        funding_required: Some(oyster::FundingAmount {
+            wal_frost: 100,
+            sui_mist: 5,
+        }),
+        operation: "unknown",
+    });
+
+    let err = s3
+        .delete_object(s3_req(
+            DeleteObjectInput {
+                bucket: "ins-bal".into(),
+                key: "obj.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.status_code(), Some(hyper::StatusCode::PAYMENT_REQUIRED));
+
+    // The DB row should still be there so the client can retry after funding.
+    s3.head_object(s3_req(
+        HeadObjectInput {
+            bucket: "ins-bal".into(),
+            key: "obj.txt".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .expect("blob row should still exist after a 402 from delete_object");
 }
 
 #[tokio::test]

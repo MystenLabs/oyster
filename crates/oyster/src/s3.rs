@@ -589,30 +589,54 @@ impl s3s::S3 for OysterS3 {
             false,
         )?;
 
-        if let Some(info) = db::blobs::delete_blob(&self.state.db, bucket_name, key, &account_id)
+        // Filter by account ownership before doing any side-effectful
+        // work: if the row exists but belongs to another account, behave
+        // exactly like S3 idempotent-delete and return success without
+        // touching anything.
+        let Some(metadata) = existing.filter(|m| m.account_id == account_id) else {
+            return Ok(S3Response::new(DeleteObjectOutput {
+                ..Default::default()
+            }));
+        };
+
+        // Reference-counted deletion: do the on-chain delete BEFORE the
+        // DB delete. A 402 from `InsufficientBalance` therefore leaves
+        // the DB row intact so the caller can retry after funding.
+        let count = db::blobs::count_references(&self.state.db, &metadata.blob_id)
             .await
-            .map_err(internal_error)?
-        {
-            let count = db::blobs::count_references(&self.state.db, &info.blob_id)
+            .map_err(internal_error)?;
+        if count == 1 {
+            let pool_id = db::accounts::get_storage_pool(&self.state.db, &account_id)
                 .await
-                .map_err(internal_error)?;
-            if count == 0 {
-                let pool_id = db::accounts::get_storage_pool(&self.state.db, &account_id)
-                    .await
-                    .map_err(internal_error)?
-                    .map(|s| s.object_id);
-                let _ = self
-                    .state
-                    .blob_store
-                    .delete(
-                        &BlobId(info.blob_id),
-                        pool_id.as_deref(),
-                        info.encoded_size.unwrap_or(0) as u64,
-                        &account_id,
-                    )
-                    .await;
+                .map_err(internal_error)?
+                .map(|s| s.object_id);
+            match self
+                .state
+                .blob_store
+                .delete(
+                    &BlobId(metadata.blob_id.clone()),
+                    pool_id.as_deref(),
+                    metadata.encoded_size.unwrap_or(0) as u64,
+                    &account_id,
+                )
+                .await
+            {
+                Ok(()) => {}
+                Err(e @ crate::blob_store::BlobStoreError::InsufficientBalance { .. }) => {
+                    return Err(blob_store_error(e.with_operation("delete_object")));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "blob store delete failed; proceeding with DB delete to preserve S3 idempotent semantics",
+                    );
+                }
             }
         }
+
+        let _ = db::blobs::delete_blob(&self.state.db, bucket_name, key, &account_id)
+            .await
+            .map_err(internal_error)?;
 
         Ok(S3Response::new(DeleteObjectOutput {
             ..Default::default()

@@ -443,6 +443,12 @@ pub async fn update_blob_metadata(
     responses(
         (status = 204, description = "Blob deleted"),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (
+            status = 402,
+            description = "Insufficient on-chain balance to clear the \
+                PooledBlob. Body carries a `funding_required` block.",
+            body = InsufficientBalanceErrorResponse,
+        ),
         (status = 404, description = "Blob not found", body = ErrorResponse),
     ),
 )]
@@ -453,25 +459,30 @@ pub async fn delete_blob(
     Path((bucket_name, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<StatusCode, AppError> {
-    let existing = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key).await?;
-    check_json_conditions(&headers, existing.as_ref().map(|m| m.md5.as_str()), false)?;
-
-    let info = db::blobs::delete_blob(&state.db, &bucket_name, &key, &auth.account_id)
+    let metadata = db::blobs::get_blob_by_key(&state.db, &bucket_name, &key)
         .await?
         .ok_or(AppError::NotFound)?;
+    check_json_conditions(&headers, Some(metadata.md5.as_str()), false)?;
+    if metadata.account_id != auth.account_id {
+        return Err(AppError::NotFound);
+    }
 
-    // Reference-counted deletion: only delete from store if no more references
-    let count = db::blobs::count_references(&state.db, &info.blob_id).await?;
-    if count == 0 {
+    // Reference-counted deletion: do the on-chain delete BEFORE removing
+    // the DB row. A 402 from `InsufficientBalance` then leaves the DB
+    // row intact so the caller can retry after funding the wallet.
+    // `count == 1` here means "this row is the last reference" — the
+    // count is the pre-delete reference count.
+    let count = db::blobs::count_references(&state.db, &metadata.blob_id).await?;
+    if count == 1 {
         let pool_id = db::accounts::get_storage_pool(&state.db, &auth.account_id)
             .await?
             .map(|s| s.object_id);
         match state
             .blob_store
             .delete(
-                &BlobId(info.blob_id),
+                &BlobId(metadata.blob_id.clone()),
                 pool_id.as_deref(),
-                info.encoded_size.unwrap_or(0) as u64,
+                metadata.encoded_size.unwrap_or(0) as u64,
                 &auth.account_id,
             )
             .await
@@ -482,14 +493,31 @@ pub async fn delete_blob(
                 )
                 .increment(1);
             }
-            Err(_) => {
+            Err(e @ crate::blob_store::BlobStoreError::InsufficientBalance { .. }) => {
                 metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
                     "operation" => "delete", "result" => "error"
                 )
                 .increment(1);
+                return Err(e.with_operation("delete_blob").into());
+            }
+            Err(e) => {
+                metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
+                    "operation" => "delete", "result" => "error"
+                )
+                .increment(1);
+                tracing::warn!(
+                    error = %e,
+                    "blob store delete failed; proceeding with DB delete to preserve idempotent semantics",
+                );
             }
         }
     }
+
+    // After the on-chain side has succeeded (or been intentionally
+    // swallowed), drop the DB row. A `None` here means a concurrent
+    // delete already cleaned up the row — treat as 204, since DELETE
+    // is idempotent.
+    let _ = db::blobs::delete_blob(&state.db, &bucket_name, &key, &auth.account_id).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }
