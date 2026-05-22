@@ -63,6 +63,7 @@ async fn verify_account_ownership(
     request_body(content = CreateAccountRequest, content_type = "application/json"),
     responses(
         (status = 201, description = "Account created", body = CreateAccountResponse),
+        (status = 400, description = "Invalid request (e.g. non-positive max_unencoded_bytes)", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
     ),
 )]
@@ -74,8 +75,22 @@ pub async fn create_account(
 ) -> Result<(StatusCode, Json<CreateAccountResponse>), AppError> {
     let body = body.map(|b| b.0);
     let name = body.as_ref().and_then(|b| b.name.clone());
+    let max_unencoded_bytes = body.as_ref().and_then(|b| b.max_unencoded_bytes);
+    if let Some(cap) = max_unencoded_bytes
+        && cap <= 0
+    {
+        return Err(AppError::BadRequest(
+            "max_unencoded_bytes must be a positive integer".into(),
+        ));
+    }
     let note = body.and_then(|b| b.note).unwrap_or_else(|| "api".into());
-    let account = db::accounts::create_account(&state.db, &auth.app_id, name.as_deref()).await?;
+    let account = db::accounts::create_account(
+        &state.db,
+        &auth.app_id,
+        name.as_deref(),
+        max_unencoded_bytes,
+    )
+    .await?;
 
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);

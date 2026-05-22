@@ -38,6 +38,7 @@ use crate::{
     blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,
+    storage_cap::{self, CapViolation},
     sui_object_reader,
     sui_transaction::{self, SignedTxOutcome},
 };
@@ -65,6 +66,32 @@ fn is_insufficient_balance(msg: &str) -> bool {
         || lower.contains("cannot pay gas")
         || lower.contains("insufficient balance")
         || lower.contains("could not find") && lower.contains("coins")
+}
+
+/// Format a [`CapViolation`] as a [`BlobStoreError::CapExceeded`] with a
+/// human-readable `message` describing the failing arm of the cap
+/// inequality. The numeric fields surface in the structured JSON body.
+fn cap_violation_to_error(violation: CapViolation) -> BlobStoreError {
+    let CapViolation {
+        max_unencoded_bytes,
+        used_encoded_bytes,
+        new_unencoded_bytes,
+    } = violation;
+    // i64 round-trip: per-account caps fit by construction (Postgres
+    // BIGINT NOT NULL, route layer rejects ≤ 0), and saturating clamps
+    // pathological inputs.
+    let max_i64 = i64::try_from(max_unencoded_bytes).unwrap_or(i64::MAX);
+    let message = format!(
+        "account cap is {max_unencoded_bytes} unencoded bytes; \
+         on-chain encoded usage {used_encoded_bytes} plus this upload \
+         ({new_unencoded_bytes} unencoded bytes) would exceed it"
+    );
+    BlobStoreError::CapExceeded {
+        message,
+        max_unencoded_bytes: max_i64,
+        used_encoded_bytes,
+        new_unencoded_bytes,
+    }
 }
 
 /// Classify a `create_storage_pool` failure: balance shortfalls become 402
@@ -452,7 +479,25 @@ impl DirectWalrusBlobStore {
             });
         }
 
-        // 2. Determine the StoragePool for this account (lazy-create on first write).
+        // 2. Pre-pool storage-cap short-circuit: if this single blob's
+        // unencoded size already exceeds the account's cap, reject 400
+        // *before* lazy-creating a `StoragePool` on-chain. The full cap
+        // check (which needs the pool's on-chain `used_encoded_bytes`)
+        // runs after the pool is resolved.
+        let max_unencoded_bytes = db::accounts::get_max_unencoded_bytes(&self.db, account_id)
+            .await?
+            .ok_or_else(|| {
+                BlobStoreError::Internal(format!("account {account_id} not found in DB"))
+            })?;
+        if i128::from(unencoded_size) > i128::from(max_unencoded_bytes) {
+            return Err(cap_violation_to_error(CapViolation {
+                max_unencoded_bytes: max_unencoded_bytes.max(0) as u64,
+                used_encoded_bytes: 0,
+                new_unencoded_bytes: unencoded_size,
+            }));
+        }
+
+        // 3. Determine the StoragePool for this account (lazy-create on first write).
         let current_epoch = self
             .read_client
             .current_epoch()
@@ -471,7 +516,35 @@ impl DirectWalrusBlobStore {
             BlobStoreError::Internal(format!("invalid pool ObjectID: {e}"))
         })?;
 
-        // 3. Register PTB: optional capacity bump + register_pooled_blobs.
+        // 4. Storage-cap check: one RPC read of the on-chain pool's
+        // `used_encoded_bytes`, then evaluate the cap inequality. The
+        // cap is stated in *unencoded* bytes but on-chain usage is
+        // tracked in *encoded* bytes, so we compare against the
+        // forward-encoded threshold `f(max_unencoded − new_unencoded)`.
+        // See `storage_cap::enforce_storage_cap` for the derivation.
+        let on_chain_pool =
+            sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
+                .await
+                .map_err(|e| BlobStoreError::Upstream(format!("read_storage_pool_state: {e}")))?;
+        let n_shards = encoding_config.n_shards();
+        let cap_u64 = u64::try_from(max_unencoded_bytes).map_err(|_| {
+            // Migration 018 backfills with `5_000_000_000` and the
+            // route layer rejects non-positive overrides, so a
+            // negative value here is a DB-invariant violation.
+            BlobStoreError::Internal(format!(
+                "negative max_unencoded_bytes {max_unencoded_bytes} for account {account_id}"
+            ))
+        })?;
+        if let Err(violation) = storage_cap::enforce_storage_cap(
+            cap_u64,
+            on_chain_pool.used_encoded_bytes,
+            unencoded_size,
+            n_shards,
+        ) {
+            return Err(cap_violation_to_error(violation));
+        }
+
+        // 5. Register PTB: optional capacity bump + register_pooled_blobs.
         let remaining = pool_state.reserved_encoded_bytes - pool_state.used_encoded_bytes;
         let grow_by: u64 = grow_by_bytes(remaining, encoded_size);
         let remaining_epochs = (pool_state.end_epoch - current_epoch as i64).max(1) as u32;

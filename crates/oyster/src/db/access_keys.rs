@@ -138,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn create_access_key_fields() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 
@@ -152,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn count_active_keys() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 
@@ -177,7 +177,7 @@ mod tests {
     #[tokio::test]
     async fn list_excludes_secrets() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 
@@ -192,7 +192,7 @@ mod tests {
     #[tokio::test]
     async fn delete_soft_revokes() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 
@@ -218,7 +218,7 @@ mod tests {
     #[tokio::test]
     async fn revoked_keys_dont_count_toward_limit() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 
@@ -240,7 +240,7 @@ mod tests {
     #[tokio::test]
     async fn find_by_access_key_id_returns_record() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None)
+        let account = db::accounts::create_account(&pool, &crate::AppId::INTERNAL, None, None)
             .await
             .unwrap();
 

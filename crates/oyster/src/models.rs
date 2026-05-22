@@ -72,6 +72,10 @@ pub struct Account {
     pub app_id: AppId,
     /// Human-readable account name.
     pub name: String,
+    /// Per-account storage cap, in *unencoded* bytes. Enforced before
+    /// any on-chain work on the upload path. Backfilled to
+    /// `5_000_000_000` for accounts created before migration 018.
+    pub max_unencoded_bytes: i64,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-update timestamp.
@@ -206,6 +210,11 @@ pub struct CreateAccountRequest {
     /// Optional note attached to the auto-issued initial API key.
     /// Defaults to "api" when omitted.
     pub note: Option<String>,
+    /// Optional per-account storage cap, in *unencoded* bytes.
+    /// Defaults to `5_000_000_000` (5 × 10⁹ bytes) when omitted. Must
+    /// be strictly positive; `0` and negative values are rejected with
+    /// 400.
+    pub max_unencoded_bytes: Option<i64>,
 }
 
 /// Request body for `POST /accounts/{id}/api-keys`.

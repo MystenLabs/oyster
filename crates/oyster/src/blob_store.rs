@@ -107,6 +107,23 @@ pub enum BlobStoreError {
     /// [`BlobStoreError::Internal`] (→ 500) instead.
     #[error("pool creation failed: {0}")]
     PoolCreationFailed(String),
+    /// The account's per-account `max_unencoded_bytes` storage cap was
+    /// reached. Surfaced before any on-chain work and maps to
+    /// 400 Bad Request. The body carries the cap, current on-chain
+    /// encoded usage, the new blob's unencoded size, and a hint to the
+    /// admin endpoint that raises the cap.
+    #[error("storage cap exceeded: {message}")]
+    CapExceeded {
+        /// Human-readable reason, suitable for surfacing in the JSON
+        /// `error` field.
+        message: String,
+        /// The configured cap, in unencoded bytes.
+        max_unencoded_bytes: i64,
+        /// On-chain encoded usage observed at check time, in bytes.
+        used_encoded_bytes: u64,
+        /// Unencoded size of the new blob the caller tried to upload.
+        new_unencoded_bytes: u64,
+    },
     /// Error bookkeeping pool/blob state in the Oyster database. Maps to 500.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),

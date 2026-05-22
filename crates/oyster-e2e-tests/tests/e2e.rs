@@ -365,6 +365,30 @@ async fn create_test_account_via_admin(app: &Router, admin_key: &str) -> (String
     (account_id, api_key)
 }
 
+/// Helper: create an account via admin with an explicit
+/// `max_unencoded_bytes` cap.
+async fn create_test_account_with_cap(
+    app: &Router,
+    admin_key: &str,
+    max_unencoded_bytes: u64,
+) -> (String, String) {
+    let body_str =
+        format!(r#"{{"name": "e2e-cap-account", "max_unencoded_bytes": {max_unencoded_bytes}}}"#);
+    let req = Request::post("/api/v1/accounts")
+        .header("authorization", format!("Bearer {admin_key}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body_str))
+        .unwrap();
+    let (status, body) = json_response(app, req).await;
+    assert_eq!(status, axum::http::StatusCode::CREATED);
+    let account_id = body["account_id"].as_str().unwrap().to_string();
+    let api_key = body["api_key"]["bearer_token"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    (account_id, api_key)
+}
+
 /// Admin-created account can store and read blobs end-to-end through real Walrus storage.
 #[test]
 fn e2e_admin_account_blob_lifecycle() {
@@ -874,6 +898,69 @@ fn store_blob_retries_after_einsufficient_capacity_drift() {
         assert!(
             post_b.reserved_encoded_bytes >= post_b.used_encoded_bytes,
             "reserved must cover used"
+        );
+    });
+}
+
+/// An over-cap upload must be rejected with 400 *before* any Sui tx
+/// is submitted. Because `new_unencoded > max_unencoded` is checked
+/// before lazy-creating the on-chain `StoragePool`, no pool should
+/// exist on the account afterwards either.
+#[test]
+fn over_cap_upload_returns_400_without_submitting_tx() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("over-cap-app").await;
+        let (account_id_str, api_key) =
+            create_test_account_with_cap(app, &admin_key, 1_000_000).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "cap-bucket").await;
+
+        // 2 MiB body easily exceeds the 1 MB cap.
+        let blob_data = vec![b'C'; 2 * 1024 * 1024];
+        let req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/too-big.bin"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(blob_data))
+            .unwrap();
+        let (status, body) = json_response(app, req).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "expected 400, body = {body}"
+        );
+
+        // Response carries the structured `cap_exceeded` block with the
+        // right numbers and an admin-endpoint hint.
+        let cap = &body["cap_exceeded"];
+        assert!(!cap.is_null(), "missing cap_exceeded block: {body}");
+        assert_eq!(cap["max_unencoded_bytes"].as_i64(), Some(1_000_000));
+        assert_eq!(cap["new_unencoded_bytes"].as_u64(), Some(2 * 1024 * 1024));
+        // Used encoded bytes is 0 because the pre-pool short-circuit
+        // fires before any on-chain read.
+        assert_eq!(cap["used_encoded_bytes"].as_u64(), Some(0));
+        assert!(
+            cap["admin_endpoint"]
+                .as_str()
+                .is_some_and(|s| s.contains("/max-storage")),
+            "missing/incorrect admin_endpoint hint: {cap}"
+        );
+
+        // No on-chain `StoragePool` was lazy-created — the rejection
+        // happened before the lazy-create branch. This is the strongest
+        // assertion available here: the spec's pre-pool short-circuit
+        // means no Sui tx was submitted at all.
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        let pool = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap();
+        assert!(
+            pool.is_none(),
+            "no StoragePool should be created for an over-cap first upload, got {pool:?}"
         );
     });
 }

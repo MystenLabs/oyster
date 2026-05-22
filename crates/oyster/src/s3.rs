@@ -122,6 +122,35 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             err.set_status_code(hyper::StatusCode::BAD_GATEWAY);
             err
         }
+        BlobStoreError::CapExceeded {
+            ref message,
+            max_unencoded_bytes,
+            used_encoded_bytes,
+            new_unencoded_bytes,
+        } => {
+            tracing::warn!(
+                error = %message,
+                max_unencoded_bytes,
+                used_encoded_bytes,
+                new_unencoded_bytes,
+                "storage cap exceeded",
+            );
+            // S3 has no first-class slot for the structured `cap_exceeded`
+            // block — render the numbers into the message body so the
+            // SDK surface still carries enough context to debug.
+            let body = format!(
+                "storage cap exceeded: {message} \
+                 (max_unencoded_bytes={max_unencoded_bytes}, \
+                 used_encoded_bytes={used_encoded_bytes}, \
+                 new_unencoded_bytes={new_unencoded_bytes})"
+            );
+            let mut err = S3Error::with_message(
+                S3ErrorCode::Custom(bytestring::ByteString::from("EntityTooLarge")),
+                body,
+            );
+            err.set_status_code(hyper::StatusCode::BAD_REQUEST);
+            err
+        }
         BlobStoreError::Database(ref db_err) => {
             tracing::error!(error = %db_err, "blob store database error");
             S3Error::with_message(S3ErrorCode::InternalError, db_err.to_string())

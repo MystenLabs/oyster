@@ -74,6 +74,7 @@ pub enum AppError {
 /// | `BlobStore(Unreachable)`             | 502 |
 /// | `BlobStore(UpstreamStatus)`          | passthrough 4xx, mask 5xx → 502 |
 /// | `BlobStore(PoolCreationFailed)`      | 502 |
+/// | `BlobStore(CapExceeded)`             | 400, body carries `cap_exceeded` block |
 /// | `BlobStore(Database)`                | 500 |
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
@@ -114,6 +115,35 @@ impl IntoResponse for AppError {
             return (StatusCode::PAYMENT_REQUIRED, axum::Json(body)).into_response();
         }
 
+        // CapExceeded carries a structured `cap_exceeded` block, so it
+        // is also handled up-front rather than through the generic
+        // `(status, message)` tuple.
+        if let AppError::BlobStore(BlobStoreError::CapExceeded {
+            message,
+            max_unencoded_bytes,
+            used_encoded_bytes,
+            new_unencoded_bytes,
+        }) = &self
+        {
+            tracing::warn!(
+                error = %message,
+                max_unencoded_bytes,
+                used_encoded_bytes,
+                new_unencoded_bytes,
+                "storage cap exceeded",
+            );
+            let body = serde_json::json!({
+                "error": format!("storage cap exceeded: {message}"),
+                "cap_exceeded": {
+                    "max_unencoded_bytes": max_unencoded_bytes,
+                    "used_encoded_bytes": used_encoded_bytes,
+                    "new_unencoded_bytes": new_unencoded_bytes,
+                    "admin_endpoint": "PUT /api/v1/accounts/{account_id}/max-storage",
+                },
+            });
+            return (StatusCode::BAD_REQUEST, axum::Json(body)).into_response();
+        }
+
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
@@ -137,6 +167,9 @@ impl IntoResponse for AppError {
                 BlobStoreError::InsufficientBalance { .. } => unreachable!(
                     "InsufficientBalance handled earlier so we can attach funding_required"
                 ),
+                BlobStoreError::CapExceeded { .. } => {
+                    unreachable!("CapExceeded handled earlier so we can attach cap_exceeded block")
+                }
                 BlobStoreError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
                 BlobStoreError::InvalidBlobId(_) => (StatusCode::BAD_REQUEST, self.to_string()),
                 BlobStoreError::PoolCreationFailed(msg) => {

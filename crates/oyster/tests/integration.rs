@@ -212,7 +212,7 @@ async fn full_response(
 
 /// Helper: create an account directly via DB, returns (account_id, api_key_secret).
 async fn create_test_account(pool: &db::DbPool) -> (String, String) {
-    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None)
+    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None, None)
         .await
         .unwrap();
     let raw_key = auth::generate_api_key();
@@ -1304,7 +1304,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None)
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None)
         .await
         .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
@@ -2150,6 +2150,75 @@ async fn admin_create_account_with_name() {
         .unwrap()
         .unwrap();
     assert_eq!(account.name, "custom");
+}
+
+#[tokio::test]
+async fn create_account_accepts_optional_max_unencoded_bytes() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"max_unencoded_bytes": 1000000}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id: AccountId = body["account_id"].as_str().unwrap().parse().unwrap();
+    let account = db::accounts::get_account(&pool, &account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.max_unencoded_bytes, 1_000_000);
+}
+
+#[tokio::test]
+async fn create_account_defaults_max_unencoded_bytes_when_omitted() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let (status, body) = json_response(
+        &app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id: AccountId = body["account_id"].as_str().unwrap().parse().unwrap();
+    let account = db::accounts::get_account(&pool, &account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(account.max_unencoded_bytes, 5_000_000_000);
+}
+
+#[tokio::test]
+async fn create_account_rejects_non_positive_max_unencoded_bytes() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    for cap in ["0", "-1"] {
+        let body = format!(r#"{{"max_unencoded_bytes": {cap}}}"#);
+        let (status, _) = json_response(
+            &app,
+            Request::post("/api/v1/accounts")
+                .header("authorization", format!("Bearer {admin_key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "cap={cap} should be rejected"
+        );
+    }
 }
 
 #[tokio::test]

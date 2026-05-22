@@ -35,20 +35,26 @@ pub struct ExpiringPool {
     pub pool_reserved_encoded_bytes: i64,
 }
 
-/// Insert a new account belonging to the given app.
+/// Insert a new account belonging to the given app. When
+/// `max_unencoded_bytes` is `None`, the DB falls back to its
+/// `DEFAULT 5_000_000_000` for the column.
 pub async fn create_account(
     pool: &super::DbPool,
     app_id: &AppId,
     name: Option<&str>,
+    max_unencoded_bytes: Option<i64>,
 ) -> Result<Account, sqlx::Error> {
     let id = AccountId::new();
     let name = name.map_or_else(|| id.to_string(), |n| n.to_string());
     let row = sqlx::query(&super::sql(
-        "INSERT INTO accounts (id, app_id, name) VALUES (?, ?, ?) RETURNING id, app_id, name, created_at, updated_at",
+        "INSERT INTO accounts (id, app_id, name, max_unencoded_bytes) \
+         VALUES (?, ?, ?, COALESCE(?, 5000000000)) \
+         RETURNING id, app_id, name, max_unencoded_bytes, created_at, updated_at",
     ))
     .bind(&id)
     .bind(app_id)
     .bind(&name)
+    .bind(max_unencoded_bytes)
     .fetch_one(pool)
     .await?;
 
@@ -56,6 +62,7 @@ pub async fn create_account(
         id: row.get("id"),
         app_id: row.get("app_id"),
         name: row.get("name"),
+        max_unencoded_bytes: row.get("max_unencoded_bytes"),
         created_at: row.get("created_at"),
         updated_at: row.get("updated_at"),
     })
@@ -67,7 +74,8 @@ pub async fn get_account(
     id: &AccountId,
 ) -> Result<Option<Account>, sqlx::Error> {
     let row = sqlx::query(&super::sql(
-        "SELECT id, app_id, name, created_at, updated_at FROM accounts WHERE id = ?",
+        "SELECT id, app_id, name, max_unencoded_bytes, created_at, updated_at \
+         FROM accounts WHERE id = ?",
     ))
     .bind(id)
     .fetch_optional(pool)
@@ -77,9 +85,25 @@ pub async fn get_account(
         id: r.get("id"),
         app_id: r.get("app_id"),
         name: r.get("name"),
+        max_unencoded_bytes: r.get("max_unencoded_bytes"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
     }))
+}
+
+/// Lightweight single-column read for the upload hot path. Returns
+/// `None` if the account does not exist.
+pub async fn get_max_unencoded_bytes(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<Option<i64>, sqlx::Error> {
+    let value: Option<i64> = sqlx::query_scalar(&super::sql(
+        "SELECT max_unencoded_bytes FROM accounts WHERE id = ?",
+    ))
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(value)
 }
 
 /// Count the total number of accounts.
@@ -400,15 +424,54 @@ mod tests {
     #[tokio::test]
     async fn create_account_works() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         assert_eq!(account.name, account.id.to_string());
         assert_eq!(account.app_id, AppId::INTERNAL);
     }
 
     #[tokio::test]
+    async fn create_account_defaults_max_unencoded_bytes() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
+        assert_eq!(account.max_unencoded_bytes, 5_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn create_account_honours_explicit_max_unencoded_bytes() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None, Some(1_000_000_000))
+            .await
+            .unwrap();
+        assert_eq!(account.max_unencoded_bytes, 1_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn get_max_unencoded_bytes_returns_value() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None, Some(7_777_777))
+            .await
+            .unwrap();
+        let value = get_max_unencoded_bytes(&pool, &account.id).await.unwrap();
+        assert_eq!(value, Some(7_777_777));
+    }
+
+    #[tokio::test]
+    async fn get_max_unencoded_bytes_returns_none_for_missing() {
+        let pool = test_pool().await;
+        let value = get_max_unencoded_bytes(&pool, &AccountId::new())
+            .await
+            .unwrap();
+        assert_eq!(value, None);
+    }
+
+    #[tokio::test]
     async fn create_account_with_name() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, Some("my-account"))
+        let account = create_account(&pool, &AppId::INTERNAL, Some("my-account"), None)
             .await
             .unwrap();
         assert_eq!(account.name, "my-account");
@@ -418,7 +481,9 @@ mod tests {
     #[tokio::test]
     async fn get_account_returns_created() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         let fetched = get_account(&pool, &account.id).await.unwrap().unwrap();
         assert_eq!(fetched.id, account.id);
         assert_eq!(fetched.app_id, AppId::INTERNAL);
@@ -434,7 +499,9 @@ mod tests {
     #[tokio::test]
     async fn get_storage_pool_is_none_for_fresh_account() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         let result = get_storage_pool(&pool, &account.id).await.unwrap();
         assert!(result.is_none());
     }
@@ -449,7 +516,9 @@ mod tests {
     #[tokio::test]
     async fn set_storage_pool_sets_full_state() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         let updated = set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
@@ -467,7 +536,9 @@ mod tests {
     #[tokio::test]
     async fn set_storage_pool_is_idempotent() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         let first = set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
@@ -498,7 +569,9 @@ mod tests {
     #[tokio::test]
     async fn update_pool_after_register_bumps_both() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 0)
             .await
             .unwrap();
@@ -516,7 +589,9 @@ mod tests {
     #[tokio::test]
     async fn reconcile_pool_after_drift_overwrites_counters() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         // Prime with drifted counters.
         set_storage_pool(&pool, &account.id, "0xabc", 42, 999_999, 888_888)
             .await
@@ -538,7 +613,9 @@ mod tests {
     #[tokio::test]
     async fn update_pool_after_delete_decrements_used() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 400)
             .await
             .unwrap();
@@ -560,8 +637,12 @@ mod tests {
     #[tokio::test]
     async fn claim_pools_for_extension_filters_by_cutoff() {
         let pool = test_pool().await;
-        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
-        let b = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let a = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
+        let b = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
             .await
             .unwrap();
@@ -585,8 +666,12 @@ mod tests {
     #[tokio::test]
     async fn claim_pools_for_extension_skips_accounts_without_pool() {
         let pool = test_pool().await;
-        let _unpooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
-        let pooled = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let _unpooled = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
+        let pooled = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &pooled.id, "0xccc", 5, 1_000, 0)
             .await
             .unwrap();
@@ -601,7 +686,9 @@ mod tests {
     #[tokio::test]
     async fn claim_pools_for_extension_skips_unexpired_ttl() {
         let pool = test_pool().await;
-        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let a = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
             .await
             .unwrap();
@@ -629,7 +716,9 @@ mod tests {
     #[tokio::test]
     async fn claim_pools_for_extension_lifts_row_after_bump() {
         let pool = test_pool().await;
-        let a = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let a = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
             .await
             .unwrap();
@@ -655,7 +744,9 @@ mod tests {
         // Insert several expiring pools.
         let mut ids = Vec::new();
         for i in 0..6 {
-            let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+            let acc = create_account(&pool, &AppId::INTERNAL, None, None)
+                .await
+                .unwrap();
             set_storage_pool(&pool, &acc.id, &format!("0x{i:03}"), 10, 1_000, 0)
                 .await
                 .unwrap();
@@ -734,7 +825,9 @@ mod tests {
     #[tokio::test]
     async fn bump_pool_end_epoch_updates_only_end_epoch() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &account.id, "0xabc", 42, 1_000, 400)
             .await
             .unwrap();
@@ -753,7 +846,9 @@ mod tests {
     #[tokio::test]
     async fn bump_pool_end_epoch_does_not_regress() {
         let pool = test_pool().await;
-        let account = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let account = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         set_storage_pool(&pool, &account.id, "0xabc", 100, 1_000, 400)
             .await
             .unwrap();
@@ -796,7 +891,7 @@ mod tests {
     #[tokio::test]
     async fn list_account_summaries_by_app_returns_zero_count_for_no_keys() {
         let pool = test_pool().await;
-        let acc = create_account(&pool, &AppId::INTERNAL, Some("alpha"))
+        let acc = create_account(&pool, &AppId::INTERNAL, Some("alpha"), None)
             .await
             .unwrap();
 
@@ -812,7 +907,9 @@ mod tests {
     #[tokio::test]
     async fn list_account_summaries_by_app_counts_active_keys() {
         let pool = test_pool().await;
-        let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let acc = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         mint_key(&pool, &acc.id, "api").await;
         mint_key(&pool, &acc.id, "api").await;
 
@@ -826,7 +923,9 @@ mod tests {
     #[tokio::test]
     async fn list_account_summaries_by_app_excludes_revoked_keys() {
         let pool = test_pool().await;
-        let acc = create_account(&pool, &AppId::INTERNAL, None).await.unwrap();
+        let acc = create_account(&pool, &AppId::INTERNAL, None, None)
+            .await
+            .unwrap();
         let id1 = mint_key(&pool, &acc.id, "api").await;
         mint_key(&pool, &acc.id, "api").await;
 
@@ -850,10 +949,10 @@ mod tests {
         let app_b = crate::db::apps::create_app(&pool, "app-b", "b@example.com")
             .await
             .unwrap();
-        let acc_a = create_account(&pool, &app_a.id, Some("for-a"))
+        let acc_a = create_account(&pool, &app_a.id, Some("for-a"), None)
             .await
             .unwrap();
-        let _acc_b = create_account(&pool, &app_b.id, Some("for-b"))
+        let _acc_b = create_account(&pool, &app_b.id, Some("for-b"), None)
             .await
             .unwrap();
 
