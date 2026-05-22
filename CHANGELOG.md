@@ -1,36 +1,143 @@
 # Changelog
 
-## [Unreleased]
+## [0.11.0] - 2026-05-22
+
+### Breaking Changes
+- `PUT /api/v1/buckets/{bucket}/blobs/{key}` (and S3 `PutObject`)
+  now returns **413 Payload Too Large** with a structured
+  `payload_too_large` block (`unencoded_size_bytes`, `n_shards`,
+  `max_unencoded_bytes_for_network`) when the upload exceeds the
+  Walrus encoder's per-network ceiling. v0.10.2 returned an
+  opaque 500. Clients that retried on 5xx must add 413 to their
+  handled set.
+- `DELETE /api/v1/buckets/{bucket}/blobs/{key}` (and S3
+  `DeleteObject`) now performs the on-chain `delete_pooled_blob`
+  **before** the DB row delete. On
+  `BlobStoreError::InsufficientBalance` the route returns
+  **402 Payment Required** with a `funding_required` body and
+  leaves the DB row intact for retry; v0.10.2 swallowed the
+  on-chain error and returned 204. Other on-chain delete errors
+  are still swallowed to preserve idempotent-DELETE semantics
+  (now counted in `oyster_delete_db_only_total{reason=…}`).
+- `PUT /api/v1/buckets/{bucket}/blobs/{key}` now returns
+  **409 Conflict** (S3: `NoSuchBucket`) when
+  `DELETE /buckets/{bucket}` races with an in-flight upload;
+  v0.10.2 returned 500. The just-registered `PooledBlob` is
+  best-effort compensated before the 409 is returned (see
+  `oyster_post_store_compensation_total`).
+- Postgres migration **018_max_unencoded_bytes** widens
+  `accounts.pool_end_epoch`, `pool_reserved_encoded_bytes`, and
+  `pool_used_encoded_bytes` from `INTEGER` to `BIGINT`. Required —
+  Rust binds these as `i64` and overflows `INTEGER` past ~2 GB.
+  SQLite is dynamic-typed; the matching SQLite migration only
+  adds the new column. Run all migrations before resuming
+  traffic.
 
 ### Added
 - Per-account `max_unencoded_bytes` storage cap (default
-  `5 × 10⁹`). Migration `018_max_unencoded_bytes` adds the column
-  and widens `pool_end_epoch` / `pool_reserved_encoded_bytes` /
-  `pool_used_encoded_bytes` to `BIGINT` on Postgres. The upload
-  path short-circuits 400 with a structured `cap_exceeded` body
-  before any on-chain work; `BlobStoreError::CapExceeded` is the
-  new variant.
+  `5 × 10⁹` bytes). Enforced before any on-chain work on
+  `PUT /buckets/{bucket}/blobs/{key}` and S3 `PutObject`;
+  over-cap uploads return **400** with a structured
+  `cap_exceeded` block (`max_unencoded_bytes`,
+  `used_encoded_bytes`, `new_unencoded_bytes`, `admin_endpoint`).
+  S3 surface mirrors the message as `EntityTooLarge` (400).
+  Migration `018_max_unencoded_bytes` adds the column with a
+  `NOT NULL DEFAULT 5_000_000_000` backfill.
 - `POST /api/v1/accounts` accepts optional `max_unencoded_bytes`
   (rejected with 400 when `≤ 0`).
-- `PUT /api/v1/accounts/{account_id}/max-storage` admin endpoint
-  for raising/lowering the cap. When a pool exists and the new
-  cap is lower, Oyster reads on-chain truth, rejects 400 with a
-  `would_orphan` block if lowering would orphan data, otherwise
-  submits a Pearl-signed `decrease_storage_pool_capacity_by_size`
-  PTB. A concurrent-upload race surfaces as 400 with a
+- `PUT /api/v1/accounts/{account_id}/max-storage` admin endpoint.
+  When no pool exists yet, only the DB cap is updated. When a
+  pool exists, Oyster reads on-chain `reserved_encoded` /
+  `used_encoded`, rejects 400 with a `would_orphan` block if
+  lowering would orphan stored data, and otherwise submits a
+  Pearl-signed `decrease_storage_pool_capacity_by_size` PTB. A
+  concurrent-upload race surfaces as 400 with a
   `shrink_aborted` block carrying the chain's MoveAbort
-  description. New `account.max_storage_updated` audit event.
-- Auto-grow + one-time retry on `register_pooled_blobs` aborting
-  with `storage_pool::add_blob` code 6 (`EInsufficientCapacity`).
-  Reconciles DB pool counters to on-chain `StoragePoolInnerV1`
-  (read via gRPC `StateService.ListDynamicFields`) before
-  recomputing `grow_by` and resubmitting. Handles cross-replica
-  drift without process-local locking.
+  description. Returns the post-shrink on-chain pool snapshot
+  and the shrink tx digest. New `account.max_storage_updated`
+  audit event records old/new cap + the shrink digest.
+- Auto-grow + one-time retry on `register_pooled_blobs` PTB
+  aborts with `storage_pool::add_blob` code 6
+  (`EInsufficientCapacity`). Reconciles DB pool counters to
+  on-chain `StoragePoolInnerV1` (read via gRPC
+  `StateService.ListDynamicFields`) before recomputing `grow_by`
+  and resubmitting once. Handles cross-replica drift without
+  process-local locking.
+- Self-heal for `register_pooled_blobs` PTB aborts with
+  `dynamic_field::add` code 0 (`EFieldAlreadyExists`): Oyster
+  recovers the existing `PooledBlob` ObjectID off-chain and
+  returns success instead of 502. Covers TOCTOU dedup races and
+  recovers on-chain orphans left behind by failed delete txs
+  whose DB rows were dropped to preserve idempotent DELETE. New
+  metric
+  `oyster_register_dedup_self_heal_total{cause=db_miss|orphan_recovered}`.
+- Post-store DB-failure compensation: if `insert_blob` or
+  `replace_all_tags` fails after the on-chain register PTB has
+  already landed, run a bounded compensating on-chain delete (3
+  attempts, 100 ms + 250 ms back-off). Failed compensations land
+  in the new `dead_letter_orphans` table (migration `019`) for a
+  future reaper. New metric
+  `oyster_post_store_compensation_total{outcome=ok|failed}`.
+- Move-abort visibility on failed Sui transactions: a new
+  `SignAndSubmitError::ExecutionFailure(TxExecutionFailure)`
+  carries the digest, proto `ExecutionErrorKind`, and (when
+  present) the typed `MoveAbort` with module/function and abort
+  code, plus an `is_move_abort(module, function, code)`
+  predicate for callers to dispatch on. A failing register PTB
+  now logs a tracing warning naming `storage_pool::add_blob` and
+  the abort code instead of falling through to the misleading
+  "no PooledBlobRegistered event" branch.
+- New Prometheus metrics:
+  `oyster_payload_too_large_responses_total{reason=body_limit|encoder_ceiling}`,
+  `oyster_register_dedup_self_heal_total{cause=…}`,
+  `oyster_post_store_compensation_total{outcome=…}`,
+  `oyster_delete_db_only_total{reason=upstream_error|internal_error|other}`.
+- New `BlobStoreError` variants: `CapExceeded` (400),
+  `PayloadTooLarge` (413). New `AppError` variants:
+  `MaxStorageWouldOrphan` (400), `MaxStorageShrinkAborted`
+  (400). All four carry structured response blocks documented in
+  OpenAPI.
 - `BlobStoreError::InsufficientBalance` now propagates out of
   `delete_blob` (JSON) and `delete_object` (S3) as 402 with the
   `funding_required` body; the DB row is left intact so the
-  caller can fund and retry. Other on-chain delete errors are
-  still swallowed to preserve idempotent-delete semantics.
+  caller can fund and retry.
+- Manual-test scenario in `scripts/manual-test.py` exercising
+  the per-account storage cap (rejection → admin raises cap →
+  re-upload succeeds → restore default).
+
+### Changed
+- Sui transaction execution migrated from JSON-RPC
+  `quorum_driver_api` to gRPC
+  `sui_rpc::Client::execute_transaction_and_wait_for_checkpoint`.
+  Same `SUI_RPC_URL` drives both protocols (Mysten fullnodes and
+  the in-process test cluster serve both on the same endpoint).
+  Reads still go over JSON-RPC. No behaviour change on the
+  success path. Workspace adds `sui-rpc` and `prost-types` deps.
+- Account JSON now includes `max_unencoded_bytes`.
+
+### Fixed
+- Walrus encoder `DataTooLargeError` no longer surfaces as an
+  opaque 500. Both JSON and S3 paths now return 413 with
+  structured detail so clients can distinguish mis-sized traffic
+  from encoder regressions.
+- `DELETE /buckets/{bucket}` racing with an in-flight upload no
+  longer leaks an on-chain `PooledBlob` (compensated before the
+  409 is returned).
+- A `register_pooled_blobs` PTB that aborts with
+  `EFieldAlreadyExists` no longer returns 502; the existing
+  on-chain `PooledBlob` is recovered.
+- A `register_pooled_blobs` PTB that aborts with
+  `EInsufficientCapacity` due to cross-replica DB-counter drift
+  no longer requires operator intervention; Oyster reconciles
+  and retries once.
+
+### Database
+- New migrations on both SQLite and Postgres:
+  `018_max_unencoded_bytes` (adds `accounts.max_unencoded_bytes
+  BIGINT NOT NULL DEFAULT 5000000000`; Postgres also widens
+  three `pool_*` columns to `BIGINT`) and
+  `019_dead_letter_orphans` (creates `dead_letter_orphans` table
+  for orphan-cleanup bookkeeping).
 
 ## [0.10.2] - 2026-05-21
 

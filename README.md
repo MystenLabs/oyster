@@ -210,7 +210,7 @@ the `DATABASE_URL` connection string. Migrations are per backend under `crates/o
 - `migrations/postgres/001_initial.sql`
 
 Tables: `accounts`, `api_keys`, `s3_access_keys`, `apps`, `app_admin_keys`, `buckets`, `blobs`,
-`blob_tags`, `audit_events`.
+`blob_tags`, `audit_events`, `dead_letter_orphans`.
 
 ### Configuration
 
