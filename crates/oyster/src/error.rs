@@ -109,6 +109,7 @@ pub enum AppError {
 /// | `BlobStore(UpstreamStatus)`          | passthrough 4xx, mask 5xx → 502 |
 /// | `BlobStore(PoolCreationFailed)`      | 502 |
 /// | `BlobStore(CapExceeded)`             | 400, body carries `cap_exceeded` block |
+/// | `BlobStore(PayloadTooLarge)`         | 413, body carries `payload_too_large` block |
 /// | `BlobStore(Database)`                | 500 |
 /// | `MaxStorageWouldOrphan`              | 400, body carries `would_orphan` block |
 /// | `MaxStorageShrinkAborted`            | 400, body carries `shrink_aborted` block |
@@ -149,6 +150,37 @@ impl IntoResponse for AppError {
                     serde_json::to_value(amount).expect("FundingAmount Serialize is infallible");
             }
             return (StatusCode::PAYMENT_REQUIRED, axum::Json(body)).into_response();
+        }
+
+        if let AppError::BlobStore(BlobStoreError::PayloadTooLarge {
+            unencoded_size,
+            n_shards,
+            max_unencoded_for_network,
+        }) = &self
+        {
+            metrics::counter!(
+                crate::metrics::PAYLOAD_TOO_LARGE_RESPONSES_TOTAL,
+                "reason" => "encoder_ceiling",
+            )
+            .increment(1);
+            tracing::warn!(
+                unencoded_size,
+                n_shards,
+                max_unencoded_for_network,
+                "payload too large: encoder ceiling exceeded",
+            );
+            let body = serde_json::json!({
+                "error": format!(
+                    "payload too large: unencoded_size {unencoded_size} exceeds \
+                     per-network max_unencoded_bytes_for_network {max_unencoded_for_network}"
+                ),
+                "payload_too_large": {
+                    "unencoded_size_bytes": unencoded_size,
+                    "n_shards": n_shards,
+                    "max_unencoded_bytes_for_network": max_unencoded_for_network,
+                },
+            });
+            return (StatusCode::PAYLOAD_TOO_LARGE, axum::Json(body)).into_response();
         }
 
         // CapExceeded carries a structured `cap_exceeded` block, so it
@@ -237,7 +269,14 @@ impl IntoResponse for AppError {
             AppError::Conflict(_) => (StatusCode::CONFLICT, self.to_string()),
             AppError::ServiceUnavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, self.to_string()),
             AppError::NotImplemented => (StatusCode::NOT_IMPLEMENTED, self.to_string()),
-            AppError::PayloadTooLarge => (StatusCode::PAYLOAD_TOO_LARGE, self.to_string()),
+            AppError::PayloadTooLarge => {
+                metrics::counter!(
+                    crate::metrics::PAYLOAD_TOO_LARGE_RESPONSES_TOTAL,
+                    "reason" => "body_limit",
+                )
+                .increment(1);
+                (StatusCode::PAYLOAD_TOO_LARGE, self.to_string())
+            }
             AppError::PreconditionFailed => (StatusCode::PRECONDITION_FAILED, self.to_string()),
             AppError::NotModified => unreachable!(),
             AppError::Internal(e) => {
@@ -265,6 +304,9 @@ impl IntoResponse for AppError {
                 BlobStoreError::CapExceeded { .. } => {
                     unreachable!("CapExceeded handled earlier so we can attach cap_exceeded block")
                 }
+                BlobStoreError::PayloadTooLarge { .. } => unreachable!(
+                    "PayloadTooLarge handled earlier so we can attach payload_too_large block"
+                ),
                 BlobStoreError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
                 BlobStoreError::InvalidBlobId(_) => (StatusCode::BAD_REQUEST, self.to_string()),
                 BlobStoreError::PoolCreationFailed(msg) => {
@@ -444,6 +486,26 @@ mod tests {
         assert_eq!(block["max_unencoded_bytes"].as_i64(), Some(1_000));
         assert_eq!(block["used_encoded_bytes"].as_i64(), Some(9_999));
         assert_eq!(block["threshold_encoded"].as_i64(), Some(5_000));
+    }
+
+    #[tokio::test]
+    async fn payload_too_large_maps_to_413_with_block() {
+        let err = AppError::BlobStore(BlobStoreError::PayloadTooLarge {
+            unencoded_size: 10_000_000,
+            n_shards: 10,
+            max_unencoded_for_network: 1_500_000,
+        });
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+        let body = read_json_body(resp).await;
+        let block = &body["payload_too_large"];
+        assert!(!block.is_null(), "missing payload_too_large block: {body}");
+        assert_eq!(block["unencoded_size_bytes"].as_u64(), Some(10_000_000));
+        assert_eq!(block["n_shards"].as_u64(), Some(10));
+        assert_eq!(
+            block["max_unencoded_bytes_for_network"].as_u64(),
+            Some(1_500_000),
+        );
     }
 
     #[tokio::test]

@@ -446,9 +446,18 @@ impl DirectWalrusBlobStore {
         // are server-internal (RS2 encoder invariant), not upstream.
         let encoding_config = self.node_client.encoding_config();
         let encoding = encoding_config.get_for_type(walrus_core::EncodingType::RS2);
-        let (sliver_pairs, metadata) = encoding
-            .encode_with_metadata(data.to_vec())
-            .map_err(|e| BlobStoreError::Internal(format!("encoding error: {e}")))?;
+        let (sliver_pairs, metadata) =
+            encoding.encode_with_metadata(data.to_vec()).map_err(|_e| {
+                let n_shards = encoding_config.n_shards();
+                BlobStoreError::PayloadTooLarge {
+                    unencoded_size: data.len() as u64,
+                    n_shards: n_shards.get(),
+                    max_unencoded_for_network: walrus_core::encoding::max_blob_size_for_n_shards(
+                        n_shards,
+                        walrus_core::EncodingType::RS2,
+                    ),
+                }
+            })?;
 
         let blob_obj_metadata = BlobObjectMetadata::try_from(&metadata)
             .map_err(|e| BlobStoreError::Internal(format!("blob metadata error: {e}")))?;

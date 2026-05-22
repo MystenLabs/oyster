@@ -378,6 +378,29 @@ pub struct InsufficientBalanceErrorResponse {
     pub funding_required: Option<FundingAmount>,
 }
 
+/// Body returned with a 413 Payload Too Large when an upload
+/// exceeds the network's per-blob encoder ceiling. Distinct from
+/// the static `MAX_BLOB_SIZE` body-limit 413 (which has no structured
+/// `payload_too_large` block).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PayloadTooLargeErrorResponse {
+    /// Human-readable error message.
+    pub error: String,
+    /// Structured details for the encoder-ceiling case.
+    pub payload_too_large: PayloadTooLargeDetails,
+}
+
+/// Details accompanying a 413 from the encoder-ceiling path.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PayloadTooLargeDetails {
+    /// Size of the rejected upload, in unencoded bytes.
+    pub unencoded_size_bytes: u64,
+    /// Number of shards in the network's encoding config.
+    pub n_shards: u16,
+    /// Per-network maximum unencoded blob size at this `n_shards`.
+    pub max_unencoded_bytes_for_network: u64,
+}
+
 /// Wallet information for an account.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WalletResponse {

@@ -7578,6 +7578,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "walrus-core",
  "walrus-sdk",
  "walrus-service",
  "walrus-sui",

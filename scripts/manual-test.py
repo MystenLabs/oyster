@@ -945,6 +945,28 @@ def scenario_storage_cap(base, auth, ctx):
             created_keys.append(key)
         if extra_ok:
             ok("two additional uploads under raised cap also accepted")
+
+        # 7) PUT a 4 MiB blob — above the local testbed's ≈ 1.5 MiB encoder
+        #    ceiling at n_shards=10. Must 413 with payload_too_large block,
+        #    not 500. If the testbed n_shards changes, this constant needs
+        #    updating; see `walrus_core::encoding::max_blob_size_for_n_shards`.
+        oversize = os.urandom(4 * 1024 * 1024)
+        status, _, body = request(
+            "PUT",
+            f"{base}/api/v1/buckets/{bucket}/blobs/oversize.bin",
+            body=oversize, headers=put_hdrs,
+        )
+        if status != 413:
+            fail(f"PUT oversize returned {status} (expected 413): {body!r}")
+            passed = False
+        else:
+            parsed = json_body(body) or {}
+            block = parsed.get("payload_too_large")
+            if not block or block.get("unencoded_size_bytes") != len(oversize):
+                fail(f"413 missing/incomplete payload_too_large block: {parsed!r}")
+                passed = False
+            else:
+                ok("oversize PUT -> 413 with payload_too_large block")
     finally:
         # 7) Cleanup: drain blobs, delete bucket, restore cap.
         for key in created_keys:

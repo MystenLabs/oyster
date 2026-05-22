@@ -41,6 +41,7 @@ predicates = "3.1.4"
 tempfile = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-credential-types = { workspace = true }
+walrus-core.workspace = true
 
 [dev-dependencies]
 oyster-cli = { path = "../oyster-cli" }

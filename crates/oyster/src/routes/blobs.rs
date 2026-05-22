@@ -20,6 +20,7 @@ use crate::{
         PaginatedResponse,
         PaginationParams,
         PatchTagsRequest,
+        PayloadTooLargeErrorResponse,
         PutTagsRequest,
         StoreBlobResponse,
         UpdateBlobMetadataRequest,
@@ -135,7 +136,14 @@ fn check_json_conditions(
             body = InsufficientBalanceErrorResponse,
         ),
         (status = 404, description = "Bucket not found", body = ErrorResponse),
-        (status = 413, description = "Payload too large", body = ErrorResponse),
+        (
+            status = 413,
+            description = "Payload too large. Either the body exceeded the static \
+                MAX_BLOB_SIZE cap (no structured body) or the upload exceeded the \
+                Walrus encoder's per-blob ceiling for this network's n_shards \
+                (body carries a `payload_too_large` block).",
+            body = PayloadTooLargeErrorResponse,
+        ),
     ),
 )]
 /// Upload a blob into a bucket at the given key. The request body is the raw binary content. Uploading to the same key overwrites.

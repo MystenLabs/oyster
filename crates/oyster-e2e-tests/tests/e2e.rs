@@ -1144,3 +1144,67 @@ fn admin_lower_cap_rejects_when_would_orphan() {
         assert_eq!(stored_cap, Some(5_000_000_000));
     });
 }
+
+/// PUT a blob larger than the Walrus encoder's per-blob ceiling for the
+/// network's `n_shards` and confirm the upload is rejected with 413 +
+/// a structured `payload_too_large` block (rather than a 500 internal
+/// error). Exercises the encode-step error mapping in
+/// `DirectWalrusBlobStore::store_impl`.
+#[test]
+fn e2e_store_blob_over_encoder_ceiling_returns_413() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("oversize-app").await;
+        // Generous cap so the storage-cap check doesn't trip first.
+        let (_account_id, api_key) =
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "oversize-bucket").await;
+
+        // Look up the network's `n_shards` so we know exactly which
+        // encoder ceiling to step over.
+        let read_client = oyster::sui_transaction::build_sui_read_client(
+            &harness.rpc_url,
+            harness.system_object,
+            harness.staking_object,
+        )
+        .await
+        .expect("read client");
+        use walrus_sui::client::ReadClient as _;
+        let n_shards = read_client.n_shards().await.expect("n_shards");
+        let max_blob = walrus_core::encoding::max_blob_size_for_n_shards(
+            n_shards,
+            walrus_core::EncodingType::RS2,
+        );
+        // Margin above the boundary for symbol-size rounding.
+        let over = max_blob + 16 * 1024;
+
+        let req = Request::put(format!("/api/v1/buckets/{bucket_id}/blobs/oversize.bin"))
+            .header("authorization", format!("Bearer {api_key}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(vec![0u8; over as usize]))
+            .unwrap();
+        let (status, body) = json_response(app, req).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "expected 413, got {status}: {body}",
+        );
+        let block = &body["payload_too_large"];
+        assert!(!block.is_null(), "missing payload_too_large block: {body}");
+        assert_eq!(
+            block["unencoded_size_bytes"].as_u64(),
+            Some(over),
+            "body={body}",
+        );
+        assert_eq!(
+            block["n_shards"].as_u64(),
+            Some(u64::from(n_shards.get())),
+            "body={body}",
+        );
+    });
+}

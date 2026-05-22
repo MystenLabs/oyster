@@ -43,6 +43,10 @@ struct SpyBlobStore {
     /// without touching the inner store. Used to exercise error
     /// propagation paths.
     next_delete_error: Mutex<Option<BlobStoreError>>,
+    /// If `Some(err)`, the next `store()` call returns `err` (taken)
+    /// without touching the inner store. Used to exercise error
+    /// propagation paths from the upload route.
+    next_store_error: Mutex<Option<BlobStoreError>>,
 }
 
 impl SpyBlobStore {
@@ -52,6 +56,7 @@ impl SpyBlobStore {
             calls: Mutex::new(Vec::new()),
             delete_calls: Mutex::new(Vec::new()),
             next_delete_error: Mutex::new(None),
+            next_store_error: Mutex::new(None),
         }
     }
 
@@ -66,6 +71,10 @@ impl SpyBlobStore {
     fn fail_next_delete(&self, err: BlobStoreError) {
         *self.next_delete_error.lock().unwrap() = Some(err);
     }
+
+    fn fail_next_store(&self, err: BlobStoreError) {
+        *self.next_store_error.lock().unwrap() = Some(err);
+    }
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -77,6 +86,9 @@ impl BlobStore for SpyBlobStore {
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         self.calls.lock().unwrap().push(*account_id);
+        if let Some(err) = self.next_store_error.lock().unwrap().take() {
+            return Box::pin(async move { Err(err) });
+        }
         self.inner.store(data, account_id)
     }
 
@@ -1255,6 +1267,42 @@ async fn delete_blob_propagates_insufficient_balance_as_402() {
     let blobs = body["data"].as_array().unwrap();
     assert_eq!(blobs.len(), 1, "expected the blob row to be intact");
     assert_eq!(blobs[0]["key"].as_str().unwrap(), blob_key);
+}
+
+#[tokio::test]
+async fn store_blob_propagates_payload_too_large_as_413() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "ptl-test").await;
+
+    spy.fail_next_store(BlobStoreError::PayloadTooLarge {
+        unencoded_size: 10_000_000,
+        n_shards: 10,
+        max_unencoded_for_network: 1_500_000,
+    });
+
+    let (status, body) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/oversize.bin"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(b"tiny".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    let block = &body["payload_too_large"];
+    assert!(!block.is_null(), "missing payload_too_large block: {body}");
+    assert_eq!(block["unencoded_size_bytes"].as_u64(), Some(10_000_000));
+    assert_eq!(block["n_shards"].as_u64(), Some(10));
+    assert_eq!(
+        block["max_unencoded_bytes_for_network"].as_u64(),
+        Some(1_500_000),
+    );
 }
 
 #[tokio::test]

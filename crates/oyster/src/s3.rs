@@ -151,6 +151,34 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             err.set_status_code(hyper::StatusCode::BAD_REQUEST);
             err
         }
+        BlobStoreError::PayloadTooLarge {
+            unencoded_size,
+            n_shards,
+            max_unencoded_for_network,
+        } => {
+            tracing::warn!(
+                unencoded_size,
+                n_shards,
+                max_unencoded_for_network,
+                "s3 payload too large: encoder ceiling exceeded",
+            );
+            metrics::counter!(
+                crate::metrics::PAYLOAD_TOO_LARGE_RESPONSES_TOTAL,
+                "reason" => "encoder_ceiling",
+            )
+            .increment(1);
+            let body = format!(
+                "payload too large: unencoded_size={unencoded_size}, \
+                 n_shards={n_shards}, \
+                 max_unencoded_bytes_for_network={max_unencoded_for_network}"
+            );
+            let mut err = S3Error::with_message(
+                S3ErrorCode::Custom(bytestring::ByteString::from("EntityTooLarge")),
+                body,
+            );
+            err.set_status_code(hyper::StatusCode::PAYLOAD_TOO_LARGE);
+            err
+        }
         BlobStoreError::Database(ref db_err) => {
             tracing::error!(error = %db_err, "blob store database error");
             S3Error::with_message(S3ErrorCode::InternalError, db_err.to_string())

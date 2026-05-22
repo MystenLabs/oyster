@@ -124,6 +124,23 @@ pub enum BlobStoreError {
         /// Unencoded size of the new blob the caller tried to upload.
         new_unencoded_bytes: u64,
     },
+    /// Upload exceeded the Walrus encoder's per-blob ceiling for the
+    /// network's `n_shards`. Surfaced from the encode step in
+    /// `DirectWalrusBlobStore::store_impl` before any on-chain work,
+    /// and maps to 413 Payload Too Large.
+    #[error(
+        "payload too large: unencoded_size {unencoded_size} > \
+         max_unencoded_bytes_for_network {max_unencoded_for_network} (n_shards={n_shards})"
+    )]
+    PayloadTooLarge {
+        /// Size of the blob the caller attempted to upload, in unencoded bytes.
+        unencoded_size: u64,
+        /// Number of shards in the network's encoding config.
+        n_shards: u16,
+        /// Per-network maximum unencoded blob size at this `n_shards`
+        /// (from `walrus_core::encoding::max_blob_size_for_n_shards`).
+        max_unencoded_for_network: u64,
+    },
     /// Error bookkeeping pool/blob state in the Oyster database. Maps to 500.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),

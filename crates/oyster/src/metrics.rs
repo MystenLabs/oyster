@@ -60,6 +60,12 @@ pub const FUNDING_REQUIRED_WEBHOOKS_TOTAL: &str = "oyster_funding_required_webho
 /// labelled by `operation` (e.g. `store_blob`).
 pub const INSUFFICIENT_FUNDS_RESPONSES_TOTAL: &str = "oyster_insufficient_funds_responses_total";
 
+/// Counter: 413 "payload too large" responses, labelled by `reason`
+/// ∈ {`body_limit`, `encoder_ceiling`}. `body_limit` fires when the
+/// upload exceeds the static `MAX_BLOB_SIZE` cap; `encoder_ceiling`
+/// fires when it exceeds the per-`n_shards` Walrus encoder ceiling.
+pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_responses_total";
+
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {
     metrics_exporter_prometheus::PrometheusBuilder::new()
