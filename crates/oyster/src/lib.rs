@@ -2,6 +2,8 @@
 
 /// Strongly-typed account identifier.
 pub mod account_id;
+/// Admin-only on-chain `StoragePool` shrink operations.
+pub mod admin_storage_pool;
 /// Admin-key authentication and app extraction from requests.
 pub mod app_admin;
 /// Strongly-typed app identifier.
@@ -61,6 +63,7 @@ use config::Config;
 pub use funding::FundingAmount;
 use pearl_client::PearlConnection;
 pub use sui_types;
+use walrus_sui::client::SuiReadClient;
 
 /// Shared application state threaded through all Axum handlers.
 #[derive(Clone)]
@@ -71,6 +74,12 @@ pub struct AppState {
     pub blob_store: Arc<dyn BlobStore>,
     /// Optional connection to the Pearl signing service.
     pub pearl: Option<PearlConnection>,
+    /// Optional shared `SuiReadClient` used by admin routes that need
+    /// to read on-chain state (e.g. the `update_max_storage` shrink
+    /// PTB). Populated when the server is configured with Sui +
+    /// Walrus contract IDs; `None` in integration tests and the
+    /// local-only `LocalBlobStore` configuration.
+    pub read_client: Option<Arc<SuiReadClient>>,
     /// Server configuration.
     pub config: Config,
     /// Prometheus metrics handle for rendering scrape output.

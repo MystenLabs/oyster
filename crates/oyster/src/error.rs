@@ -45,6 +45,40 @@ pub enum AppError {
     /// Blob store error (500).
     #[error("blob store error: {0}")]
     BlobStore(#[from] crate::blob_store::BlobStoreError),
+    /// Admin tried to lower `max_unencoded_bytes` to a value that would
+    /// orphan currently-stored data — the on-chain `used_encoded_bytes`
+    /// already exceeds the encoded threshold for the proposed cap (400).
+    #[error(
+        "would orphan stored data: used_encoded_bytes {used_encoded_bytes} > \
+         encoded threshold {threshold_encoded} for max_unencoded_bytes {max_unencoded_bytes}"
+    )]
+    MaxStorageWouldOrphan {
+        /// Proposed new cap, in unencoded bytes.
+        max_unencoded_bytes: i64,
+        /// On-chain encoded usage observed at check time.
+        used_encoded_bytes: i64,
+        /// Encoded-byte threshold computed from `max_unencoded_bytes`
+        /// (forward-encoded via the same `f` as upload-side cap
+        /// enforcement).
+        threshold_encoded: i64,
+    },
+    /// The on-chain shrink PTB aborted (e.g. a race with a concurrent
+    /// upload bumped `used_encoded` above the proposed threshold
+    /// between our pre-check and the PTB landing). Surfaces the chain's
+    /// MoveAbort context so the admin can retry (400).
+    #[error(
+        "shrink PTB aborted ({description}); max_unencoded_bytes={max_unencoded_bytes}, \
+         extract_size={extract_size}"
+    )]
+    MaxStorageShrinkAborted {
+        /// Human-readable description from the gRPC `ExecutionError`.
+        description: String,
+        /// Proposed new cap, in unencoded bytes.
+        max_unencoded_bytes: i64,
+        /// Encoded-byte extract size we attempted to remove from the
+        /// on-chain pool.
+        extract_size: i64,
+    },
 }
 
 /// HTTP-status mapping table for [`AppError`] and its nested
@@ -76,6 +110,8 @@ pub enum AppError {
 /// | `BlobStore(PoolCreationFailed)`      | 502 |
 /// | `BlobStore(CapExceeded)`             | 400, body carries `cap_exceeded` block |
 /// | `BlobStore(Database)`                | 500 |
+/// | `MaxStorageWouldOrphan`              | 400, body carries `would_orphan` block |
+/// | `MaxStorageShrinkAborted`            | 400, body carries `shrink_aborted` block |
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         use crate::blob_store::BlobStoreError;
@@ -144,6 +180,55 @@ impl IntoResponse for AppError {
             return (StatusCode::BAD_REQUEST, axum::Json(body)).into_response();
         }
 
+        // MaxStorageWouldOrphan and MaxStorageShrinkAborted carry
+        // structured blocks similar to CapExceeded — handled up-front
+        // so the generic `(status, message)` arm doesn't strip them.
+        if let AppError::MaxStorageWouldOrphan {
+            max_unencoded_bytes,
+            used_encoded_bytes,
+            threshold_encoded,
+        } = &self
+        {
+            tracing::warn!(
+                max_unencoded_bytes,
+                used_encoded_bytes,
+                threshold_encoded,
+                "max-storage update would orphan stored data",
+            );
+            let body = serde_json::json!({
+                "error": self.to_string(),
+                "would_orphan": {
+                    "max_unencoded_bytes": max_unencoded_bytes,
+                    "used_encoded_bytes": used_encoded_bytes,
+                    "threshold_encoded": threshold_encoded,
+                },
+            });
+            return (StatusCode::BAD_REQUEST, axum::Json(body)).into_response();
+        }
+
+        if let AppError::MaxStorageShrinkAborted {
+            description,
+            max_unencoded_bytes,
+            extract_size,
+        } = &self
+        {
+            tracing::warn!(
+                max_unencoded_bytes,
+                extract_size,
+                description = %description,
+                "max-storage shrink PTB aborted",
+            );
+            let body = serde_json::json!({
+                "error": self.to_string(),
+                "shrink_aborted": {
+                    "move_abort_description": description,
+                    "max_unencoded_bytes": max_unencoded_bytes,
+                    "extract_size": extract_size,
+                },
+            });
+            return (StatusCode::BAD_REQUEST, axum::Json(body)).into_response();
+        }
+
         let (status, message) = match &self {
             AppError::NotFound => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::Unauthorized => (StatusCode::UNAUTHORIZED, self.to_string()),
@@ -162,6 +247,16 @@ impl IntoResponse for AppError {
             AppError::Database(e) => {
                 tracing::error!("database error: {e}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+            }
+            AppError::MaxStorageWouldOrphan { .. } => {
+                unreachable!(
+                    "MaxStorageWouldOrphan handled earlier so we can attach would_orphan block"
+                )
+            }
+            AppError::MaxStorageShrinkAborted { .. } => {
+                unreachable!(
+                    "MaxStorageShrinkAborted handled earlier so we can attach shrink_aborted block"
+                )
             }
             AppError::BlobStore(e) => match e {
                 BlobStoreError::InsufficientBalance { .. } => unreachable!(
@@ -332,5 +427,42 @@ mod tests {
     async fn unreachable_maps_to_502() {
         let err = AppError::BlobStore(BlobStoreError::Unreachable("conn refused".into()));
         assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+    }
+
+    #[tokio::test]
+    async fn max_storage_would_orphan_maps_to_400_with_block() {
+        let err = AppError::MaxStorageWouldOrphan {
+            max_unencoded_bytes: 1_000,
+            used_encoded_bytes: 9_999,
+            threshold_encoded: 5_000,
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = read_json_body(resp).await;
+        let block = &body["would_orphan"];
+        assert!(!block.is_null(), "missing would_orphan block: {body}");
+        assert_eq!(block["max_unencoded_bytes"].as_i64(), Some(1_000));
+        assert_eq!(block["used_encoded_bytes"].as_i64(), Some(9_999));
+        assert_eq!(block["threshold_encoded"].as_i64(), Some(5_000));
+    }
+
+    #[tokio::test]
+    async fn max_storage_shrink_aborted_maps_to_400_with_block() {
+        let err = AppError::MaxStorageShrinkAborted {
+            description: "Move Runtime Abort. Abort Code: 6".into(),
+            max_unencoded_bytes: 2_000,
+            extract_size: 4_096,
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        let body = read_json_body(resp).await;
+        let block = &body["shrink_aborted"];
+        assert!(!block.is_null(), "missing shrink_aborted block: {body}");
+        assert_eq!(
+            block["move_abort_description"].as_str(),
+            Some("Move Runtime Abort. Abort Code: 6"),
+        );
+        assert_eq!(block["max_unencoded_bytes"].as_i64(), Some(2_000));
+        assert_eq!(block["extract_size"].as_i64(), Some(4_096));
     }
 }

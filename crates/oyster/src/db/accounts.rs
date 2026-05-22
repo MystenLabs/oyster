@@ -351,6 +351,26 @@ pub async fn list_account_summaries_by_app(
         .collect())
 }
 
+/// Update the per-account `max_unencoded_bytes` cap. Returns `true`
+/// when a row was matched (i.e. the account exists), `false` otherwise.
+/// Single-column UPDATE — does not touch on-chain pool counters; the
+/// admin route is responsible for keeping the on-chain reservation in
+/// sync.
+pub async fn set_max_unencoded_bytes(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    new_cap: i64,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET max_unencoded_bytes = ? WHERE id = ?",
+    ))
+    .bind(new_cap)
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Bump only `pool_end_epoch` after a successful `extend_storage_pool` PTB.
 /// Leaves reserved/used byte counters untouched.
 pub async fn bump_pool_end_epoch(
@@ -820,6 +840,29 @@ mod tests {
         let pool = test_pool().await;
         let map = fetch_webhook_for_apps(&pool, &[]).await.unwrap();
         assert!(map.is_empty());
+    }
+
+    #[tokio::test]
+    async fn set_max_unencoded_bytes_updates_existing_account() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None, Some(1_000_000))
+            .await
+            .unwrap();
+        let updated = set_max_unencoded_bytes(&pool, &account.id, 2_500_000)
+            .await
+            .unwrap();
+        assert!(updated, "row must be updated");
+        let fetched = get_max_unencoded_bytes(&pool, &account.id).await.unwrap();
+        assert_eq!(fetched, Some(2_500_000));
+    }
+
+    #[tokio::test]
+    async fn set_max_unencoded_bytes_returns_false_for_missing_account() {
+        let pool = test_pool().await;
+        let updated = set_max_unencoded_bytes(&pool, &AccountId::new(), 1_000)
+            .await
+            .unwrap();
+        assert!(!updated);
     }
 
     #[tokio::test]

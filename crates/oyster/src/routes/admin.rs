@@ -5,13 +5,17 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
+use walrus_core::{EncodingType, encoding::encoded_blob_length_for_n_shards};
+use walrus_sui::client::ReadClient as _;
 
 use crate::{
     AccountId,
     AppId,
     AppState,
+    admin_storage_pool::{self, DecreaseError},
     app_admin::AuthenticatedApp,
     auth,
+    blob_store::BlobStoreError,
     db,
     error::AppError,
     models::{
@@ -26,8 +30,12 @@ use crate::{
         CreateAccountResponse,
         CreateApiKeyRequest,
         ErrorResponse,
+        PoolOnChainState,
         SetWebhookUrlRequest,
+        UpdateMaxStorageRequest,
+        UpdateMaxStorageResponse,
     },
+    sui_object_reader,
     validation,
     webhook_keys,
 };
@@ -426,4 +434,276 @@ pub async fn clear_webhook_url(
     .await?;
     tracing::info!(app_id = %auth.app_id, "webhook url cleared");
     Ok(Json(app))
+}
+
+#[utoipa::path(
+    put,
+    path = "/accounts/{account_id}/max-storage",
+    tag = "Admin",
+    security(("bearer" = [])),
+    params(("account_id" = AccountId, Path, description = "Account ID")),
+    request_body(content = UpdateMaxStorageRequest, content_type = "application/json"),
+    responses(
+        (
+            status = 200,
+            description = "Cap updated; response carries the post-update on-chain pool snapshot \
+                           and the shrink tx digest when a shrink was submitted",
+            body = UpdateMaxStorageResponse,
+        ),
+        (status = 400, description = "Invalid request, would orphan data, or shrink aborted", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 404, description = "Account not found", body = ErrorResponse),
+        (status = 503, description = "On-chain shrink unavailable in this configuration", body = ErrorResponse),
+    ),
+)]
+/// Update an account's per-account `max_unencoded_bytes` cap.
+///
+/// Logic:
+/// 1. If the account has no on-chain `StoragePool` yet, just update the DB
+///    cap — no on-chain action is needed because future uploads enforce the
+///    new cap before any lazy-create.
+/// 2. Otherwise read the on-chain pool's
+///    `reserved_encoded_capacity_bytes` / `used_encoded_bytes` and compute
+///    `threshold = f(new_cap)` (same `f` as the upload-side cap check).
+/// 3. If `used_encoded > threshold`, reject 400 — lowering the cap would
+///    orphan currently-stored data.
+/// 4. If `reserved_encoded > threshold`, submit a Pearl-signed
+///    `decrease_storage_pool_capacity_by_size` PTB. The contract's own
+///    assertion guarantees the chain refuses to cut into `used_encoded`,
+///    so a concurrent race surfaces as a structured 400 with the chain's
+///    MoveAbort context.
+/// 5. Persist the new cap and reconcile DB pool counters to the
+///    post-shrink on-chain truth only when the shrink succeeded (or none
+///    was needed).
+pub async fn update_max_storage(
+    State(state): State<AppState>,
+    auth: AuthenticatedApp,
+    Path(account_id): Path<AccountId>,
+    Json(body): Json<UpdateMaxStorageRequest>,
+) -> Result<Json<UpdateMaxStorageResponse>, AppError> {
+    verify_account_ownership(&state.db, &account_id, &auth.app_id).await?;
+    if body.max_unencoded_bytes <= 0 {
+        return Err(AppError::BadRequest(
+            "max_unencoded_bytes must be a positive integer".into(),
+        ));
+    }
+    let new_cap = body.max_unencoded_bytes;
+    let new_cap_u64 = new_cap as u64;
+
+    // Snapshot the old cap before any DB write so the audit event can
+    // record the transition the admin actually requested.
+    let old_cap = db::accounts::get_max_unencoded_bytes(&state.db, &account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    // (1) DB-only fast path: no on-chain pool yet.
+    let pool_state = db::accounts::get_storage_pool(&state.db, &account_id).await?;
+    let Some(pool_state) = pool_state else {
+        let updated =
+            db::accounts::set_max_unencoded_bytes(&state.db, &account_id, new_cap).await?;
+        if !updated {
+            return Err(AppError::NotFound);
+        }
+        record_max_storage_audit(
+            &state.db,
+            &auth.app_id,
+            &auth.admin_key_id,
+            &account_id,
+            old_cap,
+            new_cap,
+            None,
+            None,
+        )
+        .await?;
+        tracing::info!(
+            app_id = %auth.app_id, account_id = %account_id,
+            old_max = old_cap, new_max = new_cap,
+            "max_unencoded_bytes updated (no on-chain pool)",
+        );
+        return Ok(Json(UpdateMaxStorageResponse {
+            account_id,
+            max_unencoded_bytes: new_cap,
+            pool: None,
+            shrink_tx_digest: None,
+        }));
+    };
+
+    // The account has a pool, so we need the SuiReadClient and Pearl
+    // connection to (potentially) submit a shrink PTB. Both are
+    // populated when the server is configured for direct-Walrus mode;
+    // integration tests with no on-chain pool never reach this branch.
+    let read_client = state.read_client.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "on-chain pool shrink requires a SuiReadClient (server is not in direct-Walrus mode)"
+                .into(),
+        )
+    })?;
+    let pearl = state.pearl.as_ref().ok_or_else(|| {
+        AppError::ServiceUnavailable(
+            "on-chain pool shrink requires a Pearl connection (server is not in direct-Walrus mode)"
+                .into(),
+        )
+    })?;
+    let rpc_url = state
+        .config
+        .sui_rpc_url
+        .as_ref()
+        .ok_or_else(|| AppError::ServiceUnavailable("SUI_RPC_URL is not configured".into()))?;
+
+    let pool_object_id: sui_types::base_types::ObjectID =
+        pool_state.object_id.parse().map_err(|e| {
+            AppError::Internal(format!(
+                "invalid stored pool ObjectID {}: {e}",
+                pool_state.object_id
+            ))
+        })?;
+
+    // (2) Read on-chain truth — never trust DB counters here; they
+    // can drift (Phase 2 race) and the cap-orphan check must be exact.
+    let on_chain = sui_object_reader::read_storage_pool_state(rpc_url, pool_object_id)
+        .await
+        .map_err(|e| {
+            AppError::BlobStore(BlobStoreError::Upstream(format!(
+                "read storage pool state: {e}"
+            )))
+        })?;
+    let used_encoded = on_chain.used_encoded_bytes;
+    let mut reserved_encoded = on_chain.reserved_encoded_bytes;
+
+    let n_shards = read_client.n_shards().await.map_err(|e| {
+        AppError::BlobStore(BlobStoreError::Upstream(format!("read n_shards: {e}")))
+    })?;
+    // Same saturating fallback as `storage_cap::enforce_storage_cap`:
+    // if the new cap exceeds the single-blob encoded limit for
+    // `n_shards`, the threshold is effectively `u64::MAX` and no
+    // orphan/shrink is possible.
+    let threshold = encoded_blob_length_for_n_shards(n_shards, new_cap_u64, EncodingType::RS2)
+        .unwrap_or(u64::MAX);
+
+    // (3) Hard 400 if lowering would orphan currently-stored data.
+    if used_encoded > threshold {
+        return Err(AppError::MaxStorageWouldOrphan {
+            max_unencoded_bytes: new_cap,
+            used_encoded_bytes: clamp_u64_to_i64(used_encoded),
+            threshold_encoded: clamp_u64_to_i64(threshold),
+        });
+    }
+
+    // (4) Conditional shrink.
+    let mut shrink_tx_digest: Option<String> = None;
+    if reserved_encoded > threshold {
+        let extract_size = reserved_encoded - threshold;
+        match admin_storage_pool::decrease_storage_pool_capacity(
+            read_client.as_ref(),
+            pearl,
+            rpc_url,
+            &account_id,
+            pool_object_id,
+            extract_size,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                shrink_tx_digest = Some(outcome.tx_digest.to_string());
+                reserved_encoded = reserved_encoded.saturating_sub(extract_size);
+                // Reconcile DB pool counters to on-chain post-shrink
+                // truth so the next upload's `grow_by` math starts
+                // from the right reserved value.
+                db::accounts::reconcile_pool_after_drift(
+                    &state.db,
+                    &account_id,
+                    clamp_u64_to_i64(reserved_encoded),
+                    clamp_u64_to_i64(used_encoded),
+                )
+                .await?;
+            }
+            Err(DecreaseError::WouldOrphan { description, .. }) => {
+                return Err(AppError::MaxStorageShrinkAborted {
+                    description,
+                    max_unencoded_bytes: new_cap,
+                    extract_size: clamp_u64_to_i64(extract_size),
+                });
+            }
+            Err(DecreaseError::Internal(msg)) => {
+                return Err(AppError::Internal(msg));
+            }
+            Err(DecreaseError::Upstream(msg)) => {
+                return Err(AppError::BlobStore(BlobStoreError::Upstream(msg)));
+            }
+        }
+    }
+
+    // (5) Persist the new cap only after the on-chain side succeeded.
+    let updated = db::accounts::set_max_unencoded_bytes(&state.db, &account_id, new_cap).await?;
+    if !updated {
+        return Err(AppError::NotFound);
+    }
+
+    let extract_size_i64 = shrink_tx_digest
+        .as_ref()
+        .map(|_| clamp_u64_to_i64(on_chain.reserved_encoded_bytes - reserved_encoded));
+    record_max_storage_audit(
+        &state.db,
+        &auth.app_id,
+        &auth.admin_key_id,
+        &account_id,
+        old_cap,
+        new_cap,
+        extract_size_i64,
+        shrink_tx_digest.as_deref(),
+    )
+    .await?;
+    tracing::info!(
+        app_id = %auth.app_id, account_id = %account_id,
+        old_max = old_cap, new_max = new_cap,
+        shrink_extract_size = ?extract_size_i64,
+        shrink_tx_digest = ?shrink_tx_digest,
+        "max_unencoded_bytes updated",
+    );
+
+    Ok(Json(UpdateMaxStorageResponse {
+        account_id,
+        max_unencoded_bytes: new_cap,
+        pool: Some(PoolOnChainState {
+            reserved_encoded_bytes: clamp_u64_to_i64(reserved_encoded),
+            used_encoded_bytes: clamp_u64_to_i64(used_encoded),
+        }),
+        shrink_tx_digest,
+    }))
+}
+
+/// Saturate-on-overflow `u64 → i64` for JSON-body fields and DB
+/// `BIGINT` columns. The on-chain counters fit `i64` by construction
+/// in the deployments we care about; this is purely defensive.
+fn clamp_u64_to_i64(v: u64) -> i64 {
+    i64::try_from(v).unwrap_or(i64::MAX)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn record_max_storage_audit(
+    db: &db::DbPool,
+    app_id: &AppId,
+    admin_key_id: &str,
+    account_id: &AccountId,
+    old_max: i64,
+    new_max: i64,
+    shrink_extract_size: Option<i64>,
+    shrink_tx_digest: Option<&str>,
+) -> Result<(), AppError> {
+    db::audit_events::record_audit_event(
+        db,
+        app_id,
+        Some(admin_key_id),
+        "account.max_storage_updated",
+        serde_json::json!({
+            "account_id": account_id.to_string(),
+            "old_max": old_max,
+            "new_max": new_max,
+            "shrink_extract_size": shrink_extract_size,
+            "shrink_tx_digest": shrink_tx_digest,
+        }),
+    )
+    .await?;
+    Ok(())
 }

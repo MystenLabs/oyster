@@ -132,6 +132,7 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: None,
+        read_client: None,
         config,
         metrics_handle: None,
     };
@@ -174,6 +175,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         db: pool.clone(),
         blob_store: blob_store as Arc<dyn BlobStore>,
         pearl: None,
+        read_client: None,
         config,
         metrics_handle: None,
     };
@@ -1032,6 +1034,7 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: Some(pearl),
+        read_client: None,
         config,
         metrics_handle: None,
     };
@@ -1228,6 +1231,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         db: pool,
         blob_store: Arc::new(blob_store),
         pearl: None,
+        read_client: None,
         config,
         metrics_handle: Some(metrics_handle),
     };
@@ -1300,6 +1304,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: None,
+        read_client: None,
         config,
         metrics_handle: None,
     };
@@ -2906,6 +2911,148 @@ async fn admin_default_note_is_api() {
     assert_eq!(entries[0]["note"].as_str().unwrap(), "api");
 }
 
+// ---------------------------------------------------------------------------
+// Admin: update_max_storage
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn update_max_storage_rejects_non_positive() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key).await;
+
+    for invalid in [0i64, -1, -42_000] {
+        let body_str = format!(r#"{{"max_unencoded_bytes": {invalid}}}"#);
+        let (status, body) = json_response(
+            &app,
+            Request::put(format!("/api/v1/accounts/{account_id}/max-storage"))
+                .header("authorization", format!("Bearer {admin_key}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body_str))
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "invalid={invalid} body={body}"
+        );
+        assert!(
+            body["error"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("must be a positive integer"),
+            "missing message: {body}",
+        );
+    }
+}
+
+#[tokio::test]
+async fn update_max_storage_cross_app_forbidden() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_a_id, admin_key_a) = create_test_app_admin_key(&pool).await;
+
+    let app_b = db::apps::create_app(&pool, "max-storage-app-b", "b@example.com")
+        .await
+        .unwrap();
+    let raw_b = auth::generate_api_key();
+    let hash_b = auth::hash_api_key(&raw_b);
+    let prefix_b = auth::key_prefix(&raw_b);
+    db::app_admin_keys::create_admin_key(&pool, &app_b.id, &hash_b, &prefix_b, &raw_b)
+        .await
+        .unwrap();
+
+    let (account_id, _api_key) = create_admin_account(&app, &admin_key_a).await;
+
+    // App B tries to update App A's account → 403.
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/accounts/{account_id}/max-storage"))
+            .header("authorization", format!("Bearer {raw_b}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"max_unencoded_bytes": 1234}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn update_max_storage_unknown_account_returns_404() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+
+    let unknown = oyster::AccountId::new();
+    let (status, _) = json_response(
+        &app,
+        Request::put(format!("/api/v1/accounts/{unknown}/max-storage"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"max_unencoded_bytes": 999}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn update_max_storage_db_only_when_no_pool() {
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let (account_id_str, _api_key) = create_admin_account(&app, &admin_key).await;
+    let account_id: oyster::AccountId = account_id_str.parse().unwrap();
+
+    // Account has no on-chain pool yet — the route must update the
+    // DB cap without attempting any on-chain work. The integration
+    // harness has `read_client = None` and `pearl = None`, so any
+    // attempt to go on-chain would 503 rather than this 200.
+    let new_cap: i64 = 2_500_000;
+    let (status, body) = json_response(
+        &app,
+        Request::put(format!("/api/v1/accounts/{account_id_str}/max-storage"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"max_unencoded_bytes": {new_cap}}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "body={body}");
+    assert_eq!(body["max_unencoded_bytes"].as_i64(), Some(new_cap));
+    assert!(
+        body["pool"].is_null(),
+        "pool should be null when no on-chain pool exists: {body}"
+    );
+    assert!(
+        body["shrink_tx_digest"].is_null(),
+        "shrink_tx_digest should be null when no shrink was needed: {body}",
+    );
+
+    // DB cap is persisted.
+    let cap = db::accounts::get_max_unencoded_bytes(&pool, &account_id)
+        .await
+        .unwrap();
+    assert_eq!(cap, Some(new_cap));
+
+    // Audit row written with the requested transition.
+    let app_id_typed: oyster::AppId = app_id.parse().unwrap();
+    let events = db::audit_events::list_audit_events_by_app(&pool, &app_id_typed)
+        .await
+        .unwrap();
+    let entry = events
+        .iter()
+        .find(|e| e.event_type == "account.max_storage_updated")
+        .expect("audit event written");
+    let parsed: serde_json::Value = serde_json::from_str(&entry.event_data).unwrap();
+    assert_eq!(parsed["account_id"].as_str(), Some(account_id_str.as_str()));
+    // The default account cap is 5_000_000_000.
+    assert_eq!(parsed["old_max"].as_i64(), Some(5_000_000_000));
+    assert_eq!(parsed["new_max"].as_i64(), Some(new_cap));
+    assert!(parsed["shrink_extract_size"].is_null());
+    assert!(parsed["shrink_tx_digest"].is_null());
+}
+
 /// Unreachable blob-store errors (connect/timeout to the Walrus aggregator)
 /// surface as 502 Bad Gateway, not 500 Internal Server Error.
 #[tokio::test]
@@ -3647,6 +3794,7 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         db: pool.clone(),
         blob_store: Arc::new(blob_store),
         pearl: None,
+        read_client: None,
         config,
         metrics_handle: None,
     };
@@ -4152,6 +4300,7 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
                 db: pool.clone(),
                 blob_store: Arc::new(InsufficientStubBlobStore) as Arc<dyn BlobStore>,
                 pearl: None,
+                read_client: None,
                 config,
                 metrics_handle: None,
             };

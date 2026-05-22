@@ -964,3 +964,183 @@ fn over_cap_upload_returns_400_without_submitting_tx() {
         );
     });
 }
+
+/// Helper: PUT a new max_unencoded_bytes cap via the admin endpoint.
+async fn put_max_storage(
+    app: &Router,
+    admin_key: &str,
+    account_id: &str,
+    new_cap: u64,
+) -> (axum::http::StatusCode, Value) {
+    let body = format!(r#"{{"max_unencoded_bytes": {new_cap}}}"#);
+    let req = Request::put(format!("/api/v1/accounts/{account_id}/max-storage"))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    json_response(app, req).await
+}
+
+/// Phase 4: an admin can lower an account's `max_unencoded_bytes`
+/// below the on-chain `reserved_encoded_capacity_bytes` and the route
+/// submits a Pearl-signed `decrease_storage_pool_capacity_by_size` PTB
+/// that shrinks the pool on-chain. The new threshold must stay above
+/// `used_encoded_bytes` so no orphaning is needed.
+#[test]
+fn admin_lower_cap_triggers_on_chain_shrink() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("shrink-app").await;
+        // Generous cap so the first upload doesn't itself trigger a shrink.
+        let (account_id_str, api_key) =
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "shrink-bucket").await;
+
+        // 1. Lazy-create the on-chain StoragePool with a small upload.
+        let _ = put_blob(app, &api_key, &bucket_id, "tiny.txt", b"hello shrink").await;
+
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("pool state after first upload");
+        let pool_object_id = pool_state.object_id.parse().unwrap();
+        let pre =
+            oyster::sui_object_reader::read_storage_pool_state(&harness.rpc_url, pool_object_id)
+                .await
+                .expect("on-chain pool state");
+        let reserved_pre = pre.reserved_encoded_bytes;
+        let used_pre = pre.used_encoded_bytes;
+        assert!(reserved_pre > used_pre, "expect free capacity to shrink");
+
+        // 2. Pick a new (lower) cap that, after forward-encoding,
+        //    fits between `used_encoded` and `reserved_encoded`.
+        //    With n_shards small (test cluster) `encoded_blob_length_for_n_shards`
+        //    may saturate; pick a tiny cap so the threshold lands
+        //    between `used_pre` and `reserved_pre` deterministically.
+        let new_cap: u64 = 1_000; // 1 KB unencoded — encoded threshold easily < reserved
+        let (status, body) = put_max_storage(app, &admin_key, &account_id_str, new_cap).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body={body}");
+        let digest = body["shrink_tx_digest"].as_str();
+        assert!(
+            digest.is_some_and(|d| !d.is_empty()),
+            "expected shrink_tx_digest, body={body}",
+        );
+        let pool_block = &body["pool"];
+        assert!(!pool_block.is_null(), "expected pool block: {body}");
+        let resp_reserved = pool_block["reserved_encoded_bytes"].as_u64().unwrap();
+        assert!(
+            (resp_reserved as i64) < (reserved_pre as i64),
+            "response reserved {resp_reserved} must be < pre {reserved_pre}",
+        );
+
+        // 3. On-chain reservation actually shrank.
+        let post =
+            oyster::sui_object_reader::read_storage_pool_state(&harness.rpc_url, pool_object_id)
+                .await
+                .expect("on-chain pool state post-shrink");
+        assert!(
+            post.reserved_encoded_bytes < reserved_pre,
+            "on-chain reserved must shrink: pre={reserved_pre}, post={}",
+            post.reserved_encoded_bytes,
+        );
+        assert_eq!(
+            post.used_encoded_bytes, used_pre,
+            "used must be unchanged by shrink",
+        );
+
+        // 4. DB cap reflects the new value.
+        let stored_cap = oyster::db::accounts::get_max_unencoded_bytes(&harness.db, &account_id)
+            .await
+            .unwrap();
+        assert_eq!(stored_cap, Some(new_cap as i64));
+
+        // 5. DB pool counters reconciled to on-chain post-shrink truth.
+        let db_pool = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("pool state");
+        assert_eq!(
+            db_pool.reserved_encoded_bytes as u64, post.reserved_encoded_bytes,
+            "DB reserved must match on-chain post-shrink",
+        );
+        assert_eq!(
+            db_pool.used_encoded_bytes as u64, post.used_encoded_bytes,
+            "DB used must match on-chain post-shrink",
+        );
+    });
+}
+
+/// Phase 4: lowering the cap below `used_encoded_bytes` must be
+/// rejected with 400 + `would_orphan` block — no on-chain shrink
+/// submitted, no DB write performed.
+#[test]
+fn admin_lower_cap_rejects_when_would_orphan() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("orphan-app").await;
+        let (account_id_str, api_key) =
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "orphan-bucket").await;
+
+        // Lazy-create the pool with a non-trivial upload so
+        // `used_encoded_bytes` rises above the encoding overhead
+        // floor that `f(1) = encoded_blob_length_for_n_shards(n, 1, RS2)`
+        // returns on the test cluster. With a 100 KiB body, `used >
+        // f(1)` holds and the orphan check fires reliably.
+        let body = vec![b'O'; 100 * 1024];
+        let _ = put_blob(app, &api_key, &bucket_id, "big.bin", &body).await;
+
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("pool state after first upload");
+        let pool_object_id = pool_state.object_id.parse().unwrap();
+        let pre =
+            oyster::sui_object_reader::read_storage_pool_state(&harness.rpc_url, pool_object_id)
+                .await
+                .expect("on-chain pool state");
+
+        // Lower the cap to 1 byte — encoded threshold ≈ 0, certainly
+        // below `used_encoded_bytes`, so the route must 400 with the
+        // `would_orphan` block and never submit a shrink.
+        let (status, body) = put_max_storage(app, &admin_key, &account_id_str, 1).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::BAD_REQUEST,
+            "expected 400, body={body}",
+        );
+        let block = &body["would_orphan"];
+        assert!(!block.is_null(), "missing would_orphan block: {body}");
+        assert_eq!(block["max_unencoded_bytes"].as_i64(), Some(1));
+        assert!(
+            block["used_encoded_bytes"].as_i64().unwrap() > 0,
+            "used_encoded_bytes should be > 0: {block}",
+        );
+
+        // On-chain pool unchanged.
+        let post =
+            oyster::sui_object_reader::read_storage_pool_state(&harness.rpc_url, pool_object_id)
+                .await
+                .expect("on-chain pool state post-rejection");
+        assert_eq!(post.reserved_encoded_bytes, pre.reserved_encoded_bytes);
+        assert_eq!(post.used_encoded_bytes, pre.used_encoded_bytes);
+
+        // DB cap is unchanged (still the original 5 GB).
+        let stored_cap = oyster::db::accounts::get_max_unencoded_bytes(&harness.db, &account_id)
+            .await
+            .unwrap();
+        assert_eq!(stored_cap, Some(5_000_000_000));
+    });
+}

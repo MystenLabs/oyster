@@ -182,6 +182,14 @@ impl OysterTestHarness {
         .await
         .expect("failed to create DirectWalrusBlobStore");
 
+        // Shared read client so the admin `update_max_storage` route
+        // can submit on-chain shrink PTBs against the same Walrus
+        // contracts in e2e tests.
+        let read_client =
+            oyster::sui_transaction::build_sui_read_client(&rpc_url, system_object, staking_object)
+                .await
+                .expect("failed to build SuiReadClient for e2e harness");
+
         let config = Config {
             bind_addr: "unused".into(),
             database_url: "sqlite::memory:".into(),
@@ -189,9 +197,15 @@ impl OysterTestHarness {
             pearl_grpc_url: Some("in-process".into()),
             pearl_service_secret: PEARL_SECRET.into(),
 
-            sui_rpc_url: None,
-            walrus_system_object: None,
-            walrus_staking_object: None,
+            // Populated for the admin `update_max_storage` route, which
+            // uses these to read on-chain pool state and submit shrink
+            // PTBs. Other code paths that conditionally choose between
+            // direct-Walrus and local-only modes don't run in the
+            // e2e harness because the blob store is constructed
+            // explicitly above.
+            sui_rpc_url: Some(rpc_url.clone()),
+            walrus_system_object: Some(system_object_str.clone()),
+            walrus_staking_object: Some(staking_object_str.clone()),
             pool_initial_epochs_ahead: 1,
             pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
             pool_extend_epochs: 1,
@@ -208,6 +222,7 @@ impl OysterTestHarness {
             db: oyster_db.clone(),
             blob_store: Arc::new(blob_store) as Arc<dyn BlobStore>,
             pearl: Some(pearl.clone()),
+            read_client: Some(read_client),
             config,
             metrics_handle: None,
         };

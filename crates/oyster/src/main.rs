@@ -130,40 +130,54 @@ async fn main() {
         Command::Serve => {
             tracing::info!("starting oyster server on {}", config.bind_addr);
 
-            let blob_store: Arc<dyn oyster::blob_store::BlobStore> =
-                if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj)) = (
-                    &pearl,
-                    &config.sui_rpc_url,
-                    &config.walrus_system_object,
-                    &config.walrus_staking_object,
-                ) {
-                    use sui_types::base_types::ObjectID;
-                    let system_object: ObjectID =
-                        sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
-                    let staking_object: ObjectID =
-                        stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
-                    tracing::info!("using direct Walrus blob store (sui_rpc_url={rpc_url})");
-                    Arc::new(
-                        DirectWalrusBlobStore::new(
-                            rpc_url.clone(),
-                            system_object,
-                            staking_object,
-                            pearl_conn.clone(),
-                            db.clone(),
-                            config.pool_initial_encoded_capacity_bytes,
-                            config.pool_initial_epochs_ahead,
-                        )
+            let (blob_store, read_client): (
+                Arc<dyn oyster::blob_store::BlobStore>,
+                Option<Arc<walrus_sui::client::SuiReadClient>>,
+            ) = if let (Some(pearl_conn), Some(rpc_url), Some(sys_obj), Some(stk_obj)) = (
+                &pearl,
+                &config.sui_rpc_url,
+                &config.walrus_system_object,
+                &config.walrus_staking_object,
+            ) {
+                use sui_types::base_types::ObjectID;
+                let system_object: ObjectID =
+                    sys_obj.parse().expect("invalid WALRUS_SYSTEM_OBJECT");
+                let staking_object: ObjectID =
+                    stk_obj.parse().expect("invalid WALRUS_STAKING_OBJECT");
+                tracing::info!("using direct Walrus blob store (sui_rpc_url={rpc_url})");
+                // Build a shared SuiReadClient up-front so the admin
+                // update_max_storage route can issue on-chain shrink
+                // PTBs without re-initializing it per request.
+                let read_client = oyster::sui_transaction::build_sui_read_client(
+                    rpc_url,
+                    system_object,
+                    staking_object,
+                )
+                .await
+                .expect("failed to build SuiReadClient");
+                let blob_store: Arc<dyn oyster::blob_store::BlobStore> = Arc::new(
+                    DirectWalrusBlobStore::new(
+                        rpc_url.clone(),
+                        system_object,
+                        staking_object,
+                        pearl_conn.clone(),
+                        db.clone(),
+                        config.pool_initial_encoded_capacity_bytes,
+                        config.pool_initial_epochs_ahead,
+                    )
+                    .await
+                    .expect("failed to initialize direct Walrus blob store"),
+                );
+                (blob_store, Some(read_client))
+            } else {
+                tracing::info!("using local blob store at {:?}", config.blob_store_path);
+                let blob_store: Arc<dyn oyster::blob_store::BlobStore> = Arc::new(
+                    LocalBlobStore::new(config.blob_store_path.clone())
                         .await
-                        .expect("failed to initialize direct Walrus blob store"),
-                    )
-                } else {
-                    tracing::info!("using local blob store at {:?}", config.blob_store_path);
-                    Arc::new(
-                        LocalBlobStore::new(config.blob_store_path.clone())
-                            .await
-                            .expect("failed to initialize blob store"),
-                    )
-                };
+                        .expect("failed to initialize blob store"),
+                );
+                (blob_store, None)
+            };
 
             let metrics_handle = oyster::metrics::setup();
 
@@ -171,6 +185,7 @@ async fn main() {
                 db,
                 blob_store,
                 pearl,
+                read_client,
                 config: config.clone(),
                 metrics_handle: Some(metrics_handle),
             };

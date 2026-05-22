@@ -217,6 +217,41 @@ pub struct CreateAccountRequest {
     pub max_unencoded_bytes: Option<i64>,
 }
 
+/// Request body for `PUT /admin/accounts/{account_id}/max-storage`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateMaxStorageRequest {
+    /// New per-account cap, in *unencoded* bytes. Must be strictly
+    /// positive; `0` and negative values are rejected with 400.
+    pub max_unencoded_bytes: i64,
+}
+
+/// Response body for `PUT /admin/accounts/{account_id}/max-storage`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UpdateMaxStorageResponse {
+    /// The account whose cap was updated.
+    pub account_id: AccountId,
+    /// The new cap, in *unencoded* bytes.
+    pub max_unencoded_bytes: i64,
+    /// On-chain `StoragePool` snapshot after the (optional) shrink.
+    /// `None` when the account has never lazy-created a pool (so no
+    /// on-chain read was performed).
+    pub pool: Option<PoolOnChainState>,
+    /// Digest of the submitted shrink PTB, or `None` when no shrink
+    /// was needed.
+    pub shrink_tx_digest: Option<String>,
+}
+
+/// On-chain `StoragePool` counters surfaced in the
+/// [`UpdateMaxStorageResponse`].
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PoolOnChainState {
+    /// `storage.storage_size` — encoded bytes reserved by the pool.
+    pub reserved_encoded_bytes: i64,
+    /// `used_encoded_bytes` — encoded bytes currently consumed by
+    /// registered blobs.
+    pub used_encoded_bytes: i64,
+}
+
 /// Request body for `POST /accounts/{id}/api-keys`.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateApiKeyRequest {
