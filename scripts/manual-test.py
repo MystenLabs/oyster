@@ -770,6 +770,208 @@ def scenario_isolation(base, auth_a, admin):
     return passed
 
 
+LOW_CAP = 500_000             # 500 KB (unencoded)
+RAISED_CAP = 2_000_000        # 2 MB (unencoded)
+RESTORE_CAP = 5_000_000_000   # 5 GB — matches CreateAccountRequest default
+# 300 KB random per upload — sized to stay well under the local
+# Walrus testbed's per-blob encoder limit (≈ 1.5 MiB on n_shards=10
+# in RS2 mode; larger blobs would 500 on the encode step before the
+# cap check runs). Two of these comfortably exceed `LOW_CAP`'s
+# encoded threshold while one fits, so the cap fires on the 2nd or
+# 3rd PUT.
+CAP_BLOB_SIZE = 300_000
+CAP_MAX_TRIES = 20            # hard ceiling so a regression can't hang
+
+
+def scenario_storage_cap(base, auth, ctx):
+    """Per-account max_unencoded_bytes cap (lower, hit, raise, recover)."""
+    heading("cap", "Per-account Storage Cap")
+    admin = ctx.get("admin") or {}
+    admin_key = admin.get("admin_key")
+    user_account_id = admin.get("user_account_id")
+    if not admin_key or not user_account_id:
+        info(
+            "no --admin-key or no setup.log user account_id — skipping. "
+            "Re-run with --admin-key against a fresh local testbed to "
+            "exercise the cap enforcement / admin update."
+        )
+        return True
+    admin_auth = {"Authorization": f"Bearer {admin_key}"}
+    cap_url = f"{base}/api/v1/accounts/{user_account_id}/max-storage"
+    passed = True
+    bucket = f"cap-{int(time.time())}"
+    created_keys = []
+    json_hdrs = {**admin_auth, "Content-Type": "application/json"}
+
+    def set_cap(new_cap, label):
+        nonlocal passed
+        status, _, body = request(
+            "PUT", cap_url,
+            body={"max_unencoded_bytes": new_cap},
+            headers=json_hdrs,
+        )
+        if status != 200:
+            fail(f"PUT max-storage ({label}) returned {status} body={body!r}")
+            passed = False
+            return None
+        data = json_body(body) or {}
+        if data.get("max_unencoded_bytes") != new_cap:
+            fail(
+                f"max-storage ({label}) response cap is "
+                f"{data.get('max_unencoded_bytes')}, expected {new_cap}"
+            )
+            passed = False
+        return data
+
+    try:
+        # 1) Lower cap to 50 MB. May submit a shrink PTB on the
+        #    pre-funded account's pool — fine, wallet is funded.
+        if set_cap(LOW_CAP, "lower to 50 MB") is None:
+            return False
+        ok(f"cap lowered to {LOW_CAP} bytes")
+
+        # 2) Create a fresh bucket on the (pre-funded) account.
+        status, _, body = request(
+            "POST", f"{base}/api/v1/buckets",
+            body={"name": bucket}, headers=auth,
+        )
+        if status != 201:
+            fail(f"POST /buckets returned {status} (expected 201)")
+            return False
+        ok(f"created bucket '{bucket}'")
+
+        # 3) Upload random 5 MiB blobs until one is rejected with 400 +
+        #    cap_exceeded.
+        rejected_payload = None
+        rejected_body = None
+        successes = 0
+        put_hdrs = {**auth, "Content-Type": "application/octet-stream"}
+        cap_fired = False
+        for i in range(CAP_MAX_TRIES):
+            key = f"cap-{i:02d}.bin"
+            payload = os.urandom(CAP_BLOB_SIZE)
+            status, _, body = request(
+                "PUT",
+                f"{base}/api/v1/buckets/{bucket}/blobs/{key}",
+                body=payload, headers=put_hdrs,
+            )
+            if status == 201:
+                successes += 1
+                created_keys.append(key)
+                continue
+            if status == 400:
+                parsed = json_body(body) or {}
+                if "cap_exceeded" in parsed:
+                    rejected_payload = payload
+                    rejected_body = parsed
+                    cap_fired = True
+                    break
+                fail(
+                    f"PUT iteration {i} returned 400 without cap_exceeded: "
+                    f"{parsed!r}"
+                )
+                return False
+            fail(
+                f"PUT iteration {i} returned unexpected status {status}: "
+                f"{body!r}"
+            )
+            return False
+
+        if not cap_fired:
+            fail(f"cap never enforced after {CAP_MAX_TRIES} uploads")
+            return False
+
+        if successes < 1:
+            fail("expected >=1 successful upload before cap kicked in")
+            passed = False
+        else:
+            ok(f"{successes} upload(s) succeeded before cap fired")
+
+        cap_block = rejected_body["cap_exceeded"]
+        if cap_block.get("max_unencoded_bytes") != LOW_CAP:
+            fail(
+                f"cap_exceeded.max_unencoded_bytes is "
+                f"{cap_block.get('max_unencoded_bytes')}, expected {LOW_CAP}"
+            )
+            passed = False
+        if not isinstance(cap_block.get("used_encoded_bytes"), int):
+            fail(f"cap_exceeded.used_encoded_bytes not int: {cap_block!r}")
+            passed = False
+        if not isinstance(cap_block.get("new_unencoded_bytes"), int):
+            fail(f"cap_exceeded.new_unencoded_bytes not int: {cap_block!r}")
+            passed = False
+        else:
+            ok(
+                f"cap_exceeded block ok: "
+                f"used={cap_block['used_encoded_bytes']} "
+                f"new={cap_block['new_unencoded_bytes']}"
+            )
+
+        # 4) Raise cap to 100 MB. Raising never shrinks, so no PTB.
+        if set_cap(RAISED_CAP, "raise to 100 MB") is None:
+            return False
+        ok(f"cap raised to {RAISED_CAP} bytes")
+
+        # 5) Re-upload the previously-rejected payload under a new key.
+        recover_key = "cap-recover.bin"
+        status, _, body = request(
+            "PUT",
+            f"{base}/api/v1/buckets/{bucket}/blobs/{recover_key}",
+            body=rejected_payload, headers=put_hdrs,
+        )
+        if status != 201:
+            fail(f"re-upload after cap raise returned {status}: {body!r}")
+            passed = False
+        else:
+            created_keys.append(recover_key)
+            ok("previously-rejected payload accepted after cap raise")
+
+        # 6) Two additional fresh random blobs of the same size, all
+        #    expected 201.
+        extra_ok = True
+        for j in range(2):
+            key = f"cap-extra-{j}.bin"
+            payload = os.urandom(CAP_BLOB_SIZE)
+            status, _, body = request(
+                "PUT",
+                f"{base}/api/v1/buckets/{bucket}/blobs/{key}",
+                body=payload, headers=put_hdrs,
+            )
+            if status != 201:
+                fail(f"post-raise extra upload {j} returned {status}: {body!r}")
+                passed = False
+                extra_ok = False
+                break
+            created_keys.append(key)
+        if extra_ok:
+            ok("two additional uploads under raised cap also accepted")
+    finally:
+        # 7) Cleanup: drain blobs, delete bucket, restore cap.
+        for key in created_keys:
+            request(
+                "DELETE",
+                f"{base}/api/v1/buckets/{bucket}/blobs/{key}",
+                headers=auth,
+            )
+        request("DELETE", f"{base}/api/v1/buckets/{bucket}", headers=auth)
+        # Restore the default cap. This is always a raise so it just
+        # updates the DB row; no on-chain action.
+        status, _, body = request(
+            "PUT", cap_url,
+            body={"max_unencoded_bytes": RESTORE_CAP},
+            headers=json_hdrs,
+        )
+        if status != 200:
+            # Don't flip the test fail bit on a cleanup-only failure —
+            # but warn loudly so the next run sees it.
+            info(
+                f"WARNING: failed to restore cap to {RESTORE_CAP}: "
+                f"status={status} body={body!r}"
+            )
+
+    return passed
+
+
 def scenario_10(base, auth):
     """Error Cases."""
     heading(10, "Error Cases")
@@ -857,6 +1059,7 @@ def scenario_10(base, auth):
 
 
 SETUP_LOG_BEARER_RE = re.compile(r"^\s*Bearer Token:\s*(\S+)\s*$")
+SETUP_LOG_ACCOUNT_ID_RE = re.compile(r"^\s*account_id:\s*([0-9a-f-]{36})\s*$")
 
 
 def scrape_bearer_from_setup_log(path):
@@ -869,6 +1072,25 @@ def scrape_bearer_from_setup_log(path):
     last = None
     for line in content.splitlines():
         m = SETUP_LOG_BEARER_RE.match(line)
+        if m:
+            last = m.group(1)
+    return last
+
+
+def scrape_user_account_id_from_setup_log(path):
+    """Return the LAST 'account_id: <uuid>' line from setup.log, or None.
+
+    The setup script prints two such lines — the operator first, then
+    the test user. We want the user, hence 'last'.
+    """
+    try:
+        with open(path, "r") as f:
+            content = f.read()
+    except OSError:
+        return None
+    last = None
+    for line in content.splitlines():
+        m = SETUP_LOG_ACCOUNT_ID_RE.match(line)
         if m:
             last = m.group(1)
     return last
@@ -918,10 +1140,15 @@ def resolve_auth(args):
         # a fresh account, use its ID (so api-key mint/revoke doesn't touch the
         # pre-funded testbed account).
         admin_account_id, _ = bootstrap_account(base, args.admin_key)
+        user_account_id = scrape_user_account_id_from_setup_log(args.setup_log)
         return (
             base,
             {"Authorization": f"Bearer {primary_token}"},
-            {"admin_key": args.admin_key, "account_id": admin_account_id},
+            {
+                "admin_key": args.admin_key,
+                "account_id": admin_account_id,
+                "user_account_id": user_account_id,
+            },
         )
 
     # Interactive fallback.
@@ -980,6 +1207,7 @@ def main():
         ("Bucket Delete (drain then delete)", lambda: scenario_8(base, auth, ctx)),
         ("API Key Management", lambda: scenario_9(base, auth, ctx, admin)),
         ("Multi-account Isolation", lambda: scenario_isolation(base, auth, admin)),
+        ("Per-account Storage Cap", lambda: scenario_storage_cap(base, auth, ctx)),
         ("Error Cases", lambda: scenario_10(base, auth)),
     ]
 
