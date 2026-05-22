@@ -16,6 +16,10 @@ pub mod blob_tags;
 pub mod blobs;
 /// Bucket database operations.
 pub mod buckets;
+/// Dead-letter table for orphaned on-chain `PooledBlob`s left behind
+/// when a post-store DB write fails AND the compensating on-chain
+/// delete also fails. See `routes::blobs::compensation`.
+pub mod dead_letter_orphans;
 
 use std::{borrow::Cow, fmt::Write, sync::OnceLock};
 

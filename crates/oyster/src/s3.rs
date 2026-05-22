@@ -482,7 +482,7 @@ impl s3s::S3 for OysterS3 {
             _ => Vec::new(),
         };
 
-        let metadata = db::blobs::insert_blob(
+        let metadata = match db::blobs::insert_blob(
             &self.state.db,
             &key,
             result.blob_id.as_str(),
@@ -495,9 +495,31 @@ impl s3s::S3 for OysterS3 {
             result.encoded_size.map(|e| e as i64),
         )
         .await
-        .map_err(internal_error)?;
+        {
+            Ok(m) => m,
+            Err(e) => {
+                // The on-chain register PTB already landed; best-effort
+                // compensate the orphan before returning. FK violation
+                // here is the `blobs_bucket_name_fkey` race — bucket
+                // deleted between the pre-check and this insert. S3 has
+                // no first-class 409 "race" code; `NoSuchBucket` is the
+                // closest match and is what a same-time-shifted PUT
+                // would have seen.
+                crate::routes::blobs::compensation::compensate_after_failed_db_insert(
+                    &self.state,
+                    &account_id,
+                    &result,
+                    &e,
+                )
+                .await;
+                if crate::error::is_foreign_key_violation(&e) {
+                    return Err(S3Error::new(S3ErrorCode::NoSuchBucket));
+                }
+                return Err(internal_error(e));
+            }
+        };
 
-        db::blob_tags::replace_all_tags(
+        if let Err(e) = db::blob_tags::replace_all_tags(
             &self.state.db,
             &account_id,
             &bucket_name,
@@ -505,7 +527,19 @@ impl s3s::S3 for OysterS3 {
             &initial_tags,
         )
         .await
-        .map_err(internal_error)?;
+        {
+            crate::routes::blobs::compensation::compensate_after_failed_db_insert(
+                &self.state,
+                &account_id,
+                &result,
+                &e,
+            )
+            .await;
+            if crate::error::is_foreign_key_violation(&e) {
+                return Err(S3Error::new(S3ErrorCode::NoSuchBucket));
+            }
+            return Err(internal_error(e));
+        }
 
         Ok(S3Response::new(PutObjectOutput {
             e_tag: Some(etag_from_md5(&metadata.md5)),

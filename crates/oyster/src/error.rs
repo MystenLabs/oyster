@@ -3,6 +3,26 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
+/// Returns `true` if `e` is a foreign-key constraint violation reported by
+/// either Postgres (SQLSTATE `23503`) or SQLite (error message containing
+/// `"FOREIGN KEY constraint failed"`). Mirrors the
+/// `UNIQUE constraint`-detection shape used in
+/// `routes/buckets.rs::create_bucket` and `s3.rs::create_bucket`.
+///
+/// Used by `routes::blobs::store_blob` and `s3::put_object` to map the
+/// `blobs_bucket_name_fkey` race (bucket deleted between the pre-check
+/// and the post-store insert) onto a 409 / `NoSuchBucket` response
+/// instead of an opaque 500.
+pub fn is_foreign_key_violation(e: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db_err) = e else {
+        return false;
+    };
+    if db_err.code().is_some_and(|c| c == "23503") {
+        return true;
+    }
+    db_err.message().contains("FOREIGN KEY constraint failed")
+}
+
 /// Application-level error type, mapped to HTTP status codes.
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
@@ -526,5 +546,48 @@ mod tests {
         );
         assert_eq!(block["max_unencoded_bytes"].as_i64(), Some(2_000));
         assert_eq!(block["extract_size"].as_i64(), Some(4_096));
+    }
+
+    /// Synthesise a real SQLite FK violation by inserting a `blobs` row
+    /// whose `bucket_name` references a bucket that doesn't exist. The
+    /// SQLite driver surfaces this as a `sqlx::Error::Database` whose
+    /// message contains `"FOREIGN KEY constraint failed"` — which is
+    /// exactly the substring `is_foreign_key_violation` looks for. The
+    /// Postgres SQLSTATE `23503` branch is exercised end-to-end in
+    /// production but not directly here, since `DatabaseError` is a
+    /// trait and there's no public constructor for a fake one.
+    #[tokio::test]
+    async fn is_foreign_key_violation_detects_sqlite_message() {
+        let pool = crate::db::create_pool("sqlite::memory:")
+            .await
+            .expect("pool");
+        // The migrations create the `blobs` table with a FK on
+        // `bucket_name`. Inserting a row that points at no-such-bucket
+        // triggers SQLite's "FOREIGN KEY constraint failed" message.
+        let result = sqlx::query(&crate::db::sql(
+            "INSERT INTO blobs \
+             (key, blob_id, bucket_name, account_id, content_type, size, md5) \
+             VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ))
+        .bind("k")
+        .bind("b")
+        .bind("does-not-exist")
+        .bind("nope")
+        .bind("application/octet-stream")
+        .bind(0i64)
+        .bind("d41d8cd98f00b204e9800998ecf8427e")
+        .execute(&pool)
+        .await;
+        let err = result.expect_err("expected FK violation");
+        assert!(
+            is_foreign_key_violation(&err),
+            "expected FK violation detection to fire on: {err:?}",
+        );
+    }
+
+    #[test]
+    fn is_foreign_key_violation_returns_false_for_non_db_error() {
+        let err = sqlx::Error::RowNotFound;
+        assert!(!is_foreign_key_violation(&err));
     }
 }

@@ -77,6 +77,12 @@ pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_re
 /// [`DELETE_DB_ONLY_TOTAL`]).
 pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_heal_total";
 
+/// Counter: compensating on-chain delete attempts after a post-store
+/// DB failure in `store_blob` / S3 `put_object`. Labelled by
+/// `outcome` ∈ {`ok`, `failed`}. A non-zero `failed` count means rows
+/// are landing in `dead_letter_orphans` and need a reaper pass.
+pub const POST_STORE_COMPENSATION_TOTAL: &str = "oyster_post_store_compensation_total";
+
 /// Counter: `delete_blob` calls where the on-chain Sui delete tx
 /// failed with a non-`InsufficientBalance` error but Oyster still
 /// removed the DB row to preserve idempotent DELETE semantics.

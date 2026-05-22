@@ -1,3 +1,6 @@
+/// Post-store DB-failure compensation (orphan-cleanup) helper.
+pub(crate) mod compensation;
+
 use axum::{
     Json,
     body::Bytes,
@@ -11,7 +14,7 @@ use crate::{
     auth::AuthenticatedAccount,
     blob_store::BlobId,
     db,
-    error::AppError,
+    error::{self, AppError},
     models::{
         BlobMetadata,
         BlobTagsResponse,
@@ -137,6 +140,15 @@ fn check_json_conditions(
         ),
         (status = 404, description = "Bucket not found", body = ErrorResponse),
         (
+            status = 409,
+            description = "Bucket was deleted concurrently while the upload was \
+                in flight. The on-chain `PooledBlob` is best-effort compensated \
+                before this response is returned; see \
+                `oyster_post_store_compensation_total` for the success/failure \
+                outcome.",
+            body = ErrorResponse,
+        ),
+        (
             status = 413,
             description = "Payload too large. Either the body exceeded the static \
                 MAX_BLOB_SIZE cap (no structured body) or the upload exceeded the \
@@ -204,7 +216,7 @@ pub async fn store_blob(
         }
     };
 
-    let metadata = db::blobs::insert_blob(
+    let metadata = match db::blobs::insert_blob(
         &state.db,
         &key,
         result.blob_id.as_str(),
@@ -216,17 +228,47 @@ pub async fn store_blob(
         result.pooled_blob_object_id.as_deref(),
         result.encoded_size.map(|e| e as i64),
     )
-    .await?;
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            // The on-chain register PTB already landed; compensate
+            // before surfacing the DB failure to the caller. FK
+            // violation here means a `DELETE /buckets/{bucket}` raced
+            // between the pre-check and this insert.
+            compensation::compensate_after_failed_db_insert(&state, &auth.account_id, &result, &e)
+                .await;
+            if error::is_foreign_key_violation(&e) {
+                return Err(AppError::Conflict(
+                    "bucket deleted concurrently while upload was in flight".into(),
+                ));
+            }
+            return Err(AppError::Database(e));
+        }
+    };
 
     // Replace tags on every PUT (including overwrite) so stale tags don't leak.
-    db::blob_tags::replace_all_tags(
+    if let Err(e) = db::blob_tags::replace_all_tags(
         &state.db,
         &auth.account_id,
         &bucket_name,
         &key,
         &initial_tags,
     )
-    .await?;
+    .await
+    {
+        // Belt-and-suspenders: tags is a second post-store DB op. If
+        // it fails after the on-chain register has landed, compensate
+        // the same way.
+        compensation::compensate_after_failed_db_insert(&state, &auth.account_id, &result, &e)
+            .await;
+        if error::is_foreign_key_violation(&e) {
+            return Err(AppError::Conflict(
+                "bucket deleted concurrently while upload was in flight".into(),
+            ));
+        }
+        return Err(AppError::Database(e));
+    }
 
     let etag = format!("\"{}\"", metadata.md5);
     Ok((

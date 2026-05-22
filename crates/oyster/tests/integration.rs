@@ -47,6 +47,23 @@ struct SpyBlobStore {
     /// without touching the inner store. Used to exercise error
     /// propagation paths from the upload route.
     next_store_error: Mutex<Option<BlobStoreError>>,
+    /// When set, every `delete()` call returns
+    /// `BlobStoreError::Upstream(msg.clone())` — used to exercise the
+    /// dead-letter path in post-store compensation where every retry
+    /// must fail.
+    persistent_delete_error: Mutex<Option<String>>,
+    /// When set, `store()` calls `db::buckets::delete_bucket` against
+    /// these args *after* the inner store completes and *before*
+    /// returning — used to deterministically reproduce the
+    /// `blobs_bucket_name_fkey` race in the upload route between the
+    /// pre-check and the post-store DB insert.
+    delete_bucket_during_store: Mutex<Option<(db::DbPool, String, AccountId)>>,
+    /// When set, `store()` overrides the returned
+    /// `(pooled_blob_object_id, encoded_size)` so a `LocalBlobStore`
+    /// inner can simulate the Walrus-register shape needed to
+    /// exercise the compensation path (which only fires when
+    /// `encoded_size.is_some()`).
+    store_result_override: Mutex<Option<(Option<String>, Option<u64>)>>,
 }
 
 impl SpyBlobStore {
@@ -57,6 +74,9 @@ impl SpyBlobStore {
             delete_calls: Mutex::new(Vec::new()),
             next_delete_error: Mutex::new(None),
             next_store_error: Mutex::new(None),
+            persistent_delete_error: Mutex::new(None),
+            delete_bucket_during_store: Mutex::new(None),
+            store_result_override: Mutex::new(None),
         }
     }
 
@@ -75,6 +95,33 @@ impl SpyBlobStore {
     fn fail_next_store(&self, err: BlobStoreError) {
         *self.next_store_error.lock().unwrap() = Some(err);
     }
+
+    /// Make every subsequent `delete()` call return
+    /// `BlobStoreError::Upstream(msg)`. Used to exhaust the
+    /// compensation retry budget so the dead-letter path runs.
+    fn fail_all_deletes(&self, msg: impl Into<String>) {
+        *self.persistent_delete_error.lock().unwrap() = Some(msg.into());
+    }
+
+    /// Configure `store()` to delete the named bucket via
+    /// `db::buckets::delete_bucket` *after* the inner store completes
+    /// and *before* returning — reproduces the
+    /// `blobs_bucket_name_fkey` race deterministically.
+    fn delete_bucket_during_store(
+        &self,
+        pool: db::DbPool,
+        bucket_name: String,
+        account_id: AccountId,
+    ) {
+        *self.delete_bucket_during_store.lock().unwrap() = Some((pool, bucket_name, account_id));
+    }
+
+    /// Override the `(pooled_blob_object_id, encoded_size)` returned
+    /// from the next `store()` call so a `LocalBlobStore` inner can
+    /// simulate a Walrus-register shape that triggers compensation.
+    fn set_store_result_override(&self, pool_id: Option<String>, encoded_size: Option<u64>) {
+        *self.store_result_override.lock().unwrap() = Some((pool_id, encoded_size));
+    }
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -89,7 +136,26 @@ impl BlobStore for SpyBlobStore {
         if let Some(err) = self.next_store_error.lock().unwrap().take() {
             return Box::pin(async move { Err(err) });
         }
-        self.inner.store(data, account_id)
+        let delete_args = self.delete_bucket_during_store.lock().unwrap().take();
+        let result_override = self.store_result_override.lock().unwrap().take();
+        let inner_fut = self.inner.store(data, account_id);
+        Box::pin(async move {
+            let mut result = inner_fut.await?;
+            if let Some((pool, bucket_name, account_id)) = delete_args {
+                // Bypass route-level "is empty" gate by going straight to
+                // the DB op; that's the whole point — simulating a racing
+                // bucket delete that lands between the pre-check and the
+                // post-store insert.
+                db::buckets::delete_bucket(&pool, &bucket_name, &account_id)
+                    .await
+                    .expect("test setup: bucket delete should succeed");
+            }
+            if let Some((pool_id, encoded_size)) = result_override {
+                result.pooled_blob_object_id = pool_id;
+                result.encoded_size = encoded_size;
+            }
+            Ok(result)
+        })
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {
@@ -110,6 +176,9 @@ impl BlobStore for SpyBlobStore {
         ));
         if let Some(err) = self.next_delete_error.lock().unwrap().take() {
             return Box::pin(async move { Err(err) });
+        }
+        if let Some(msg) = self.persistent_delete_error.lock().unwrap().clone() {
+            return Box::pin(async move { Err(BlobStoreError::Upstream(msg)) });
         }
         self.inner
             .delete(blob_id, pool_id, encoded_size, account_id)
@@ -1351,6 +1420,110 @@ async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
 }
 
 // ---------------------------------------------------------------------------
+// Post-store FK-race compensation tests
+// ---------------------------------------------------------------------------
+
+/// Regression: testnet observed a 500 from `store_blob` after a
+/// concurrent `DELETE /buckets/{bucket}` raced between the pre-check
+/// and the post-store insert, leaving an on-chain `PooledBlob`
+/// orphan. The new behaviour compensates the orphan and returns 409
+/// with an explanatory body.
+#[tokio::test]
+async fn store_blob_compensates_and_409s_on_concurrent_bucket_delete() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (account_id_str, key) = create_test_account(&pool).await;
+    let account_id: AccountId = account_id_str.parse().expect("valid account uuid");
+    let bucket_name = create_test_bucket(&app, &key, "race-409").await;
+
+    // Configure the spy to delete the bucket row mid-store() and
+    // override the StoreResult so compensation actually fires (it
+    // skips when encoded_size is None).
+    spy.delete_bucket_during_store(pool.clone(), bucket_name.clone(), account_id);
+    spy.set_store_result_override(Some("0xpooledblob".into()), Some(1_234));
+
+    let (status, body) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/race.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .body(Body::from(b"upload body".to_vec()))
+            .unwrap(),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::CONFLICT);
+    let err = body["error"].as_str().expect("error field");
+    assert!(
+        err.contains("bucket deleted concurrently"),
+        "expected 'bucket deleted concurrently' in error, got: {err}",
+    );
+
+    // Compensation must have issued exactly one on-chain delete with
+    // the same account_id, on the just-stored blob.
+    let delete_calls = spy.recorded_delete_calls();
+    assert_eq!(
+        delete_calls.len(),
+        1,
+        "expected exactly one compensating delete, got: {delete_calls:?}",
+    );
+    let (_blob_id, _pool_id, delete_account_id) = &delete_calls[0];
+    assert_eq!(*delete_account_id, account_id);
+}
+
+/// When the on-chain compensating delete itself fails, the orphan
+/// must land in `dead_letter_orphans` so a future reaper can clean
+/// it up. The route still returns 409 — the dead-letter side is
+/// best-effort and invisible to the caller.
+#[tokio::test]
+async fn store_blob_dead_letters_when_compensation_fails() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (account_id_str, key) = create_test_account(&pool).await;
+    let account_id: AccountId = account_id_str.parse().expect("valid account uuid");
+    let bucket_name = create_test_bucket(&app, &key, "race-dl").await;
+
+    spy.delete_bucket_during_store(pool.clone(), bucket_name.clone(), account_id);
+    spy.set_store_result_override(Some("0xpooledblob".into()), Some(2_222));
+    // Force every retry attempt to fail so the dead-letter path runs.
+    spy.fail_all_deletes("walrus unreachable");
+
+    let (status, _body) = json_response(
+        &app,
+        Request::put(format!("/api/v1/buckets/{bucket_name}/blobs/race-dl.txt"))
+            .header("authorization", format!("Bearer {key}"))
+            .header("content-type", "text/plain")
+            .body(Body::from(b"dead-letter body".to_vec()))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // Three retry attempts must have fired.
+    let delete_calls = spy.recorded_delete_calls();
+    assert_eq!(
+        delete_calls.len(),
+        3,
+        "expected 3 compensating delete attempts, got: {delete_calls:?}",
+    );
+    let blob_id = delete_calls[0].0.clone();
+
+    let count = db::dead_letter_orphans::count_orphans_for(&pool, &blob_id, &account_id)
+        .await
+        .expect("dead-letter count query");
+    assert_eq!(
+        count, 1,
+        "expected exactly one dead_letter_orphans row for (blob_id={blob_id}, account_id={account_id})",
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Metrics endpoint tests
 // ---------------------------------------------------------------------------
 
@@ -1659,8 +1832,12 @@ async fn s3_put_get_delete_object() {
 }
 
 /// Like `test_s3_with_account` but backs the state with the provided
-/// `SpyBlobStore` so tests can inject failures into `delete()`.
-async fn test_s3_with_spy(spy: Arc<SpyBlobStore>) -> (OysterS3, String, TempDir) {
+/// `SpyBlobStore` so tests can inject failures into `delete()`. Also
+/// returns the `DbPool` and the `AccountId` to support tests that need
+/// to seed dead-letter assertions and configure mid-store hooks.
+async fn test_s3_with_spy(
+    spy: Arc<SpyBlobStore>,
+) -> (OysterS3, String, TempDir, db::DbPool, AccountId) {
     let tmp = TempDir::new().unwrap();
     let blob_path = tmp.path().join("blobs");
 
@@ -1704,7 +1881,7 @@ async fn test_s3_with_spy(spy: Arc<SpyBlobStore>) -> (OysterS3, String, TempDir)
         .unwrap();
 
     let s3 = OysterS3::new(state);
-    (s3, access_key.access_key_id, tmp)
+    (s3, access_key.access_key_id, tmp, pool, account.id)
 }
 
 #[tokio::test]
@@ -1713,7 +1890,7 @@ async fn s3_delete_object_propagates_insufficient_balance_as_402() {
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
     let spy = Arc::new(SpyBlobStore::new(local));
 
-    let (s3, ak, _tmp) = test_s3_with_spy(spy.clone()).await;
+    let (s3, ak, _tmp, _pool, _account_id) = test_s3_with_spy(spy.clone()).await;
 
     s3.create_bucket(s3_req(
         CreateBucketInput {
@@ -4618,4 +4795,55 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
         !rendered.contains(r#"oyster_insufficient_funds_responses_total{operation="unknown""#),
         "operation=\"unknown\" should have been re-tagged, got:\n{rendered}",
     );
+}
+
+/// S3 mirror of `store_blob_compensates_and_409s_on_concurrent_bucket_delete`.
+/// The S3 surface returns `NoSuchBucket` rather than 409 because S3 has
+/// no first-class race code; the closest match is what a
+/// same-time-shifted PUT would have seen.
+#[tokio::test]
+async fn s3_put_object_compensates_and_returns_no_such_bucket_on_fk_violation() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (s3, ak, _tmp, pool, account_id) = test_s3_with_spy(spy.clone()).await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "race-s3".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    spy.delete_bucket_during_store(pool.clone(), "race-s3".to_string(), account_id);
+    spy.set_store_result_override(Some("0xpooledblob".into()), Some(2_345));
+
+    let body = StreamingBlob::from(s3s::Body::from(b"s3 race body".to_vec()));
+    let err = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "race-s3".into(),
+                key: "race.bin".into(),
+                body: Some(body),
+                content_type: Some("application/octet-stream".into()),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchBucket);
+
+    let delete_calls = spy.recorded_delete_calls();
+    assert_eq!(
+        delete_calls.len(),
+        1,
+        "expected exactly one compensating delete from S3 put_object, got: {delete_calls:?}",
+    );
+    let (_blob_id, _pool_id, delete_account_id) = &delete_calls[0];
+    assert_eq!(*delete_account_id, account_id);
 }
