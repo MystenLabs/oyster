@@ -122,15 +122,22 @@ pub enum AppError {
 /// | `BlobStore(NotFound)`                | 404 |
 /// | `BlobStore(InvalidBlobId)`           | 400 |
 /// | `BlobStore(InsufficientBalance)`     | 402, body carries `funding_required` |
-/// | `BlobStore(Io)`                      | 500 (filesystem-backed `LocalBlobStore` only) |
-/// | `BlobStore(Internal)`                | 500 (server-internal invariant violation) |
-/// | `BlobStore(Upstream)`                | 502 (upstream Sui/Walrus call) |
-/// | `BlobStore(Unreachable)`             | 502 |
-/// | `BlobStore(UpstreamStatus)`          | passthrough 4xx, mask 5xx → 502 |
-/// | `BlobStore(PoolCreationFailed)`      | 502 |
+/// | `BlobStore(Io)`                      | 500, suffixed `[BlobStoreError::Io]` (filesystem-backed `LocalBlobStore` only) |
+/// | `BlobStore(Internal)`                | 500, suffixed `[BlobStoreError::Internal]` |
+/// | `BlobStore(Upstream)`                | 502, suffixed `[BlobStoreError::Upstream]` (upstream Sui/Walrus call) |
+/// | `BlobStore(Unreachable)`             | 502, suffixed `[BlobStoreError::Unreachable]` |
+/// | `BlobStore(UpstreamStatus)`          | passthrough 4xx; mask 5xx → 502, suffixed `[BlobStoreError::UpstreamStatus]` |
+/// | `BlobStore(PoolCreationFailed)`      | 502, suffixed `[BlobStoreError::PoolCreationFailed]` |
 /// | `BlobStore(CapExceeded)`             | 400, body carries `cap_exceeded` block |
 /// | `BlobStore(PayloadTooLarge)`         | 413, body carries `payload_too_large` block |
-/// | `BlobStore(Database)`                | 500 |
+/// | `BlobStore(Database)`                | 500, suffixed `[BlobStoreError::Database]` |
+///
+/// The `[BlobStoreError::<Variant>]` suffix on masked 5xx/500 messages
+/// distinguishes variants that otherwise collapse to the same generic text
+/// (e.g. `Upstream` vs. `UpstreamStatus` both say `"upstream blob store
+/// error"`; `Internal`/`Io`/`Database` all say `"internal error"`). It is
+/// informational, not a stable machine-parseable contract — the upstream's
+/// raw error text remains in server logs only.
 /// | `MaxStorageWouldOrphan`              | 400, body carries `would_orphan` block |
 /// | `MaxStorageShrinkAborted`            | 400, body carries `shrink_aborted` block |
 impl IntoResponse for AppError {
@@ -331,18 +338,30 @@ impl IntoResponse for AppError {
                 BlobStoreError::InvalidBlobId(_) => (StatusCode::BAD_REQUEST, self.to_string()),
                 BlobStoreError::PoolCreationFailed(msg) => {
                     tracing::error!(error = %msg, "pool creation failed");
-                    (StatusCode::BAD_GATEWAY, "pool creation failed".into())
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!("pool creation failed [BlobStoreError::{}]", e.variant_name()),
+                    )
                 }
                 BlobStoreError::Unreachable(msg) => {
                     tracing::error!(error = %msg, "upstream blob store unreachable");
                     (
                         StatusCode::BAD_GATEWAY,
-                        "upstream blob store unreachable".into(),
+                        format!(
+                            "upstream blob store unreachable [BlobStoreError::{}]",
+                            e.variant_name(),
+                        ),
                     )
                 }
                 BlobStoreError::Upstream(msg) => {
                     tracing::error!(error = %msg, "upstream blob store error");
-                    (StatusCode::BAD_GATEWAY, "upstream blob store error".into())
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        format!(
+                            "upstream blob store error [BlobStoreError::{}]",
+                            e.variant_name(),
+                        ),
+                    )
                 }
                 BlobStoreError::UpstreamStatus { status, message } => {
                     let code = StatusCode::from_u16(*status).unwrap_or(StatusCode::BAD_GATEWAY);
@@ -359,20 +378,35 @@ impl IntoResponse for AppError {
                             upstream_body = %message,
                             "upstream blob store error",
                         );
-                        (StatusCode::BAD_GATEWAY, "upstream blob store error".into())
+                        (
+                            StatusCode::BAD_GATEWAY,
+                            format!(
+                                "upstream blob store error [BlobStoreError::{}]",
+                                e.variant_name(),
+                            ),
+                        )
                     }
                 }
                 BlobStoreError::Internal(msg) => {
                     tracing::error!(error = %msg, "blob store internal error");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("internal error [BlobStoreError::{}]", e.variant_name()),
+                    )
                 }
                 BlobStoreError::Io(io_err) => {
                     tracing::error!(error = %io_err, "blob store I/O error");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("internal error [BlobStoreError::{}]", e.variant_name()),
+                    )
                 }
                 BlobStoreError::Database(db_err) => {
                     tracing::error!(error = %db_err, "blob store database error");
-                    (StatusCode::INTERNAL_SERVER_ERROR, "internal error".into())
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("internal error [BlobStoreError::{}]", e.variant_name()),
+                    )
                 }
             },
         };
@@ -449,22 +483,43 @@ mod tests {
     #[tokio::test]
     async fn upstream_maps_to_502() {
         let err = AppError::BlobStore(BlobStoreError::Upstream("walrus 500".into()));
-        assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(msg.contains("[BlobStoreError::Upstream]"), "msg = {msg}");
+        assert!(
+            !msg.contains("walrus 500"),
+            "raw upstream text must not leak: {msg}",
+        );
     }
 
     #[tokio::test]
     async fn internal_blob_store_maps_to_500() {
         let err = AppError::BlobStore(BlobStoreError::Internal("invariant".into()));
-        assert_eq!(
-            err.into_response().status(),
-            StatusCode::INTERNAL_SERVER_ERROR,
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(msg.contains("[BlobStoreError::Internal]"), "msg = {msg}");
+        assert!(
+            !msg.contains("invariant"),
+            "raw internal text must not leak: {msg}",
         );
     }
 
     #[tokio::test]
     async fn pool_creation_failed_maps_to_502() {
         let err = AppError::BlobStore(BlobStoreError::PoolCreationFailed("boom".into()));
-        assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(
+            msg.contains("[BlobStoreError::PoolCreationFailed]"),
+            "msg = {msg}",
+        );
+        assert!(!msg.contains("boom"), "raw text must not leak: {msg}");
     }
 
     #[tokio::test]
@@ -473,22 +528,104 @@ mod tests {
             status: 400,
             message: "bad upstream req".into(),
         });
-        assert_eq!(err.into_response().status(), StatusCode::BAD_REQUEST);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        // 4xx is passthrough — message is intentionally surfaced and not variant-tagged.
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(
+            !msg.contains("[BlobStoreError::"),
+            "4xx passthrough should not be tagged: {msg}",
+        );
+        assert!(msg.contains("bad upstream req"), "msg = {msg}");
     }
 
     #[tokio::test]
     async fn upstream_status_masks_5xx_to_502() {
         let err = AppError::BlobStore(BlobStoreError::UpstreamStatus {
-            status: 500,
+            status: 503,
             message: "upstream boom".into(),
         });
-        assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(
+            msg.contains("[BlobStoreError::UpstreamStatus]"),
+            "msg = {msg}",
+        );
+        assert!(
+            !msg.contains("upstream boom"),
+            "raw upstream text must not leak: {msg}",
+        );
     }
 
     #[tokio::test]
     async fn unreachable_maps_to_502() {
         let err = AppError::BlobStore(BlobStoreError::Unreachable("conn refused".into()));
-        assert_eq!(err.into_response().status(), StatusCode::BAD_GATEWAY);
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::BAD_GATEWAY);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(msg.contains("[BlobStoreError::Unreachable]"), "msg = {msg}");
+        assert!(
+            !msg.contains("conn refused"),
+            "raw upstream text must not leak: {msg}",
+        );
+    }
+
+    #[tokio::test]
+    async fn blob_store_io_maps_to_500_with_variant_suffix() {
+        let err = AppError::BlobStore(BlobStoreError::Io(std::io::Error::other("disk gone")));
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = read_json_body(resp).await;
+        let msg = body["error"].as_str().expect("error field present");
+        assert!(msg.contains("[BlobStoreError::Io]"), "msg = {msg}");
+        assert!(!msg.contains("disk gone"), "raw text must not leak: {msg}");
+    }
+
+    #[test]
+    fn variant_name_covers_all_variants() {
+        // If a new BlobStoreError variant is added, this test forces the
+        // author to extend variant_name(); a wildcard match would silently
+        // fall through and emit a misleading suffix on the wire.
+        assert_eq!(
+            BlobStoreError::NotFound("x".into()).variant_name(),
+            "NotFound",
+        );
+        assert_eq!(
+            BlobStoreError::InvalidBlobId("x".into()).variant_name(),
+            "InvalidBlobId",
+        );
+        assert_eq!(
+            BlobStoreError::Upstream("x".into()).variant_name(),
+            "Upstream",
+        );
+        assert_eq!(
+            BlobStoreError::Unreachable("x".into()).variant_name(),
+            "Unreachable",
+        );
+        assert_eq!(
+            BlobStoreError::UpstreamStatus {
+                status: 500,
+                message: "x".into(),
+            }
+            .variant_name(),
+            "UpstreamStatus",
+        );
+        assert_eq!(
+            BlobStoreError::PoolCreationFailed("x".into()).variant_name(),
+            "PoolCreationFailed",
+        );
+        assert_eq!(
+            BlobStoreError::Internal("x".into()).variant_name(),
+            "Internal",
+        );
+        assert_eq!(
+            BlobStoreError::Io(std::io::Error::other("x")).variant_name(),
+            "Io",
+        );
     }
 
     #[tokio::test]

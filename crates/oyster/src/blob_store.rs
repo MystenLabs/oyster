@@ -163,6 +163,29 @@ impl BlobStoreError {
             other => other,
         }
     }
+
+    /// The Rust variant identifier as a `&'static str` (e.g. `"Upstream"`).
+    ///
+    /// Used by the HTTP-error layer to suffix masked 5xx responses with
+    /// `[BlobStoreError::<Variant>]` so callers can disambiguate variants
+    /// that otherwise collapse to the same generic message. Informational
+    /// only — not a stable machine-parseable contract.
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            BlobStoreError::NotFound(_) => "NotFound",
+            BlobStoreError::InvalidBlobId(_) => "InvalidBlobId",
+            BlobStoreError::Io(_) => "Io",
+            BlobStoreError::Internal(_) => "Internal",
+            BlobStoreError::Upstream(_) => "Upstream",
+            BlobStoreError::Unreachable(_) => "Unreachable",
+            BlobStoreError::UpstreamStatus { .. } => "UpstreamStatus",
+            BlobStoreError::InsufficientBalance { .. } => "InsufficientBalance",
+            BlobStoreError::PoolCreationFailed(_) => "PoolCreationFailed",
+            BlobStoreError::CapExceeded { .. } => "CapExceeded",
+            BlobStoreError::PayloadTooLarge { .. } => "PayloadTooLarge",
+            BlobStoreError::Database(_) => "Database",
+        }
+    }
 }
 
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
