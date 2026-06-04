@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.11.1] - 2026-06-04
+
+### Added
+- `BlobStoreError::variant_name()` returns the variant identifier as a
+  `&'static str` (e.g. `"Upstream"`).
+
+### Changed
+- Masked blob-store 5xx/500 error responses now suffix the message with
+  `[BlobStoreError::<Variant>]` so callers can disambiguate variants that
+  otherwise collapse to the same generic text (e.g. `Upstream` vs.
+  `UpstreamStatus`, or `Internal`/`Io`/`Database`). The suffix is
+  informational, not a stable machine-parseable contract; raw upstream and
+  internal error text remains in server logs only. Passthrough 4xx
+  responses are unchanged and not tagged.
+
 ## [0.11.0] - 2026-05-22
 
 ### Breaking Changes
