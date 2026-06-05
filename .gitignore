@@ -1,4 +1,5 @@
 /target
+*.png
 *.db
 *.db-shm
 *.db-wal
