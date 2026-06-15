@@ -5,7 +5,6 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
 };
-use walrus_core::{EncodingType, encoding::encoded_blob_length_for_n_shards};
 use walrus_sui::client::ReadClient as _;
 
 use crate::{
@@ -35,6 +34,7 @@ use crate::{
         UpdateMaxStorageRequest,
         UpdateMaxStorageResponse,
     },
+    storage_cap::effective_encoded_budget,
     sui_object_reader,
     validation,
     webhook_keys,
@@ -91,12 +91,29 @@ pub async fn create_account(
             "max_unencoded_bytes must be a positive integer".into(),
         ));
     }
+    // `avg_blob_size` inflates the storage-cap admission ceiling (see
+    // `storage_cap`). Negative values are rejected; `0` disables
+    // inflation; an oversized value is accepted as a silent no-op. When
+    // omitted, fall back to the global default
+    // (`OYSTER_DEFAULT_AVG_BLOB_SIZE`) so new accounts get lower-bound
+    // semantics out of the box.
+    let avg_blob_size = body.as_ref().and_then(|b| b.avg_blob_size);
+    if let Some(avg) = avg_blob_size
+        && avg < 0
+    {
+        return Err(AppError::BadRequest(
+            "avg_blob_size must be non-negative".into(),
+        ));
+    }
+    let avg_blob_size =
+        Some(avg_blob_size.unwrap_or_else(|| clamp_u64_to_i64(state.config.default_avg_blob_size)));
     let note = body.and_then(|b| b.note).unwrap_or_else(|| "api".into());
     let account = db::accounts::create_account(
         &state.db,
         &auth.app_id,
         name.as_deref(),
         max_unencoded_bytes,
+        avg_blob_size,
     )
     .await?;
 
@@ -488,20 +505,36 @@ pub async fn update_max_storage(
             "max_unencoded_bytes must be a positive integer".into(),
         ));
     }
+    if let Some(avg) = body.avg_blob_size
+        && avg < 0
+    {
+        return Err(AppError::BadRequest(
+            "avg_blob_size must be non-negative".into(),
+        ));
+    }
     let new_cap = body.max_unencoded_bytes;
     let new_cap_u64 = new_cap as u64;
 
-    // Snapshot the old cap before any DB write so the audit event can
-    // record the transition the admin actually requested.
-    let old_cap = db::accounts::get_max_unencoded_bytes(&state.db, &account_id)
+    // Snapshot the old cap and current avg before any DB write. The old
+    // cap feeds the audit event; the current avg is the fallback when the
+    // request omits `avg_blob_size` (an update of the cap alone must keep
+    // the existing inflation knob and recompute the threshold against it).
+    let (old_cap, current_avg) = db::accounts::get_cap_and_avg_blob_size(&state.db, &account_id)
         .await?
         .ok_or(AppError::NotFound)?;
+    let new_avg = body.avg_blob_size.unwrap_or(current_avg);
+    let new_avg_u64 = u64::try_from(new_avg).unwrap_or(0);
 
     // (1) DB-only fast path: no on-chain pool yet.
     let pool_state = db::accounts::get_storage_pool(&state.db, &account_id).await?;
     let Some(pool_state) = pool_state else {
-        let updated =
-            db::accounts::set_max_unencoded_bytes(&state.db, &account_id, new_cap).await?;
+        let updated = db::accounts::set_max_unencoded_and_avg_blob_size(
+            &state.db,
+            &account_id,
+            new_cap,
+            new_avg,
+        )
+        .await?;
         if !updated {
             return Err(AppError::NotFound);
         }
@@ -518,12 +551,13 @@ pub async fn update_max_storage(
         .await?;
         tracing::info!(
             app_id = %auth.app_id, account_id = %account_id,
-            old_max = old_cap, new_max = new_cap,
+            old_max = old_cap, new_max = new_cap, new_avg_blob_size = new_avg,
             "max_unencoded_bytes updated (no on-chain pool)",
         );
         return Ok(Json(UpdateMaxStorageResponse {
             account_id,
             max_unencoded_bytes: new_cap,
+            avg_blob_size: new_avg,
             pool: None,
             shrink_tx_digest: None,
         }));
@@ -574,12 +608,16 @@ pub async fn update_max_storage(
     let n_shards = read_client.n_shards().await.map_err(|e| {
         AppError::BlobStore(BlobStoreError::Upstream(format!("read n_shards: {e}")))
     })?;
-    // Same saturating fallback as `storage_cap::enforce_storage_cap`:
-    // if the new cap exceeds the single-blob encoded limit for
-    // `n_shards`, the threshold is effectively `u64::MAX` and no
-    // orphan/shrink is possible.
-    let threshold = encoded_blob_length_for_n_shards(n_shards, new_cap_u64, EncodingType::RS2)
-        .unwrap_or(u64::MAX);
+    // Encoded budget the new cap corresponds to, using the SAME helper
+    // as the upload-side admission gate so a lowered cap can never admit
+    // data the gate would reject, nor orphan stored data. With a
+    // non-zero `avg_blob_size` the inflated budget is larger than the
+    // bare `f(new_cap)`, so any computed `extract_size` is generally
+    // smaller. Saturating fallback as in `storage_cap`: if the
+    // reference value exceeds the single-blob encoded limit for
+    // `n_shards`, the threshold is `u64::MAX` and no orphan/shrink is
+    // possible.
+    let threshold = effective_encoded_budget(new_cap_u64, new_avg_u64, n_shards);
 
     // (3) Hard 400 if lowering would orphan currently-stored data.
     if used_encoded > threshold {
@@ -634,8 +672,12 @@ pub async fn update_max_storage(
         }
     }
 
-    // (5) Persist the new cap only after the on-chain side succeeded.
-    let updated = db::accounts::set_max_unencoded_bytes(&state.db, &account_id, new_cap).await?;
+    // (5) Persist the new cap + avg only after the on-chain side
+    // succeeded — keeping the gate and threshold derived from the same
+    // (cap, avg) pair.
+    let updated =
+        db::accounts::set_max_unencoded_and_avg_blob_size(&state.db, &account_id, new_cap, new_avg)
+            .await?;
     if !updated {
         return Err(AppError::NotFound);
     }
@@ -656,7 +698,7 @@ pub async fn update_max_storage(
     .await?;
     tracing::info!(
         app_id = %auth.app_id, account_id = %account_id,
-        old_max = old_cap, new_max = new_cap,
+        old_max = old_cap, new_max = new_cap, new_avg_blob_size = new_avg,
         shrink_extract_size = ?extract_size_i64,
         shrink_tx_digest = ?shrink_tx_digest,
         "max_unencoded_bytes updated",
@@ -665,6 +707,7 @@ pub async fn update_max_storage(
     Ok(Json(UpdateMaxStorageResponse {
         account_id,
         max_unencoded_bytes: new_cap,
+        avg_blob_size: new_avg,
         pool: Some(PoolOnChainState {
             reserved_encoded_bytes: clamp_u64_to_i64(reserved_encoded),
             used_encoded_bytes: clamp_u64_to_i64(used_encoded),

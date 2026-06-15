@@ -340,7 +340,10 @@ impl IntoResponse for AppError {
                     tracing::error!(error = %msg, "pool creation failed");
                     (
                         StatusCode::BAD_GATEWAY,
-                        format!("pool creation failed [BlobStoreError::{}]", e.variant_name()),
+                        format!(
+                            "pool creation failed [BlobStoreError::{}]",
+                            e.variant_name()
+                        ),
                     )
                 }
                 BlobStoreError::Unreachable(msg) => {

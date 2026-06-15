@@ -76,6 +76,14 @@ pub struct Account {
     /// any on-chain work on the upload path. Backfilled to
     /// `5_000_000_000` for accounts created before migration 018.
     pub max_unencoded_bytes: i64,
+    /// Assumed average blob size, in *unencoded* bytes, used to inflate
+    /// the storage-cap admission ceiling so `max_unencoded_bytes`
+    /// behaves as a *lower* bound on storable capacity for blobs of this
+    /// size. `0` (the sentinel) disables inflation, preserving the
+    /// upper-bound behavior; backfilled to `0` for accounts created
+    /// before migration 020. New accounts default to
+    /// `OYSTER_DEFAULT_AVG_BLOB_SIZE` (10 MB).
+    pub avg_blob_size: i64,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 last-update timestamp.
@@ -215,6 +223,13 @@ pub struct CreateAccountRequest {
     /// be strictly positive; `0` and negative values are rejected with
     /// 400.
     pub max_unencoded_bytes: Option<i64>,
+    /// Optional assumed average blob size, in *unencoded* bytes, used to
+    /// turn `max_unencoded_bytes` into a *lower* bound on storable
+    /// capacity (see [`Account::avg_blob_size`]). Defaults to
+    /// `OYSTER_DEFAULT_AVG_BLOB_SIZE` (10 MB) when omitted. `0` disables
+    /// inflation; negative values are rejected with 400; an oversized
+    /// value is accepted as a silent no-op.
+    pub avg_blob_size: Option<i64>,
 }
 
 /// Request body for `PUT /admin/accounts/{account_id}/max-storage`.
@@ -223,6 +238,12 @@ pub struct UpdateMaxStorageRequest {
     /// New per-account cap, in *unencoded* bytes. Must be strictly
     /// positive; `0` and negative values are rejected with 400.
     pub max_unencoded_bytes: i64,
+    /// Optional new assumed average blob size, in *unencoded* bytes (see
+    /// [`Account::avg_blob_size`]). When omitted, the account's existing
+    /// `avg_blob_size` is retained and the orphan/shrink threshold is
+    /// recomputed against it. `0` disables inflation; negative values
+    /// are rejected with 400; an oversized value is a silent no-op.
+    pub avg_blob_size: Option<i64>,
 }
 
 /// Response body for `PUT /admin/accounts/{account_id}/max-storage`.
@@ -232,6 +253,10 @@ pub struct UpdateMaxStorageResponse {
     pub account_id: AccountId,
     /// The new cap, in *unencoded* bytes.
     pub max_unencoded_bytes: i64,
+    /// The effective assumed average blob size after the update (see
+    /// [`Account::avg_blob_size`]). Echoes the request value when
+    /// supplied, otherwise the account's retained value.
+    pub avg_blob_size: i64,
     /// On-chain `StoragePool` snapshot after the (optional) shrink.
     /// `None` when the account has never lazy-created a pool (so no
     /// on-chain read was performed).

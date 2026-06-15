@@ -215,6 +215,7 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -259,6 +260,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -307,7 +309,7 @@ async fn full_response(
 
 /// Helper: create an account directly via DB, returns (account_id, api_key_secret).
 async fn create_test_account(pool: &db::DbPool) -> (String, String) {
-    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None, None)
+    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None, None, None)
         .await
         .unwrap();
     let raw_key = auth::generate_api_key();
@@ -1117,6 +1119,7 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -1560,6 +1563,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -1635,6 +1639,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -1650,7 +1655,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None)
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
         .await
         .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
@@ -1859,6 +1864,7 @@ async fn test_s3_with_spy(
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
     };
 
@@ -1873,7 +1879,7 @@ async fn test_s3_with_spy(
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None)
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
         .await
         .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
@@ -4243,6 +4249,7 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
         extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
         allow_http_webhook_scheme: false,
     };
 
@@ -4754,6 +4761,7 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
                 extension_claim_batch_size: 100,
                 extension_claim_cooldown_secs: 60,
                 extension_metrics_bind_addr: "unused".into(),
+                default_avg_blob_size: 0,
                 allow_http_webhook_scheme: true,
             };
             let pool = db::create_pool(&config.database_url).await.unwrap();

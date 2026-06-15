@@ -366,14 +366,18 @@ async fn create_test_account_via_admin(app: &Router, admin_key: &str) -> (String
 }
 
 /// Helper: create an account via admin with an explicit
-/// `max_unencoded_bytes` cap.
+/// `max_unencoded_bytes` cap and `avg_blob_size` inflation knob. Pass
+/// `avg_blob_size = 0` for the historical upper-bound (no-inflation)
+/// behavior.
 async fn create_test_account_with_cap(
     app: &Router,
     admin_key: &str,
     max_unencoded_bytes: u64,
+    avg_blob_size: u64,
 ) -> (String, String) {
-    let body_str =
-        format!(r#"{{"name": "e2e-cap-account", "max_unencoded_bytes": {max_unencoded_bytes}}}"#);
+    let body_str = format!(
+        r#"{{"name": "e2e-cap-account", "max_unencoded_bytes": {max_unencoded_bytes}, "avg_blob_size": {avg_blob_size}}}"#
+    );
     let req = Request::post("/api/v1/accounts")
         .header("authorization", format!("Bearer {admin_key}"))
         .header("content-type", "application/json")
@@ -1021,7 +1025,7 @@ fn over_cap_upload_returns_400_without_submitting_tx() {
         let app = &harness.router;
         let (_app_id, admin_key) = harness.create_app_admin_key("over-cap-app").await;
         let (account_id_str, api_key) =
-            create_test_account_with_cap(app, &admin_key, 1_000_000).await;
+            create_test_account_with_cap(app, &admin_key, 1_000_000, 0).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "cap-bucket").await;
 
@@ -1086,6 +1090,99 @@ async fn put_max_storage(
     json_response(app, req).await
 }
 
+/// Helper: PUT max-storage with both a new cap and an explicit
+/// `avg_blob_size`.
+async fn put_max_storage_with_avg(
+    app: &Router,
+    admin_key: &str,
+    account_id: &str,
+    new_cap: u64,
+    avg_blob_size: u64,
+) -> (axum::http::StatusCode, Value) {
+    let body = format!(r#"{{"max_unencoded_bytes": {new_cap}, "avg_blob_size": {avg_blob_size}}}"#);
+    let req = Request::put(format!("/api/v1/accounts/{account_id}/max-storage"))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body))
+        .unwrap();
+    json_response(app, req).await
+}
+
+/// `avg_blob_size` is settable at account creation and via
+/// `PUT .../max-storage`, persisted to the DB, echoed in the response,
+/// and retained across a cap-only update that omits the field. Uses the
+/// DB-only fast path (no upload → no on-chain pool) so the assertions
+/// are fully deterministic; the cap-inflation arithmetic itself is
+/// covered by `oyster::storage_cap` unit tests.
+#[test]
+fn admin_avg_blob_size_create_update_and_retention() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("avg-app").await;
+
+        // 1. Created with an explicit avg_blob_size → persisted to DB.
+        let (account_id_str, _api_key) =
+            create_test_account_with_cap(app, &admin_key, 2_000_000, 500_000).await;
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        let acc = oyster::db::accounts::get_account(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .expect("account exists");
+        assert_eq!(acc.avg_blob_size, 500_000);
+        assert_eq!(acc.max_unencoded_bytes, 2_000_000);
+
+        // 2. PUT max-storage with a new cap + avg → echoed and persisted.
+        let (status, body) =
+            put_max_storage_with_avg(app, &admin_key, &account_id_str, 3_000_000, 1_000_000).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body={body}");
+        assert_eq!(body["max_unencoded_bytes"].as_i64(), Some(3_000_000));
+        assert_eq!(body["avg_blob_size"].as_i64(), Some(1_000_000));
+        let acc = oyster::db::accounts::get_account(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acc.max_unencoded_bytes, 3_000_000);
+        assert_eq!(acc.avg_blob_size, 1_000_000);
+
+        // 3. PUT max-storage with cap only (avg omitted) → avg retained.
+        let (status, body) = put_max_storage(app, &admin_key, &account_id_str, 4_000_000).await;
+        assert_eq!(status, axum::http::StatusCode::OK, "body={body}");
+        assert_eq!(body["max_unencoded_bytes"].as_i64(), Some(4_000_000));
+        assert_eq!(
+            body["avg_blob_size"].as_i64(),
+            Some(1_000_000),
+            "avg_blob_size must be retained when the request omits it: {body}"
+        );
+        let acc = oyster::db::accounts::get_account(&harness.db, &account_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(acc.max_unencoded_bytes, 4_000_000);
+        assert_eq!(acc.avg_blob_size, 1_000_000);
+
+        // 4. A negative avg_blob_size is rejected with 400.
+        let (status, _body) =
+            put_max_storage_with_avg(app, &admin_key, &account_id_str, 4_000_000, 0).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "avg=0 is the valid sentinel"
+        );
+        let bad = r#"{"max_unencoded_bytes": 4000000, "avg_blob_size": -1}"#.to_string();
+        let req = Request::put(format!("/api/v1/accounts/{account_id_str}/max-storage"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(bad))
+            .unwrap();
+        let (status, _body) = json_response(app, req).await;
+        assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+    });
+}
+
 /// Phase 4: an admin can lower an account's `max_unencoded_bytes`
 /// below the on-chain `reserved_encoded_capacity_bytes` and the route
 /// submits a Pearl-signed `decrease_storage_pool_capacity_by_size` PTB
@@ -1102,7 +1199,7 @@ fn admin_lower_cap_triggers_on_chain_shrink() {
         let (_app_id, admin_key) = harness.create_app_admin_key("shrink-app").await;
         // Generous cap so the first upload doesn't itself trigger a shrink.
         let (account_id_str, api_key) =
-            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000, 0).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "shrink-bucket").await;
 
@@ -1194,7 +1291,7 @@ fn admin_lower_cap_rejects_when_would_orphan() {
         let app = &harness.router;
         let (_app_id, admin_key) = harness.create_app_admin_key("orphan-app").await;
         let (account_id_str, api_key) =
-            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000, 0).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "orphan-bucket").await;
 
@@ -1266,7 +1363,7 @@ fn e2e_store_blob_over_encoder_ceiling_returns_413() {
         let (_app_id, admin_key) = harness.create_app_admin_key("oversize-app").await;
         // Generous cap so the storage-cap check doesn't trip first.
         let (_account_id, api_key) =
-            create_test_account_with_cap(app, &admin_key, 5_000_000_000).await;
+            create_test_account_with_cap(app, &admin_key, 5_000_000_000, 0).await;
         fund_test_wallet(&harness, app, &api_key).await;
         let bucket_id = create_test_bucket(app, &api_key, "oversize-bucket").await;
 

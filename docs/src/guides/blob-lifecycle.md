@@ -120,6 +120,17 @@ implies. (On small-shard / large-cap testbeds where the forward
 encoder would overflow `i64`, the pre-check falls back to a
 saturating comparison rather than a `500`.)
 
+By default the cap is an *upper* bound on storable unencoded bytes
+(each blob's fixed metadata overhead is paid per blob, so many small
+blobs hit the cap early). Setting a non-zero per-account
+[`avg_blob_size`](../json-api/admin.md#lower-bound-semantics-avg_blob_size)
+inflates the admission ceiling by the per-blob expansion factor
+`f(s)/s`, turning the cap into a *lower* bound: at least
+`max_unencoded_bytes` unencoded bytes are guaranteed storable when the
+account's blobs average ≥ `s`. New accounts default to a 10 MB
+`avg_blob_size`; `avg_blob_size = 0` preserves the upper-bound
+behavior.
+
 ### Why no per-process lock
 
 Oyster scales horizontally: a `Mutex` inside one replica can't

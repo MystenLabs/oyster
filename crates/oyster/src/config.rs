@@ -53,6 +53,12 @@ pub struct Config {
     pub extension_claim_cooldown_secs: u64,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
+    /// Default `avg_blob_size` (unencoded bytes) assigned to newly-created
+    /// accounts that omit the field. Drives the storage-cap inflation that
+    /// makes `max_unencoded_bytes` a *lower* bound for blobs of this size.
+    /// `0` disables inflation. Existing accounts are unaffected (they
+    /// backfill to `0` via migration 020).
+    pub default_avg_blob_size: u64,
     /// **Test-only.** When true, `validate_webhook_url` accepts `http://`
     /// in addition to `https://`. Production builds always leave this at
     /// `false`; integration tests flip it on so they can register a webhook
@@ -116,6 +122,10 @@ impl Config {
                 .unwrap_or(60),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
+            default_avg_blob_size: std::env::var("OYSTER_DEFAULT_AVG_BLOB_SIZE")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000_000),
             allow_http_webhook_scheme: false,
         }
     }

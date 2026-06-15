@@ -1,5 +1,23 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Per-account `avg_blob_size` knob (unencoded bytes) that turns
+  `max_unencoded_bytes` into a *lower* bound on storable capacity for
+  blobs of that size. When set, the storage-cap admission ceiling is
+  inflated by the per-blob expansion factor `f(s)/s`, guaranteeing at
+  least `max_unencoded_bytes` unencoded bytes are storable when blobs
+  average ≥ `s`. Settable at account creation and via
+  `PUT /api/v1/accounts/{account_id}/max-storage` (both echo the value;
+  the orphan/shrink threshold uses the same inflated budget). `0` is the
+  no-inflation sentinel (the historical upper-bound behavior). New
+  accounts default to `OYSTER_DEFAULT_AVG_BLOB_SIZE` (10 MB); existing
+  accounts backfill to `0`. Adds migration `020_avg_blob_size`
+  (`ALTER TABLE accounts ADD COLUMN avg_blob_size BIGINT NOT NULL
+  DEFAULT 0`) for both SQLite and Postgres, and the
+  `OYSTER_DEFAULT_AVG_BLOB_SIZE` environment variable.
+
 ## [0.11.1] - 2026-06-04
 
 ### Added

@@ -493,11 +493,12 @@ impl DirectWalrusBlobStore {
         // *before* lazy-creating a `StoragePool` on-chain. The full cap
         // check (which needs the pool's on-chain `used_encoded_bytes`)
         // runs after the pool is resolved.
-        let max_unencoded_bytes = db::accounts::get_max_unencoded_bytes(&self.db, account_id)
-            .await?
-            .ok_or_else(|| {
-                BlobStoreError::Internal(format!("account {account_id} not found in DB"))
-            })?;
+        let (max_unencoded_bytes, avg_blob_size) =
+            db::accounts::get_cap_and_avg_blob_size(&self.db, account_id)
+                .await?
+                .ok_or_else(|| {
+                    BlobStoreError::Internal(format!("account {account_id} not found in DB"))
+                })?;
         if i128::from(unencoded_size) > i128::from(max_unencoded_bytes) {
             return Err(cap_violation_to_error(CapViolation {
                 max_unencoded_bytes: max_unencoded_bytes.max(0) as u64,
@@ -544,10 +545,18 @@ impl DirectWalrusBlobStore {
                 "negative max_unencoded_bytes {max_unencoded_bytes} for account {account_id}"
             ))
         })?;
+        // `avg_blob_size` (unencoded bytes) inflates the encoded
+        // admission ceiling so the cap is a *lower* bound for blobs of
+        // this size. `0` (the sentinel, and the value for accounts
+        // created before migration 020) disables inflation. A negative
+        // value would be a DB-invariant violation (the route layer
+        // rejects negatives); clamp to the sentinel defensively.
+        let avg_blob_size_u64 = u64::try_from(avg_blob_size).unwrap_or(0);
         if let Err(violation) = storage_cap::enforce_storage_cap(
             cap_u64,
             on_chain_pool.used_encoded_bytes,
             unencoded_size,
+            avg_blob_size_u64,
             n_shards,
         ) {
             return Err(cap_violation_to_error(violation));

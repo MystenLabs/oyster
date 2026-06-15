@@ -24,7 +24,8 @@ is generated automatically.
 ```json
 {
   "name": "my-app-user",
-  "max_unencoded_bytes": 5000000000
+  "max_unencoded_bytes": 5000000000,
+  "avg_blob_size": 10000000
 }
 ```
 
@@ -32,6 +33,7 @@ is generated automatically.
 |-------|------|----------|-------------|
 | `name` | string | no | Human-readable account name; defaults to the account ID if omitted |
 | `max_unencoded_bytes` | integer | no | Per-account storage cap, in *unencoded* bytes. Defaults to `5_000_000_000` (5 × 10⁹) when omitted. Must be strictly positive; `0` and negative values are rejected with `400` |
+| `avg_blob_size` | integer | no | Assumed average blob size, in *unencoded* bytes. Turns `max_unencoded_bytes` into a **lower** bound on storable capacity for blobs of this size (see [Lower-bound semantics](#lower-bound-semantics-avg_blob_size) below). Defaults to the server's `OYSTER_DEFAULT_AVG_BLOB_SIZE` (**10 MB**) when omitted. `0` disables inflation (the historical upper-bound behavior); negative values are rejected with `400`; an oversized value is accepted as a silent no-op |
 
 **Example:**
 
@@ -72,7 +74,7 @@ curl -s -X POST \
 
 | Status | Condition |
 |--------|-----------|
-| `400` | `max_unencoded_bytes` must be a positive integer |
+| `400` | `max_unencoded_bytes` must be a positive integer, or `avg_blob_size` is negative |
 | `401` | Missing or invalid admin key |
 
 ### Update Storage Cap
@@ -96,12 +98,13 @@ back to the Pearl-derived wallet.
 **Request body:**
 
 ```json
-{ "max_unencoded_bytes": 10000000000 }
+{ "max_unencoded_bytes": 10000000000, "avg_blob_size": 10000000 }
 ```
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
 | `max_unencoded_bytes` | integer | yes | New per-account cap, in *unencoded* bytes. Must be strictly positive |
+| `avg_blob_size` | integer | no | New assumed average blob size, in *unencoded* bytes (see [Lower-bound semantics](#lower-bound-semantics-avg_blob_size)). When **omitted, the account's existing `avg_blob_size` is retained** and the orphan/shrink threshold is recomputed against it. `0` disables inflation; negative values are rejected with `400`; an oversized value is a silent no-op |
 
 **Example:**
 
@@ -119,6 +122,7 @@ curl -s -X PUT \
 {
   "account_id": "550e8400-e29b-41d4-a716-446655440000",
   "max_unencoded_bytes": 10000000000,
+  "avg_blob_size": 10000000,
   "pool": {
     "reserved_encoded_bytes": 8000000000,
     "used_encoded_bytes": 4123456789
@@ -131,6 +135,7 @@ curl -s -X PUT \
 |-------|------|-------------|
 | `account_id` | string | The account whose cap was updated |
 | `max_unencoded_bytes` | integer | The new cap, in *unencoded* bytes |
+| `avg_blob_size` | integer | The effective assumed average blob size after the update. Echoes the request value when supplied, otherwise the account's retained value |
 | `pool` | object or null | On-chain `StoragePool` snapshot after the (optional) shrink. `null` when the account has never lazy-created a pool (DB-only fast path — no on-chain read was performed) |
 | `pool.reserved_encoded_bytes` | integer | `storage.storage_size` — encoded bytes reserved by the pool |
 | `pool.used_encoded_bytes` | integer | Encoded bytes currently consumed by registered blobs |
@@ -141,6 +146,33 @@ the cap is updated in the DB only — `pool` and `shrink_tx_digest`
 are both `null`. When the new cap covers the existing pool's reserved
 bytes, the same DB-only path runs (`shrink_tx_digest` is `null`,
 `pool` is populated from the on-chain read).
+
+### Lower-bound semantics (`avg_blob_size`)
+
+`max_unencoded_bytes` is stated in *unencoded* bytes, but Walrus tracks
+usage in *encoded* bytes, and the encoding `f` carries a large fixed
+per-blob metadata overhead. By default (`avg_blob_size = 0`) the cap
+therefore acts as an **upper** bound: an account storing many small
+blobs pays that overhead per blob and hits the cap well below its
+stated unencoded budget.
+
+Setting `avg_blob_size = s` flips this into a **lower** bound *for blobs
+averaging `s`*: Oyster inflates the encoded admission ceiling by the
+per-blob expansion factor `f(s)/s`, guaranteeing that at least
+`max_unencoded_bytes` unencoded bytes are storable when the account's
+blobs average ≥ `s`. The expansion factor shrinks as blobs grow —
+roughly `66034×` at 1 KB, `70×` at 1 MB, `11×` at 10 MB, `5.1×` at
+100 MB, asymptoting to ~`4.5×` — so a 10 MB `avg_blob_size` (the
+default) sets the ceiling at about `11 ×` the cap's bare encoded value.
+Blobs smaller than `s` carry more overhead and so reach the ceiling
+before the unencoded total reaches `max_unencoded_bytes`.
+
+This only raises the *admission ceiling*; it does **not** pre-reserve or
+pre-pay capacity. On-chain pool capacity still grows incrementally per
+upload (pay-as-you-go for actual encoded usage), so a non-zero
+`avg_blob_size` costs nothing for normal workloads. Setting
+`avg_blob_size = 0` reproduces the historical upper-bound behavior
+byte-for-byte; accounts created before this feature default to `0`.
 
 **On-chain shrink semantics.** When the new cap is lower than the
 pool's current reserved capacity and at least one encoded byte can
@@ -158,7 +190,7 @@ these extracted `Storage` objects accumulate in the wallet[^orphan].
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Body invalid (`max_unencoded_bytes` ≤ 0), `would_orphan` (the new cap is below the account's current on-chain encoded usage), or `shrink_aborted` (a concurrent upload re-consumed the freed capacity between the on-chain read and the PTB submission) |
+| `400` | Body invalid (`max_unencoded_bytes` ≤ 0 or `avg_blob_size` < 0), `would_orphan` (the new cap is below the account's current on-chain encoded usage), or `shrink_aborted` (a concurrent upload re-consumed the freed capacity between the on-chain read and the PTB submission) |
 | `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Account not found |

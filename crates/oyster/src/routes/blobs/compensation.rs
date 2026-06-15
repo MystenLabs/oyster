@@ -260,6 +260,7 @@ mod tests {
             extension_claim_batch_size: 100,
             extension_claim_cooldown_secs: 60,
             extension_metrics_bind_addr: "unused".into(),
+            default_avg_blob_size: 0,
             allow_http_webhook_scheme: true,
         }
     }
@@ -269,7 +270,7 @@ mod tests {
     #[tokio::test]
     async fn skips_when_encoded_size_is_none() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
             .await
             .unwrap();
         let blob_store = Arc::new(RecordingBlobStore::new());

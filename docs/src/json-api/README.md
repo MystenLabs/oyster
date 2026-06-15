@@ -76,7 +76,11 @@ once here; per-route docs link back.
   `cap_exceeded` block pointing at the admin endpoint that can
   raise the cap. Currently fires on
   `PUT /buckets/{bucket}/blobs/{key}` (see
-  [Store Blob](blobs.md#store-blob)).
+  [Store Blob](blobs.md#store-blob)). The cap is an *upper* bound by
+  default; a per-account
+  [`avg_blob_size`](admin.md#lower-bound-semantics-avg_blob_size)
+  turns it into a *lower* bound on storable capacity for blobs of
+  that size.
 
 The admin-side on-chain shrink endpoint
 ([`PUT /accounts/{account_id}/max-storage`](admin.md#update-storage-cap))

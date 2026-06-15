@@ -873,11 +873,14 @@ def scenario_storage_cap(base, auth, ctx):
     created_keys = []
     json_hdrs = {**admin_auth, "Content-Type": "application/json"}
 
-    def set_cap(new_cap, label):
+    def set_cap(new_cap, label, avg_blob_size=None):
         nonlocal passed
+        req_body = {"max_unencoded_bytes": new_cap}
+        if avg_blob_size is not None:
+            req_body["avg_blob_size"] = avg_blob_size
         status, _, body = request(
             "PUT", cap_url,
-            body={"max_unencoded_bytes": new_cap},
+            body=req_body,
             headers=json_hdrs,
         )
         if status != 200:
@@ -889,6 +892,12 @@ def scenario_storage_cap(base, auth, ctx):
             fail(
                 f"max-storage ({label}) response cap is "
                 f"{data.get('max_unencoded_bytes')}, expected {new_cap}"
+            )
+            passed = False
+        if avg_blob_size is not None and data.get("avg_blob_size") != avg_blob_size:
+            fail(
+                f"max-storage ({label}) response avg_blob_size is "
+                f"{data.get('avg_blob_size')}, expected {avg_blob_size}"
             )
             passed = False
         return data
@@ -1037,6 +1046,30 @@ def scenario_storage_cap(base, auth, ctx):
                 passed = False
             else:
                 ok("oversize PUT -> 413 with payload_too_large block")
+
+        # 8) avg_blob_size knob: set a non-zero avg alongside the cap and
+        #    confirm it round-trips through the live API. avg_blob_size
+        #    turns the cap into a *lower* bound on storable unencoded
+        #    capacity for blobs of this size (see storage_cap); 0 is the
+        #    no-inflation sentinel. Set it, confirm the echo, then clear
+        #    it back to 0 so the recovered-payload uploads above keep the
+        #    original semantics for any re-run.
+        if set_cap(RAISED_CAP, "set avg_blob_size", avg_blob_size=1_000_000) is not None:
+            ok("avg_blob_size=1_000_000 accepted and echoed")
+        if set_cap(RAISED_CAP, "clear avg_blob_size", avg_blob_size=0) is not None:
+            ok("avg_blob_size reset to 0 (no-inflation sentinel)")
+
+        # A negative avg_blob_size is rejected with 400.
+        status, _, body = request(
+            "PUT", cap_url,
+            body={"max_unencoded_bytes": RAISED_CAP, "avg_blob_size": -1},
+            headers=json_hdrs,
+        )
+        if status != 400:
+            fail(f"negative avg_blob_size returned {status} (expected 400): {body!r}")
+            passed = False
+        else:
+            ok("negative avg_blob_size rejected with 400")
     finally:
         # 7) Cleanup: drain blobs, delete bucket, restore cap.
         for key in created_keys:
