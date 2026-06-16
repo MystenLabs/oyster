@@ -544,8 +544,29 @@ fields nulled.
 
 ## Server Commands
 
-The `oysterd app` subcommands let server operators manage apps and admin
-keys from the command line.
+`oysterd` is the server binary. Besides the `oysterd app` subcommands below
+(for managing apps and admin keys), it runs the service itself.
+
+### Running the Server
+
+```bash
+oysterd serve     # run the HTTP + S3 server (default when no subcommand given)
+oysterd extend     # run the background blob-extension service only
+```
+
+`oysterd serve` is the default — running `oysterd` with no subcommand is
+equivalent. `oysterd extend` runs only the background task that renews
+expiring storage pools (see [Blob Lifecycle](../guides/blob-lifecycle.md)),
+without serving the API.
+
+The global `--pearl-service-secret-file <PATH>` flag reads the Pearl service
+secret from a file instead of the `PEARL_SERVICE_SECRET` environment variable —
+useful for mounting the secret as a file (e.g. a Kubernetes secret). It applies
+to any `oysterd` invocation.
+
+Both services are otherwise configured via environment variables; see the
+[README](https://github.com/MystenLabs/oyster#configuration) for the full
+env-var reference.
 
 ### Create App
 
@@ -580,15 +601,23 @@ oysterd app issue-admin-key <app_id>
 
 Generates a fresh admin key for the given app. Multiple admin keys per
 app are supported with no cap; use this for AWS-style two-key rotation.
-The raw key prints to stdout (a single line); the key id and 8-char
-prefix print to stderr.
+
+**stdout** carries the raw admin key as a single line — this is the only
+machine-readable output, suitable for capturing in a variable or piping. The
+key id and 8-char prefix are **not** printed to stdout; they appear in a
+`tracing::info!` structured log line (fields `app_id`, `key_id`, `prefix`,
+message `issued admin key`) written to **stderr**. That line is emitted at the
+`info` level, so it shows with the default log filter but is suppressed if
+`RUST_LOG` raises the threshold above `info`. It is a human-readable log line,
+not a stable machine-readable string — to recover a key id reliably, use
+[List Admin Keys](#list-admin-keys).
 
 **Example:**
 
 ```bash
 oysterd app issue-admin-key 550e8400-e29b-41d4-a716-446655440000
 # stdout: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-# stderr: issued admin key id=<key_id> prefix=01234567 for app 550e8400-...
+# stderr (info log): ... issued admin key app_id=550e8400-... key_id=<key_id> prefix=01234567
 ```
 
 The printed key can be used directly in the `Authorization` header:
@@ -604,14 +633,16 @@ oysterd app list-admin-keys <app_id>
 ```
 
 Lists all admin keys for the given app in tab-separated format, including
-revoked ones (so an operator can confirm what is currently live).
+revoked ones (so an operator can confirm what is currently live). There is no
+header row; columns are `id`, `prefix`, `created_at`, `revoked_at`. The
+`revoked_at` column is the **empty string** for active keys (so a line for an
+active key ends with a trailing tab).
 
-**Example output:**
+**Example output** (`→` marks a tab):
 
 ```
-ID	PREFIX	CREATED_AT	REVOKED_AT
-b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e	01234567	2026-04-15T10:30:00Z	-
-a1b2c3d4-e5f6-7890-abcd-ef0123456789	89abcdef	2026-03-01T08:00:00Z	2026-04-15T10:31:00Z
+b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e→01234567→2026-04-15T10:30:00Z→
+a1b2c3d4-e5f6-7890-abcd-ef0123456789→89abcdef→2026-03-01T08:00:00Z→2026-04-15T10:31:00Z
 ```
 
 ### Revoke Admin Key

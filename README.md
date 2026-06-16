@@ -223,7 +223,6 @@ files to `/run/secrets/`).
 | `BIND_ADDR` | `0.0.0.0:3000` | HTTP listen address |
 | `DATABASE_URL` | `sqlite:oyster.db?mode=rwc` | Database connection string (SQLite or PostgreSQL) |
 | `BLOB_STORE_PATH` | `blob_store` | Path for LocalBlobStore |
-| `ENABLE_DEBUG` | `false` | Enable `/debug/*` endpoints |
 | `PEARL_GRPC_URL` | -- | Pearl gRPC address (e.g. `http://127.0.0.1:50051`) |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for Pearl auth (**required**) |
 | `SUI_RPC_URL` | -- | Sui RPC endpoint |

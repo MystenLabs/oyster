@@ -39,6 +39,7 @@ exists at that key, it is replaced.
 | `Content-Type` | `application/octet-stream` | MIME type stored with the blob |
 | `If-Match` | — | Only overwrite if the existing blob's ETag matches (412 otherwise) |
 | `If-None-Match` | — | Set to `*` to create only if the key doesn't exist (412 otherwise) |
+| `x-oyster-tag` | — | Attach a tag as `key=value` (percent-decoded). Repeatable — send the header once per tag. See [Blob Tags](#blob-tags) |
 
 **Request body:** Raw binary data (max **1 GB**)
 
@@ -83,6 +84,23 @@ curl -s -X PUT \
   --data-binary "Updated content" \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
 ```
+
+**Example — upload with tags:**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: text/plain" \
+  -H "x-oyster-tag: env=prod" \
+  -H "x-oyster-tag: team=platform" \
+  --data-binary "Hello, Oyster!" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
+```
+
+Each `x-oyster-tag` header carries exactly one `key=value` pair (percent-decoded;
+no `&`-joined pairs). Tags are **replaced** on every PUT, so re-uploading a key
+without any `x-oyster-tag` headers clears its tags. The same caps as the
+[Blob Tags](#blob-tags) endpoints apply. See [Tag rules](#tag-rules).
 
 **Response** (`201 Created`):
 
@@ -410,3 +428,182 @@ the DB row is left intact on purpose so the client can fund the
 Pearl-derived wallet and retry the same `DELETE` — other on-chain
 delete errors are still swallowed to preserve idempotent-delete
 semantics.
+
+## Blob Tags
+
+Each blob can carry a small set of arbitrary `key=value` tags, stored in
+Oyster's database (independent of the underlying blob content). Tags set via
+this JSON API and tags set via the [S3 Object Tagging](../s3-api/objects.md#object-tagging)
+operations share the same backing store — a tag written through one API is
+visible through the other.
+
+All tag endpoints live under a blob's `/tags` path, require Bearer auth, and
+return `404` if the blob does not exist or is not owned by the authenticated
+account.
+
+### Tag rules
+
+| Limit | Value |
+|-------|-------|
+| Max tags per blob | 10 |
+| Max tag key length | 128 bytes |
+| Max tag value length | 256 bytes |
+| Max total set size | 2048 bytes (sum of all keys + values) |
+
+Allowed characters in keys and values: ASCII alphanumerics plus space and
+`+ - = . _ : / @`. Keys must be non-empty; values may be empty. Duplicate keys
+are rejected. Any request whose resulting tag set violates these rules returns
+`400`.
+
+### Get Tags
+
+```
+GET /api/v1/buckets/{bucket_name}/blobs/{key}/tags
+```
+
+Returns all tags on the blob.
+
+**Example:**
+
+```bash
+curl -s -H "Authorization: Bearer $API_KEY" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags" | jq
+```
+
+**Response** (`200 OK`):
+
+```json
+{
+  "tags": {
+    "env": "prod",
+    "team": "platform"
+  }
+}
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `tags` | object | Map of tag keys to values (empty object if the blob has no tags) |
+
+### Replace Tags
+
+```
+PUT /api/v1/buckets/{bucket_name}/blobs/{key}/tags
+```
+
+Replaces the blob's **entire** tag set with the supplied map. Tags not present
+in the request are removed.
+
+**Request body:**
+
+```json
+{ "tags": { "env": "prod", "team": "platform" } }
+```
+
+**Example:**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": {"env": "prod", "team": "platform"}}' \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags"
+```
+
+**Response:** `204 No Content`
+
+**Errors:** `400` if the tag set violates [tag rules](#tag-rules); `401` if
+unauthenticated; `404` if the blob is not found.
+
+### Merge Tags
+
+```
+PATCH /api/v1/buckets/{bucket_name}/blobs/{key}/tags
+```
+
+Merges the supplied map into the blob's existing tags (upsert per key). Keys not
+mentioned in the request are left untouched.
+
+**Request body:**
+
+```json
+{ "tags": { "team": "storage" } }
+```
+
+**Example:**
+
+```bash
+curl -s -X PATCH \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"tags": {"team": "storage"}}' \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags"
+```
+
+**Response:** `204 No Content`
+
+**Errors:** `400` if the **merged** set would violate [tag rules](#tag-rules)
+(e.g. exceed the 10-tag cap); `401` if unauthenticated; `404` if the blob is not
+found.
+
+### Delete All Tags
+
+```
+DELETE /api/v1/buckets/{bucket_name}/blobs/{key}/tags
+```
+
+Clears every tag on the blob.
+
+**Example:**
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: Bearer $API_KEY" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags"
+```
+
+**Response:** `204 No Content`
+
+### Set a Single Tag
+
+```
+PUT /api/v1/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}
+```
+
+Upserts a single tag. The request body is the raw tag value as
+**`text/plain`** (not JSON).
+
+**Example:**
+
+```bash
+curl -s -X PUT \
+  -H "Authorization: Bearer $API_KEY" \
+  -H "Content-Type: text/plain" \
+  --data-binary "prod" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags/env"
+```
+
+**Response:** `204 No Content`
+
+**Errors:** `400` if adding the tag would exceed the 10-tag cap or the
+value/key violates [tag rules](#tag-rules); `401` if unauthenticated; `404` if
+the blob is not found.
+
+### Delete a Single Tag
+
+```
+DELETE /api/v1/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}
+```
+
+Deletes a single tag by key. Idempotent — deleting a tag that doesn't exist
+still returns `204`.
+
+**Example:**
+
+```bash
+curl -s -X DELETE \
+  -H "Authorization: Bearer $API_KEY" \
+  "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt/tags/env"
+```
+
+**Response:** `204 No Content`

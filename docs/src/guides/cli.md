@@ -118,6 +118,15 @@ oyster store data.bin --bucket my-bucket --content-type application/x-custom
 If `--content-type` is omitted, the CLI auto-detects it from the file
 extension (see [Content-Type Detection](#content-type-detection) below).
 
+Attach tags at upload time with `--tag key=value` (repeatable):
+
+```bash
+oyster store photo.png --bucket my-bucket --tag env=prod --tag team=platform
+```
+
+Tags are replaced on every upload to a key. See [Blob Tags](#blob-tags) for the
+limits and for managing tags after upload.
+
 ### Download a File
 
 ```bash
@@ -150,6 +159,55 @@ images/cat.png image/png       204800  2025-01-15T11:00:00Z
 
 ```bash
 oyster delete hello.txt --bucket my-bucket
+```
+
+## Blob Tags
+
+The `oyster tags` command group manages the `key=value` tags on a blob. Tags
+are stored in Oyster's database and shared with the
+[S3 object-tagging](../s3-api/objects.md#object-tagging) operations. Limits:
+max 10 tags, key ≤ 128 bytes, value ≤ 256 bytes, set ≤ 2048 bytes, and a
+restricted charset (ASCII alphanumerics plus space and `+ - = . _ : / @`).
+
+### List tags
+
+```bash
+oyster tags list --bucket my-bucket --key hello.txt
+```
+
+### Set a single tag
+
+Upserts one tag (`key=value`):
+
+```bash
+oyster tags set --bucket my-bucket --key hello.txt env=prod
+```
+
+### Remove a single tag
+
+```bash
+oyster tags rm --bucket my-bucket --key hello.txt env
+```
+
+### Clear all tags
+
+```bash
+oyster tags clear --bucket my-bucket --key hello.txt
+```
+
+### Replace vs. merge
+
+`replace` sets the **entire** tag set, dropping any tags not listed. `merge`
+upserts the supplied tags, leaving other existing tags untouched. Both take
+repeatable `--tag key=value` flags:
+
+```bash
+# Full replace — the blob ends up with exactly these two tags
+oyster tags replace --bucket my-bucket --key hello.txt \
+  --tag env=prod --tag team=platform
+
+# Merge — adds/updates these tags, keeps the rest
+oyster tags merge --bucket my-bucket --key hello.txt --tag team=storage
 ```
 
 ## API Key and Access Key Management
@@ -201,8 +259,11 @@ overlap:
 ```bash
 # operator
 oysterd app issue-admin-key <APP_ID>
-# prints: <new admin_key>           (to stdout)
-# prints: <new key id>              (to stderr — needed later to revoke)
+# stdout: <new admin_key>   (the raw bearer — the only machine-readable output)
+# stderr: a `tracing` log line with the key id + prefix (needed later to
+#         revoke). It's an `info`-level log, so it appears with the default
+#         log filter but is suppressed if RUST_LOG raises the threshold above
+#         `info`. Capture the key id from `oysterd app list-admin-keys`.
 
 # user — replace the local entry with the new key
 oyster app import my-app
@@ -214,6 +275,27 @@ oysterd app revoke-admin-key <OLD_KEY_ID>
 `oysterd app list-admin-keys <APP_ID>` shows all keys (active and
 revoked) so an operator can confirm what is live. Multiple admin keys per
 app are supported with no cap.
+
+### Webhook Management
+
+`oyster app webhook` drives the self-service webhook endpoints
+([Set Webhook URL](../json-api/admin.md#set-webhook-url)) using the active
+context's admin key. When the context defines more than one app, pass
+`--app <name>` to choose which one.
+
+```bash
+# Show the current webhook URL and public key
+oyster app webhook show
+
+# Register or rotate the webhook URL (each call mints a fresh Ed25519 keypair;
+# the printed public key is needed to verify subsequent deliveries)
+oyster app webhook set https://example.com/oyster/webhook
+
+# Clear the webhook URL and discard the keypair
+oyster app webhook clear
+```
+
+See [Webhooks](webhooks.md) for the delivery signature format.
 
 ## Account Management
 

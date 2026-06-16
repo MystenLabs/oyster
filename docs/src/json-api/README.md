@@ -56,6 +56,11 @@ All errors return a JSON body with a single `error` field:
 | `501` | Not Implemented — endpoint exists but isn't functional yet |
 | `503` | Service Unavailable — a dependent service is unreachable |
 
+`501` is currently produced only by three account stubs that are wired up but
+not yet implemented: `PUT /account/billing`, `GET /account/report`, and
+`POST /account/transfer`. These are intentionally omitted from the per-endpoint
+reference until they do something.
+
 ### Cross-Cutting Error Contracts
 
 A few error bodies are shared across multiple routes and carry a

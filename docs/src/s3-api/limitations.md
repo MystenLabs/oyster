@@ -25,7 +25,7 @@ what's different from a full AWS S3 deployment.
 | ACLs | Not supported | |
 | CORS | Not supported | |
 | Server-Side Encryption | Not supported | Data is stored unencrypted |
-| Object Tagging | Not supported | |
+| Object Tagging | Supported | get/put/delete; shares tags with JSON API |
 | Custom Metadata Headers | Not supported | Only Content-Type is stored |
 | Website Hosting | Not supported | |
 | S3 Select | Not supported | |

@@ -40,6 +40,23 @@ aws --profile oyster s3api put-object \
 
 If `--content-type` is omitted, it defaults to `application/octet-stream`.
 
+### Setting Tags on Upload
+
+Attach tags at upload time with `--tagging`, a URL-encoded query string of
+`key=value` pairs:
+
+```bash
+aws --profile oyster s3api put-object \
+  --bucket my-bucket \
+  --key hello.txt \
+  --body hello.txt \
+  --tagging "env=prod&team=platform"
+```
+
+Tags set this way share the same store as the [JSON API](../json-api/blobs.md#blob-tags)
+and the [Object Tagging](#object-tagging) operations below, and are subject to
+the same [tag rules](../json-api/blobs.md#tag-rules).
+
 ### Key Behavior
 
 - **Overwrite:** Uploading to an existing key replaces the object
@@ -324,3 +341,61 @@ aws --profile oyster s3api list-objects-v2 \
 | S3 Error Code | Condition |
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
+
+## Object Tagging
+
+Oyster implements the three S3 object-tagging operations. Tags are stored in
+Oyster's database in the same `blob_tags` table used by the
+[JSON API tag endpoints](../json-api/blobs.md#blob-tags) — a tag set through S3
+is visible through the JSON API and vice versa. The same
+[tag rules](../json-api/blobs.md#tag-rules) apply (max 10 tags; key ≤ 128 B;
+value ≤ 256 B; set ≤ 2048 B; restricted charset).
+
+### PutObjectTagging
+
+Replaces the object's entire tag set.
+
+```bash
+aws --profile oyster s3api put-object-tagging \
+  --bucket my-bucket \
+  --key hello.txt \
+  --tagging 'TagSet=[{Key=env,Value=prod},{Key=team,Value=platform}]'
+```
+
+### GetObjectTagging
+
+Returns the object's current tags.
+
+```bash
+aws --profile oyster s3api get-object-tagging \
+  --bucket my-bucket \
+  --key hello.txt
+```
+
+**Response:**
+
+```json
+{
+    "TagSet": [
+        { "Key": "env", "Value": "prod" },
+        { "Key": "team", "Value": "platform" }
+    ]
+}
+```
+
+### DeleteObjectTagging
+
+Removes all tags from the object.
+
+```bash
+aws --profile oyster s3api delete-object-tagging \
+  --bucket my-bucket \
+  --key hello.txt
+```
+
+**Errors:**
+
+| S3 Error Code | Condition |
+|---------------|-----------|
+| `NoSuchBucket` | Bucket doesn't exist |
+| `NoSuchKey` | Object key doesn't exist |

@@ -19,6 +19,7 @@ port or endpoint is needed.
 |----------|------------|
 | Buckets | CreateBucket, HeadBucket, ListBuckets, DeleteBucket |
 | Objects | PutObject, GetObject, HeadObject, DeleteObject, ListObjectsV2 |
+| Tagging | GetObjectTagging, PutObjectTagging, DeleteObjectTagging |
 
 See [Limitations](limitations.md) for what's not yet supported compared to
 full AWS S3.
