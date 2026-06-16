@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.12.1] - 2026-06-16
+
+### Changed
+- Bumped `rand`, `rustls-webpki`, and `rpassword` to pull in upstream
+  security-advisory fixes.
+
 ## [0.12.0] - 2026-06-16
 
 ### Added
