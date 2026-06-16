@@ -35,7 +35,7 @@ metrics = "0.24.3"
 metrics-exporter-prometheus = "0.18.1"
 prost = "0.14.3"
 prost-types = "0.14.3"
-rand = "0.10.0"
+rand = "0.10.1"
 rustls = { version = "0.23.37", features = ["aws-lc-rs"] }
 s3s = "0.13.0"
 sha2 = "0.10.9"
