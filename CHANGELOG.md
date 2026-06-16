@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.12.0] - 2026-06-16
 
 ### Added
 - Per-account `avg_blob_size` knob (unencoded bytes) that turns
@@ -17,6 +17,23 @@
   (`ALTER TABLE accounts ADD COLUMN avg_blob_size BIGINT NOT NULL
   DEFAULT 0`) for both SQLite and Postgres, and the
   `OYSTER_DEFAULT_AVG_BLOB_SIZE` environment variable.
+- Documentation for the blob/object tagging feature, which had shipped
+  without docs: the six JSON-API tag endpoints (`GET/PUT/PATCH/DELETE`
+  `.../blobs/{key}/tags` plus single-tag `PUT/DELETE .../tags/{tag_key}`),
+  the S3 object-tagging operations, the `oyster tags` CLI command group,
+  the repeatable `x-oyster-tag` store header, `oyster store --tag`, and
+  the `oyster app webhook` CLI commands. Also documents `oysterd serve` /
+  `oysterd extend` and the `--pearl-service-secret-file` flag.
+- Operator analysis scripts: Walrus storage-efficiency plots
+  (`walrus_storage_efficiency.py`, `walrus_storage_efficiency_ratio.py`)
+  and Walrus account-cost / capacity-shortfall plots
+  (`walrus_account_cost.py`).
+
+### Fixed
+- Documentation corrections: removed the dead `ENABLE_DEBUG` environment
+  variable from the README, corrected the stale `oysterd app
+  issue-admin-key` and `list-admin-keys` output examples, and dropped the
+  no-longer-read `WALRUS_AGGREGATOR_URL` from internal docs.
 
 ## [0.11.1] - 2026-06-04
 
