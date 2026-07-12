@@ -22,6 +22,8 @@ pub mod buckets;
 pub mod dead_letter_orphans;
 /// Web-signup user and identity database operations.
 pub mod users;
+/// Browser session database operations for the signup/dashboard pages.
+pub mod web_sessions;
 
 use std::{borrow::Cow, fmt::Write, sync::OnceLock};
 
