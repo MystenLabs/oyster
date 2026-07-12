@@ -46,6 +46,8 @@ pub mod storage_cap;
 pub mod sui_object_reader;
 /// Sui transaction building, signing, and submission helpers.
 pub mod sui_transaction;
+/// Strongly-typed web-signup user identifier.
+pub mod user_id;
 /// Input validation helpers (e.g. bucket name rules).
 pub mod validation;
 /// Outbound webhook for fund manager notifications.
@@ -63,6 +65,7 @@ use config::Config;
 pub use funding::FundingAmount;
 use pearl_client::PearlConnection;
 pub use sui_types;
+pub use user_id::UserId;
 use walrus_sui::client::SuiReadClient;
 
 /// Shared application state threaded through all Axum handlers.

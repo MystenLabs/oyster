@@ -15,6 +15,12 @@ CREATE TABLE user_identities (
     id TEXT PRIMARY KEY NOT NULL,
     user_id TEXT NOT NULL REFERENCES users(id),
     provider TEXT NOT NULL,
+    -- The user's stable unique identifier *within* the provider, i.e.
+    -- (provider, provider_subject) is the login key. For Google this is
+    -- the id_token `sub` claim — an opaque numeric string that never
+    -- changes for a given Google account (unlike email, which can be
+    -- changed or re-issued to someone else). A future email provider
+    -- would use the lowercased email address here.
     provider_subject TEXT NOT NULL,
     -- NULL for OAuth providers; reserved for a password hash if email
     -- signup is added later.
@@ -39,6 +45,7 @@ CREATE INDEX idx_web_sessions_expires_at ON web_sessions(expires_at);
 CREATE TABLE signup_requests (
     id TEXT PRIMARY KEY NOT NULL,
     provider TEXT NOT NULL,
+    -- Same semantics as user_identities.provider_subject.
     provider_subject TEXT NOT NULL,
     email TEXT NOT NULL,
     display_name TEXT,

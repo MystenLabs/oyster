@@ -3,7 +3,22 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
-use crate::{AccountId, AppId, FundingAmount};
+use crate::{AccountId, AppId, FundingAmount, UserId};
+
+/// A web-signup user, authenticated via an external identity provider
+/// (see `db::users::IdentityProvider`).
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct User {
+    /// Unique identifier.
+    pub id: UserId,
+    /// Contact/display email from the identity provider. Not the login
+    /// key — identities live in `user_identities`.
+    pub email: String,
+    /// Display name from the identity provider, if any.
+    pub display_name: Option<String>,
+    /// ISO 8601 creation timestamp.
+    pub created_at: String,
+}
 
 /// An Oyster app — organizational trust boundary for account creation.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
