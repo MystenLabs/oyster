@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{fmt, path::PathBuf, str::FromStr};
 
 use walrus_sui::utils::BYTES_PER_UNIT_SIZE;
 
@@ -6,6 +6,144 @@ use walrus_sui::utils::BYTES_PER_UNIT_SIZE;
 pub struct SecretOverrides {
     /// Pearl service secret, if loaded from a file.
     pub pearl_service_secret: Option<String>,
+}
+
+/// Gating mode for self-serve web signup.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SignupMode {
+    /// Anyone who completes the flow gets an app + admin key.
+    Open,
+    /// New identities land in the `signup_requests` queue for operator
+    /// review; existing users can still sign in.
+    Waitlist,
+    /// No new signups at all; existing users can still sign in.
+    Closed,
+}
+
+impl FromStr for SignupMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "open" => Ok(Self::Open),
+            "waitlist" => Ok(Self::Waitlist),
+            "closed" => Ok(Self::Closed),
+            other => Err(format!(
+                "invalid OYSTER_SIGNUP_MODE {other:?} (expected open|waitlist|closed)"
+            )),
+        }
+    }
+}
+
+/// Configuration for the self-serve web signup feature. Only
+/// constructed when every external credential is present — otherwise
+/// the signup routes are not mounted at all (see [`Config::new`]).
+#[derive(Clone)]
+pub struct SignupConfig {
+    /// Signup gating mode. Defaults to [`SignupMode::Closed`] so that
+    /// merely configuring credentials never silently opens signup.
+    pub mode: SignupMode,
+    /// Email domains (lowercase, no `@`) whose Google-verified users
+    /// skip the waitlist queue.
+    pub allowed_domains: Vec<String>,
+    /// Public base URL of this server (e.g. `https://oyster.example.com`),
+    /// used to build the OAuth redirect URI. No trailing slash.
+    pub public_base_url: String,
+    /// Google OAuth 2.0 web client ID.
+    pub google_client_id: String,
+    /// Google OAuth 2.0 web client secret.
+    pub google_client_secret: String,
+    /// Cloudflare Turnstile sitekey (public, embedded in the page).
+    pub turnstile_site_key: String,
+    /// Cloudflare Turnstile secret key (server-side siteverify).
+    pub turnstile_secret_key: String,
+}
+
+impl fmt::Debug for SignupConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SignupConfig")
+            .field("mode", &self.mode)
+            .field("allowed_domains", &self.allowed_domains)
+            .field("public_base_url", &self.public_base_url)
+            .field("google_client_id", &self.google_client_id)
+            .field("google_client_secret", &"[redacted]")
+            .field("turnstile_site_key", &self.turnstile_site_key)
+            .field("turnstile_secret_key", &"[redacted]")
+            .finish()
+    }
+}
+
+/// The environment variables that must all be set for signup to be
+/// enabled. `OYSTER_PUBLIC_BASE_URL` is included because the OAuth
+/// redirect URI cannot be built without it.
+const SIGNUP_REQUIRED_VARS: [&str; 5] = [
+    "OYSTER_PUBLIC_BASE_URL",
+    "GOOGLE_OAUTH_CLIENT_ID",
+    "GOOGLE_OAUTH_CLIENT_SECRET",
+    "TURNSTILE_SITE_KEY",
+    "TURNSTILE_SECRET_KEY",
+];
+
+/// Build the optional signup config from environment variables.
+fn signup_config_from_env() -> Option<SignupConfig> {
+    signup_config_from(|var| std::env::var(var).ok())
+}
+
+/// Build the optional signup config from raw values via `get` (an
+/// injectable lookup so tests avoid process-global env mutation).
+///
+/// Returns `None` (signup disabled) when none of the required values
+/// are present. Panics when only *some* are present — a partially
+/// configured signup deployment is a mistake worth failing fast on —
+/// or when `OYSTER_SIGNUP_MODE` doesn't parse.
+fn signup_config_from(get: impl Fn(&str) -> Option<String>) -> Option<SignupConfig> {
+    let values: Vec<Option<String>> = SIGNUP_REQUIRED_VARS
+        .iter()
+        .map(|var| get(var).filter(|v| !v.is_empty()))
+        .collect();
+
+    if values.iter().all(|v| v.is_none()) {
+        return None;
+    }
+    if values.iter().any(|v| v.is_none()) {
+        let missing: Vec<&str> = SIGNUP_REQUIRED_VARS
+            .iter()
+            .zip(&values)
+            .filter(|(_, v)| v.is_none())
+            .map(|(var, _)| *var)
+            .collect();
+        panic!(
+            "signup is partially configured: missing {} (set all of {} or none)",
+            missing.join(", "),
+            SIGNUP_REQUIRED_VARS.join(", "),
+        );
+    }
+
+    let mut values = values.into_iter().map(|v| v.expect("checked above"));
+    let public_base_url = values.next().expect("five values");
+
+    Some(SignupConfig {
+        mode: get("OYSTER_SIGNUP_MODE")
+            .map(|v| v.parse().unwrap_or_else(|e| panic!("{e}")))
+            .unwrap_or(SignupMode::Closed),
+        allowed_domains: parse_allowed_domains(
+            &get("OYSTER_SIGNUP_ALLOWED_DOMAINS").unwrap_or_default(),
+        ),
+        public_base_url: public_base_url.trim_end_matches('/').to_string(),
+        google_client_id: values.next().expect("five values"),
+        google_client_secret: values.next().expect("five values"),
+        turnstile_site_key: values.next().expect("five values"),
+        turnstile_secret_key: values.next().expect("five values"),
+    })
+}
+
+/// Parse the comma-separated allowed-domains list: entries are trimmed,
+/// lowercased, and stripped of a leading `@`; empties are dropped.
+fn parse_allowed_domains(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|d| d.trim().trim_start_matches('@').to_lowercase())
+        .filter(|d| !d.is_empty())
+        .collect()
 }
 
 /// Oyster server configuration, loaded from environment variables.
@@ -64,6 +202,13 @@ pub struct Config {
     /// `false`; integration tests flip it on so they can register a webhook
     /// URL pointing at a local axum test server. Never wired to an env var.
     pub allow_http_webhook_scheme: bool,
+    /// Maximum number of *active* admin keys per app, enforced on the
+    /// self-serve web issuance path (the `oyster app` CLI is an
+    /// operator escape hatch and bypasses it). Revoked keys don't count.
+    pub max_admin_keys_per_app: i64,
+    /// Self-serve web signup, or `None` when its credentials are not
+    /// configured (the signup routes are then not mounted).
+    pub signup: Option<SignupConfig>,
 }
 
 impl Config {
@@ -127,6 +272,11 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10_000_000),
             allow_http_webhook_scheme: false,
+            max_admin_keys_per_app: std::env::var("OYSTER_MAX_ADMIN_KEYS_PER_APP")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(5),
+            signup: signup_config_from_env(),
         }
     }
 
@@ -135,5 +285,88 @@ impl Config {
         Self::new(SecretOverrides {
             pearl_service_secret: None,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::*;
+
+    fn lookup(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let map: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |var| map.get(var).cloned()
+    }
+
+    const ALL_SET: [(&str, &str); 5] = [
+        ("OYSTER_PUBLIC_BASE_URL", "https://oyster.example.com/"),
+        ("GOOGLE_OAUTH_CLIENT_ID", "client-id"),
+        ("GOOGLE_OAUTH_CLIENT_SECRET", "client-secret"),
+        ("TURNSTILE_SITE_KEY", "site-key"),
+        ("TURNSTILE_SECRET_KEY", "secret-key"),
+    ];
+
+    #[test]
+    fn no_credentials_disables_signup() {
+        assert!(signup_config_from(lookup(&[])).is_none());
+    }
+
+    #[test]
+    fn all_credentials_enable_signup_with_defaults() {
+        let cfg = signup_config_from(lookup(&ALL_SET)).unwrap();
+        assert_eq!(cfg.mode, SignupMode::Closed);
+        assert!(cfg.allowed_domains.is_empty());
+        // Trailing slash is stripped so redirect URIs join cleanly.
+        assert_eq!(cfg.public_base_url, "https://oyster.example.com");
+        assert_eq!(cfg.google_client_id, "client-id");
+        assert_eq!(cfg.turnstile_site_key, "site-key");
+    }
+
+    #[test]
+    #[should_panic(expected = "signup is partially configured: missing TURNSTILE_SECRET_KEY")]
+    fn partial_credentials_panic() {
+        signup_config_from(lookup(&ALL_SET[..4]));
+    }
+
+    #[test]
+    #[should_panic(expected = "signup is partially configured")]
+    fn empty_string_counts_as_missing() {
+        let mut vars = ALL_SET;
+        vars[2].1 = "";
+        signup_config_from(lookup(&vars));
+    }
+
+    #[test]
+    fn mode_and_domains_are_parsed() {
+        let mut vars = ALL_SET.to_vec();
+        vars.push(("OYSTER_SIGNUP_MODE", "waitlist"));
+        vars.push((
+            "OYSTER_SIGNUP_ALLOWED_DOMAINS",
+            "MystenLabs.com, @example.org,,",
+        ));
+        let cfg = signup_config_from(lookup(&vars)).unwrap();
+        assert_eq!(cfg.mode, SignupMode::Waitlist);
+        assert_eq!(cfg.allowed_domains, vec!["mystenlabs.com", "example.org"]);
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid OYSTER_SIGNUP_MODE")]
+    fn invalid_mode_panics() {
+        let mut vars = ALL_SET.to_vec();
+        vars.push(("OYSTER_SIGNUP_MODE", "on"));
+        signup_config_from(lookup(&vars));
+    }
+
+    #[test]
+    fn signup_config_debug_redacts_secrets() {
+        let cfg = signup_config_from(lookup(&ALL_SET)).unwrap();
+        let debug = format!("{cfg:?}");
+        assert!(!debug.contains("client-secret"));
+        assert!(!debug.contains("secret-key"));
+        assert!(debug.contains("[redacted]"));
     }
 }

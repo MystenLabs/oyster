@@ -217,6 +217,8 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -262,6 +264,8 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1121,6 +1125,8 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1565,6 +1571,8 @@ async fn metrics_endpoint_returns_prometheus_format() {
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1641,6 +1649,8 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1866,6 +1876,8 @@ async fn test_s3_with_spy(
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -4251,6 +4263,8 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: false,
+        max_admin_keys_per_app: 5,
+        signup: None,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -4763,6 +4777,8 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
                 extension_metrics_bind_addr: "unused".into(),
                 default_avg_blob_size: 0,
                 allow_http_webhook_scheme: true,
+                max_admin_keys_per_app: 5,
+                signup: None,
             };
             let pool = db::create_pool(&config.database_url).await.unwrap();
             let state = AppState {

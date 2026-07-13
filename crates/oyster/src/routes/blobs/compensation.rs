@@ -262,6 +262,8 @@ mod tests {
             extension_metrics_bind_addr: "unused".into(),
             default_avg_blob_size: 0,
             allow_http_webhook_scheme: true,
+            max_admin_keys_per_app: 5,
+            signup: None,
         }
     }
 
