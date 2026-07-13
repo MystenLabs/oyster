@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign up — Oyster</title>
+  <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
+           align-items: center; min-height: 100vh; margin: 0; background: #f6f6f4; }
+    main { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+           padding: 2.5rem 3rem; text-align: center; max-width: 22rem; }
+    h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
+    p.tagline { color: #666; margin: 0 0 1.5rem; }
+    .cf-turnstile { display: flex; justify-content: center; margin-bottom: 1rem; }
+    button { width: 100%; padding: .7rem 1rem; font-size: 1rem; border-radius: 6px;
+             border: 1px solid #444; background: #1a1a1a; color: #fff; cursor: pointer; }
+    button:hover { background: #333; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>🦪 Oyster</h1>
+    <p class="tagline">Web2-friendly storage on Walrus</p>
+    <form method="POST" action="/signup/start">
+      <div class="cf-turnstile" data-sitekey="{{TURNSTILE_SITE_KEY}}"></div>
+      <button type="submit">Continue with Google</button>
+    </form>
+  </main>
+</body>
+</html>

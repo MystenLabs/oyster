@@ -145,6 +145,20 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(blobs::put_blob_tag, blobs::delete_blob_tag))
         .split_for_parts();
 
+    // Self-serve signup pages, mounted only when configured. These
+    // carry their own state and stay out of the OpenAPI spec.
+    let signup_router = match &state.config.signup {
+        Some(signup_config) => {
+            tracing::info!(mode = ?signup_config.mode, "signup enabled at /signup");
+            crate::signup::routes::build_signup_router(
+                state.db.clone(),
+                signup_config.clone(),
+                state.config.max_admin_keys_per_app,
+            )
+        }
+        None => Router::new(),
+    };
+
     Router::new()
         .nest("/api/v1", api_router)
         .route("/health", axum::routing::get(health::health))
@@ -153,4 +167,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/metrics", axum::routing::get(metrics::metrics))
         .fallback(s3_fallback)
         .with_state(state)
+        // Merged after `with_state`: the signup router carries its own
+        // `SignupService` state. Explicit routes win over the fallback.
+        .merge(signup_router)
 }

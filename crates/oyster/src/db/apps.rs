@@ -1,6 +1,6 @@
 use sqlx::Row;
 
-use crate::{AppId, models::App};
+use crate::{AppId, UserId, models::App};
 
 /// Insert a new app.
 pub async fn create_app(
@@ -27,6 +27,59 @@ pub async fn create_app(
         webhook_public_key: row.get("webhook_public_key"),
         created_at: row.get("created_at"),
     })
+}
+
+/// Insert a new app owned by a web-signup user.
+pub async fn create_app_owned(
+    pool: &super::DbPool,
+    name: &str,
+    contact_email: &str,
+    owner_user_id: &UserId,
+) -> Result<App, sqlx::Error> {
+    let id = AppId::new();
+    let row = sqlx::query(&super::sql(
+        "INSERT INTO apps (id, name, contact_email, owner_user_id) VALUES (?, ?, ?, ?) \
+         RETURNING id, name, contact_email, webhook_url, webhook_public_key, created_at",
+    ))
+    .bind(&id)
+    .bind(name)
+    .bind(contact_email)
+    .bind(owner_user_id)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(App {
+        id: row.get("id"),
+        name: row.get("name"),
+        contact_email: row.get("contact_email"),
+        webhook_url: row.get("webhook_url"),
+        webhook_public_key: row.get("webhook_public_key"),
+        created_at: row.get("created_at"),
+    })
+}
+
+/// Fetch the app owned by a web-signup user, if any (v1: one app per
+/// user; returns the oldest if multiple ever exist).
+pub async fn find_app_by_owner(
+    pool: &super::DbPool,
+    owner_user_id: &UserId,
+) -> Result<Option<App>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT id, name, contact_email, webhook_url, webhook_public_key, created_at \
+         FROM apps WHERE owner_user_id = ? ORDER BY created_at, id LIMIT 1",
+    ))
+    .bind(owner_user_id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| App {
+        id: r.get("id"),
+        name: r.get("name"),
+        contact_email: r.get("contact_email"),
+        webhook_url: r.get("webhook_url"),
+        webhook_public_key: r.get("webhook_public_key"),
+        created_at: r.get("created_at"),
+    }))
 }
 
 /// Fetch an app by ID, returning `None` if it does not exist.

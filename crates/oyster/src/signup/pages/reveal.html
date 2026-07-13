@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your admin key — Oyster</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
+           align-items: center; min-height: 100vh; margin: 0; background: #f6f6f4; }
+    main { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+           padding: 2.5rem 3rem; max-width: 34rem; }
+    h1 { font-size: 1.3rem; margin: 0 0 1rem; }
+    dt { font-weight: 600; margin-top: 1rem; }
+    dd { margin: .3rem 0 0; }
+    code { display: block; font-family: ui-monospace, monospace; background: #f0f0ee;
+           border: 1px solid #ddd; border-radius: 6px; padding: .6rem .8rem;
+           word-break: break-all; }
+    .warn { background: #fff7e0; border: 1px solid #e8d48a; border-radius: 6px;
+            padding: .8rem 1rem; margin: 1.25rem 0; }
+    .row { display: flex; gap: .5rem; align-items: stretch; }
+    .row code { flex: 1; }
+    button.copy { border: 1px solid #444; background: #fff; border-radius: 6px;
+                  cursor: pointer; padding: 0 .8rem; }
+    a.continue { display: inline-block; margin-top: .5rem; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>✓ Your app is ready</h1>
+    <dl>
+      <dt>App ID</dt>
+      <dd class="row"><code id="app-id">{{APP_ID}}</code>
+        <button class="copy" data-target="app-id">copy</button></dd>
+      <dt>Admin key</dt>
+      <dd class="row"><code id="admin-key">{{ADMIN_KEY}}</code>
+        <button class="copy" data-target="admin-key">copy</button></dd>
+    </dl>
+    <p class="warn">⚠ This key is shown <strong>once</strong> and cannot be retrieved
+      later. Store it somewhere safe before continuing.</p>
+    <a class="continue" href="/signup/keys">I’ve saved my key — continue</a>
+  </main>
+  <script>
+    document.querySelectorAll("button.copy").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var el = document.getElementById(btn.dataset.target);
+        navigator.clipboard.writeText(el.textContent).then(function () {
+          btn.textContent = "copied";
+          setTimeout(function () { btn.textContent = "copy"; }, 1500);
+        });
+      });
+    });
+  </script>
+</body>
+</html>

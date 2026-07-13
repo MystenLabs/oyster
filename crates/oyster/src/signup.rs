@@ -3,4 +3,5 @@
 //! [`crate::config::SignupConfig`] is present.
 
 pub mod google;
+pub mod routes;
 pub mod turnstile;
