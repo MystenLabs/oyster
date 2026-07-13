@@ -344,36 +344,19 @@ async fn signup_callback(
 async fn complete_sign_in(
     service: &SignupService,
     identity: &crate::signup::google::GoogleIdentity,
-) -> Result<Response, Box<dyn std::error::Error>> {
+) -> Result<Response, Box<dyn std::error::Error + Send + Sync>> {
     let existing =
         db::users::find_user_by_identity(&service.db, IdentityProvider::Google, &identity.sub)
             .await?;
 
     let user = match existing {
         Some(user) => user,
-        None => {
-            // New identity: gate by mode. Commit 11 adds the waitlist
-            // branch; until then only `open` admits new users.
-            match service.config.mode {
-                SignupMode::Open => {
-                    db::users::create_user_with_identity(
-                        &service.db,
-                        IdentityProvider::Google,
-                        &identity.sub,
-                        &identity.email,
-                        identity.name.as_deref(),
-                    )
-                    .await?
-                }
-                SignupMode::Waitlist | SignupMode::Closed => {
-                    return Ok(message_page(
-                        StatusCode::FORBIDDEN,
-                        "Signup is closed",
-                        "New signups are not being accepted right now.",
-                    ));
-                }
-            }
-        }
+        // New identity: gate by mode. The email compared inside the
+        // gate is Google-attested (email_verified was already required).
+        None => match gate_new_identity(service, identity).await? {
+            Gate::Admit => create_user(service, identity).await?,
+            Gate::Respond(response) => return Ok(response),
+        },
     };
 
     // Ensure the user has an app; issue the first admin key alongside a
@@ -412,6 +395,98 @@ async fn complete_sign_in(
     Ok(response)
 }
 
+/// Create the user + identity rows for an admitted identity.
+async fn create_user(
+    service: &SignupService,
+    identity: &crate::signup::google::GoogleIdentity,
+) -> Result<User, sqlx::Error> {
+    db::users::create_user_with_identity(
+        &service.db,
+        IdentityProvider::Google,
+        &identity.sub,
+        &identity.email,
+        identity.name.as_deref(),
+    )
+    .await
+}
+
+/// Whether the (verified) email's domain is in the allowed list.
+fn email_domain_allowed(allowed_domains: &[String], email: &str) -> bool {
+    let Some((_, domain)) = email.rsplit_once('@') else {
+        return false;
+    };
+    let domain = domain.to_lowercase();
+    allowed_domains.contains(&domain)
+}
+
+/// Outcome of gating a brand-new identity.
+enum Gate {
+    /// Proceed with signup on this very sign-in.
+    Admit,
+    /// Stop here with this page instead.
+    Respond(Response),
+}
+
+/// Apply the signup mode to an identity that has no user yet.
+async fn gate_new_identity(
+    service: &SignupService,
+    identity: &crate::signup::google::GoogleIdentity,
+) -> Result<Gate, Box<dyn std::error::Error + Send + Sync>> {
+    use db::signup_requests::SignupRequestStatus;
+
+    match service.config.mode {
+        SignupMode::Open => Ok(Gate::Admit),
+        SignupMode::Closed => Ok(Gate::Respond(message_page(
+            StatusCode::FORBIDDEN,
+            "Signup is closed",
+            "New signups are not being accepted right now.",
+        ))),
+        SignupMode::Waitlist => {
+            if email_domain_allowed(&service.config.allowed_domains, &identity.email) {
+                return Ok(Gate::Admit);
+            }
+            let existing = db::signup_requests::find_by_identity(
+                &service.db,
+                IdentityProvider::Google,
+                &identity.sub,
+            )
+            .await?;
+            match existing.map(|r| r.status) {
+                // Approved: signup completes on this very sign-in.
+                Some(SignupRequestStatus::Approved) => Ok(Gate::Admit),
+                Some(SignupRequestStatus::Rejected) => Ok(Gate::Respond(message_page(
+                    StatusCode::FORBIDDEN,
+                    "Request declined",
+                    "Your access request was not approved.",
+                ))),
+                Some(SignupRequestStatus::Pending) => Ok(Gate::Respond(message_page(
+                    StatusCode::OK,
+                    "Still in review",
+                    "Your access request is waiting for review. Sign in again once \
+                     you've been approved.",
+                ))),
+                None => {
+                    db::signup_requests::create_or_get(
+                        &service.db,
+                        IdentityProvider::Google,
+                        &identity.sub,
+                        &identity.email,
+                        identity.name.as_deref(),
+                    )
+                    .await?;
+                    tracing::info!(email = %identity.email, "signup request filed");
+                    Ok(Gate::Respond(message_page(
+                        StatusCode::OK,
+                        "Request received",
+                        "Thanks — your access request is on file. Sign in again once \
+                         you've been approved.",
+                    )))
+                }
+            }
+        }
+    }
+}
+
 /// Find the user's app, creating app + first admin key when absent.
 /// Returns the app plus the freshly issued key (only on creation).
 async fn ensure_app_for_user(
@@ -422,7 +497,7 @@ async fn ensure_app_for_user(
         crate::models::App,
         Option<(String, crate::models::AdminKeyWithBearerToken)>,
     ),
-    Box<dyn std::error::Error>,
+    Box<dyn std::error::Error + Send + Sync>,
 > {
     if let Some(app) = db::apps::find_app_by_owner(&service.db, &user.id).await? {
         return Ok((app, None));
@@ -769,11 +844,20 @@ mod tests {
         google_base: &str,
         turnstile_url: &str,
     ) -> SignupService {
+        test_service_with_domains(mode, &[], google_base, turnstile_url).await
+    }
+
+    async fn test_service_with_domains(
+        mode: SignupMode,
+        allowed_domains: &[&str],
+        google_base: &str,
+        turnstile_url: &str,
+    ) -> SignupService {
         SignupService {
             db: db::create_pool("sqlite::memory:").await.unwrap(),
             config: SignupConfig {
                 mode,
-                allowed_domains: vec![],
+                allowed_domains: allowed_domains.iter().map(|d| d.to_string()).collect(),
                 public_base_url: "http://localhost:3000".into(),
                 google_client_id: "test-client-id".into(),
                 google_client_secret: "test-client-secret".into(),
@@ -827,26 +911,11 @@ mod tests {
             })
     }
 
-    /// Drive the full happy path: page → start → callback. Returns the
-    /// callback response and the service (for db assertions).
-    async fn run_flow(
-        mode: SignupMode,
-        sub: &str,
-        email: &str,
-        email_verified: bool,
-    ) -> (reqwest::Response, SignupService, String) {
-        let google = mock_google(sub, email, email_verified).await;
-        let turnstile = mock_turnstile().await;
-        let service = test_service(mode, &google, &turnstile).await;
-        let base = serve(service.clone()).await;
+    /// One start → callback round trip against an already-running
+    /// signup server (mock Google mints the id_token; the nonce rides
+    /// as the auth code).
+    async fn sign_in(base: &str) -> reqwest::Response {
         let http = client();
-
-        // Page renders with the sitekey.
-        let page = http.get(format!("{base}/signup")).send().await.unwrap();
-        assert_eq!(page.status(), 200);
-        assert!(page.text().await.unwrap().contains("test-site-key"));
-
-        // Start: turnstile passes, we get the Google redirect + cookie.
         let start = http
             .post(format!("{base}/signup/start"))
             .form(&[("cf-turnstile-response", "pass")])
@@ -861,17 +930,47 @@ mod tests {
             .to_string();
         let auth_url = url::Url::parse(&location).unwrap();
         let params: std::collections::HashMap<_, _> = auth_url.query_pairs().into_owned().collect();
-        let state = params["state"].clone();
-        let nonce = params["nonce"].clone();
 
-        // Callback: pass the nonce as the code so the mock can bind it
-        // into the id_token, exactly as Google would.
-        let callback = http
-            .get(format!("{base}/signup/callback?code={nonce}&state={state}"))
-            .header(header::COOKIE, format!("{OAUTH_COOKIE}={oauth_cookie}"))
-            .send()
-            .await
-            .unwrap();
+        http.get(format!(
+            "{base}/signup/callback?code={}&state={}",
+            params["nonce"], params["state"]
+        ))
+        .header(header::COOKIE, format!("{OAUTH_COOKIE}={}", oauth_cookie))
+        .send()
+        .await
+        .unwrap()
+    }
+
+    /// Drive the full happy path: page → start → callback. Returns the
+    /// callback response and the service (for db assertions).
+    async fn run_flow(
+        mode: SignupMode,
+        sub: &str,
+        email: &str,
+        email_verified: bool,
+    ) -> (reqwest::Response, SignupService, String) {
+        run_flow_with_domains(mode, &[], sub, email, email_verified).await
+    }
+
+    async fn run_flow_with_domains(
+        mode: SignupMode,
+        allowed_domains: &[&str],
+        sub: &str,
+        email: &str,
+        email_verified: bool,
+    ) -> (reqwest::Response, SignupService, String) {
+        let google = mock_google(sub, email, email_verified).await;
+        let turnstile = mock_turnstile().await;
+        let service = test_service_with_domains(mode, allowed_domains, &google, &turnstile).await;
+        let base = serve(service.clone()).await;
+        let http = client();
+
+        // Page renders with the sitekey.
+        let page = http.get(format!("{base}/signup")).send().await.unwrap();
+        assert_eq!(page.status(), 200);
+        assert!(page.text().await.unwrap().contains("test-site-key"));
+
+        let callback = sign_in(&base).await;
         (callback, service, base)
     }
 
@@ -1241,6 +1340,155 @@ mod tests {
             .unwrap();
         assert_eq!(dash.status(), 303);
         assert_eq!(dash.headers()[header::LOCATION], "/signup");
+    }
+
+    #[tokio::test]
+    async fn waitlist_files_request_then_reports_in_review() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Waitlist, "sub-wl-1", "wl@example.com", true).await;
+
+        // First sign-in: request filed, no user created.
+        assert_eq!(callback.status(), 200);
+        assert!(callback.text().await.unwrap().contains("Request received"));
+        let request = db::signup_requests::find_by_identity(
+            &service.db,
+            IdentityProvider::Google,
+            "sub-wl-1",
+        )
+        .await
+        .unwrap()
+        .expect("request filed");
+        assert_eq!(
+            request.status,
+            db::signup_requests::SignupRequestStatus::Pending
+        );
+        assert_eq!(request.email, "wl@example.com");
+        assert!(
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-wl-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Second sign-in while pending: "still in review", still one request.
+        let again = sign_in(&base).await;
+        assert_eq!(again.status(), 200);
+        assert!(again.text().await.unwrap().contains("Still in review"));
+    }
+
+    #[tokio::test]
+    async fn waitlist_approval_completes_signup_on_next_sign_in() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Waitlist, "sub-wl-2", "appr@example.com", true).await;
+        assert_eq!(callback.status(), 200);
+
+        let request = db::signup_requests::find_by_identity(
+            &service.db,
+            IdentityProvider::Google,
+            "sub-wl-2",
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        db::signup_requests::set_status_by_id(
+            &service.db,
+            &request.id,
+            db::signup_requests::SignupRequestStatus::Approved,
+            "test-op",
+        )
+        .await
+        .unwrap();
+
+        // Next sign-in completes signup: reveal page, user/app/key exist.
+        let approved = sign_in(&base).await;
+        assert_eq!(approved.status(), 200);
+        assert!(cookie_from(&approved, SESSION_COOKIE).is_some());
+        assert!(approved.text().await.unwrap().contains("Your app is ready"));
+
+        let user =
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-wl-2")
+                .await
+                .unwrap()
+                .expect("user created after approval");
+        let app = db::apps::find_app_by_owner(&service.db, &user.id)
+            .await
+            .unwrap()
+            .expect("app created");
+        assert_eq!(
+            db::app_admin_keys::count_active_admin_keys(&service.db, &app.id)
+                .await
+                .unwrap(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn waitlist_rejection_shows_denial() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Waitlist, "sub-wl-3", "rej@example.com", true).await;
+        assert_eq!(callback.status(), 200);
+
+        db::signup_requests::set_status_by_email(
+            &service.db,
+            "rej@example.com",
+            db::signup_requests::SignupRequestStatus::Rejected,
+            "test-op",
+        )
+        .await
+        .unwrap();
+
+        let rejected = sign_in(&base).await;
+        assert_eq!(rejected.status(), 403);
+        assert!(rejected.text().await.unwrap().contains("Request declined"));
+        assert!(
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-wl-3")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn allowed_domain_bypasses_waitlist() {
+        let (callback, service, _) = run_flow_with_domains(
+            SignupMode::Waitlist,
+            &["example.com"],
+            "sub-wl-4",
+            "insider@example.com",
+            true,
+        )
+        .await;
+
+        // Straight through to signup: reveal page, no request filed.
+        assert_eq!(callback.status(), 200);
+        assert!(callback.text().await.unwrap().contains("Your app is ready"));
+        assert!(
+            db::signup_requests::find_by_identity(
+                &service.db,
+                IdentityProvider::Google,
+                "sub-wl-4"
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-wl-4")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn domain_matching_is_case_insensitive_and_exact() {
+        let domains = vec!["example.com".to_string()];
+        assert!(email_domain_allowed(&domains, "a@example.com"));
+        assert!(email_domain_allowed(&domains, "a@EXAMPLE.COM"));
+        assert!(!email_domain_allowed(&domains, "a@notexample.com"));
+        assert!(!email_domain_allowed(&domains, "a@sub.example.com"));
+        assert!(!email_domain_allowed(&domains, "no-at-sign"));
+        assert!(!email_domain_allowed(&[], "a@example.com"));
     }
 
     #[test]
