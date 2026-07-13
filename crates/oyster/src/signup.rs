@@ -2,4 +2,5 @@
 //! OAuth, and the `/signup` pages. Enabled only when
 //! [`crate::config::SignupConfig`] is present.
 
+pub mod google;
 pub mod turnstile;
