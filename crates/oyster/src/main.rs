@@ -7,7 +7,6 @@ use clap::{Parser, Subcommand};
 use oyster::{
     AppId,
     AppState,
-    auth,
     blob_store::LocalBlobStore,
     config::Config,
     db,
@@ -331,14 +330,11 @@ async fn issue_admin_key_for(
     pool: &db::DbPool,
     app_id: &AppId,
 ) -> oyster::models::AdminKeyWithBearerToken {
-    let raw = auth::generate_api_key();
-    let hash = auth::hash_api_key(&raw);
-    let prefix = auth::key_prefix(&raw);
-    let key = db::app_admin_keys::create_admin_key(pool, app_id, &hash, &prefix, &raw)
+    // `None`: the CLI is an operator escape hatch and bypasses the
+    // `OYSTER_MAX_ADMIN_KEYS_PER_APP` cap enforced on the web path.
+    oyster::app_admin::issue_admin_key(pool, app_id, None)
         .await
-        .expect("failed to create admin key");
-    tracing::info!(app_id = %app_id, key_id = %key.id, prefix = %key.prefix, "issued admin key");
-    key
+        .expect("failed to create admin key")
 }
 
 fn read_secret_file(path: PathBuf) -> String {

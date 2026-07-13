@@ -34,6 +34,20 @@ pub async fn create_admin_key(
     })
 }
 
+/// Count the active (non-revoked) admin keys for an app.
+pub async fn count_active_admin_keys(
+    pool: &super::DbPool,
+    app_id: &AppId,
+) -> Result<i64, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT COUNT(*) AS n FROM app_admin_keys WHERE app_id = ? AND revoked_at IS NULL",
+    ))
+    .bind(app_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.get("n"))
+}
+
 /// Look up an active (non-revoked) admin key by its hash.
 pub async fn find_active_by_hash(
     pool: &super::DbPool,
