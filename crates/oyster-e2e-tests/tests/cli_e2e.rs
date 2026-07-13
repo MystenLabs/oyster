@@ -49,6 +49,26 @@ async fn fund_test_wallet(harness: &OysterTestHarness, app: &Router, api_key: &s
     harness.fund_wallet(address).await;
 }
 
+/// Locate the `oyster` CLI binary, building it on first use.
+///
+/// `Command::cargo_bin("oyster")` alone only works when
+/// `target/debug/oyster` already exists: the binary belongs to the
+/// `oyster-cli` crate, so Cargo never sets `CARGO_BIN_EXE_oyster` for
+/// this crate's tests and `cargo test -p oyster-e2e-tests` does not
+/// build it. Build it explicitly so the suite is self-contained.
+fn oyster_cli_bin() -> Command {
+    static BUILD: std::sync::Once = std::sync::Once::new();
+    BUILD.call_once(|| {
+        let status = std::process::Command::new(env!("CARGO"))
+            .args(["build", "-p", "oyster-cli", "--bin", "oyster"])
+            .status()
+            .expect("failed to run cargo build for oyster-cli");
+        assert!(status.success(), "failed to build the oyster CLI binary");
+    });
+    #[allow(deprecated)]
+    Command::cargo_bin("oyster").expect("oyster CLI binary after build")
+}
+
 /// Isolate the CLI's config-discovery walk from the host environment.
 /// Without this, the CLI walks `~/.config/oyster/client.yaml` and fails the
 /// chmod check if the test runner's user has a real config with mode != 0o600.
@@ -59,9 +79,8 @@ fn isolate_env(cmd: &mut Command, iso_home: &Path) {
 }
 
 /// Build a CLI command with auth flags and a timeout.
-#[allow(deprecated)]
 fn cli_cmd(iso_home: &Path, url: &str, api_key: &str) -> Command {
-    let mut cmd = Command::cargo_bin("oyster").unwrap();
+    let mut cmd = oyster_cli_bin();
     cmd.args(["--url", url, "--api-key", api_key, "--json"]);
     cmd.timeout(Duration::from_secs(120));
     isolate_env(&mut cmd, iso_home);
@@ -69,9 +88,8 @@ fn cli_cmd(iso_home: &Path, url: &str, api_key: &str) -> Command {
 }
 
 /// Build a CLI command without auth (for public endpoints like `read`).
-#[allow(deprecated)]
 fn cli_cmd_public(iso_home: &Path, url: &str) -> Command {
-    let mut cmd = Command::cargo_bin("oyster").unwrap();
+    let mut cmd = oyster_cli_bin();
     cmd.args(["--url", url]);
     cmd.timeout(Duration::from_secs(120));
     isolate_env(&mut cmd, iso_home);
@@ -331,8 +349,7 @@ fn cli_e2e_account_management() {
 
         let cfg_path_str = cfg_path.to_str().unwrap().to_string();
         let cli_admin_cmd = || -> Command {
-            #[allow(deprecated)]
-            let mut cmd = Command::cargo_bin("oyster").unwrap();
+            let mut cmd = oyster_cli_bin();
             cmd.args(["--config", &cfg_path_str, "--json"]);
             cmd.timeout(Duration::from_secs(60));
             cmd
