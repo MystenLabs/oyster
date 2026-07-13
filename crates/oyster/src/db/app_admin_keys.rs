@@ -93,6 +93,28 @@ pub async fn list_admin_keys(
         .collect())
 }
 
+/// Revoke an admin key by its id, but only when it belongs to `app_id`
+/// — the ownership check for self-serve revocation, where the key id
+/// comes from an untrusted form field. Returns `true` if a key was
+/// actually revoked.
+pub async fn revoke_admin_key_for_app(
+    pool: &super::DbPool,
+    key_id: &str,
+    app_id: &AppId,
+) -> Result<bool, sqlx::Error> {
+    let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let result = sqlx::query(&super::sql(
+        "UPDATE app_admin_keys SET revoked_at = ? \
+         WHERE id = ? AND app_id = ? AND revoked_at IS NULL",
+    ))
+    .bind(&now)
+    .bind(key_id)
+    .bind(app_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
 /// Revoke an admin key by its id. Returns `true` if a key was actually revoked.
 pub async fn revoke_admin_key(pool: &super::DbPool, key_id: &str) -> Result<bool, sqlx::Error> {
     let now = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string();

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Admin keys — Oyster</title>
+  <style>
+    body { font-family: system-ui, sans-serif; display: flex; justify-content: center;
+           margin: 0; background: #f6f6f4; }
+    main { background: #fff; border: 1px solid #ddd; border-radius: 8px;
+           padding: 2rem 2.5rem; max-width: 40rem; width: 100%; margin: 3rem 1rem; }
+    h1 { font-size: 1.3rem; margin: 0 0 .25rem; }
+    p.sub { color: #666; margin: 0 0 1.5rem; font-size: .9rem; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 1.25rem; }
+    th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #eee;
+             font-size: .9rem; }
+    th { color: #666; font-weight: 600; }
+    code { font-family: ui-monospace, monospace; }
+    .revoked { color: #999; }
+    form.inline { display: inline; }
+    button { padding: .45rem .9rem; font-size: .9rem; border-radius: 6px;
+             border: 1px solid #444; background: #1a1a1a; color: #fff; cursor: pointer; }
+    button.danger { background: #fff; color: #a33; border-color: #a33;
+                    padding: .2rem .6rem; font-size: .8rem; }
+    .footer { display: flex; justify-content: space-between; align-items: center;
+              margin-top: .5rem; }
+    button.plain { background: #fff; color: #444; border-color: #bbb; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Admin keys</h1>
+    <p class="sub">Signed in as {{EMAIL}} · App <code>{{APP_ID}}</code></p>
+    <table>
+      <thead>
+        <tr><th>Prefix</th><th>Created</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody>
+        {{KEY_ROWS}}
+      </tbody>
+    </table>
+    <div class="footer">
+      <form class="inline" method="POST" action="/signup/keys/issue">
+        <button type="submit">Issue new key</button>
+      </form>
+      <form class="inline" method="POST" action="/signup/logout">
+        <button type="submit" class="plain">Sign out</button>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

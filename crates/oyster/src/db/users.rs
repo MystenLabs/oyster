@@ -107,6 +107,23 @@ pub async fn create_user_with_identity(
     })
 }
 
+/// Fetch a user by ID, returning `None` if it does not exist.
+pub async fn get_user(pool: &super::DbPool, id: &UserId) -> Result<Option<User>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT id, email, display_name, created_at FROM users WHERE id = ?",
+    ))
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| User {
+        id: r.get("id"),
+        email: r.get("email"),
+        display_name: r.get("display_name"),
+        created_at: r.get("created_at"),
+    }))
+}
+
 /// Look up a user by one of their identities, returning `None` when no
 /// identity matches. See [`create_user_with_identity`] for
 /// `provider_subject` semantics.

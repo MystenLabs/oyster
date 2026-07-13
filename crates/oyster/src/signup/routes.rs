@@ -44,6 +44,7 @@ pub(crate) const SESSION_TTL: chrono::Duration = chrono::Duration::hours(8);
 const SIGNUP_PAGE: &str = include_str!("pages/signup.html");
 const REVEAL_PAGE: &str = include_str!("pages/reveal.html");
 const MESSAGE_PAGE: &str = include_str!("pages/message.html");
+const DASHBOARD_PAGE: &str = include_str!("pages/dashboard.html");
 
 /// State for the signup routes.
 #[derive(Clone)]
@@ -97,7 +98,10 @@ pub fn router_with_service(service: SignupService) -> Router {
         .route("/signup", get(signup_page))
         .route("/signup/start", post(signup_start))
         .route("/signup/callback", get(signup_callback))
-        .route("/signup/keys", get(signed_in_landing))
+        .route("/signup/keys", get(dashboard))
+        .route("/signup/keys/issue", post(issue_key))
+        .route("/signup/keys/revoke", post(revoke_key))
+        .route("/signup/logout", post(logout))
         .with_state(service)
 }
 
@@ -450,17 +454,208 @@ fn is_unique_violation(e: &sqlx::Error) -> bool {
     )
 }
 
-/// `GET /signup/keys` — minimal signed-in landing page. The key
-/// management dashboard grows here in a follow-up.
-async fn signed_in_landing(State(service): State<SignupService>, headers: HeaderMap) -> Response {
-    let Some(user_id) = session_user(&service, &headers).await else {
-        return Redirect::to("/signup").into_response();
+/// Resolve the signed-in user and their app for dashboard handlers.
+/// `Err` carries the redirect/error response to return as-is.
+async fn dashboard_context(
+    service: &SignupService,
+    headers: &HeaderMap,
+) -> Result<(User, crate::models::App), Response> {
+    let Some(user_id) = session_user(service, headers).await else {
+        return Err(Redirect::to("/signup").into_response());
     };
-    message_page(
-        StatusCode::OK,
-        "Signed in",
-        &format!("You are signed in (user {user_id}). Key management is coming next."),
+    let user = db::users::get_user(&service.db, &user_id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| Redirect::to("/signup").into_response())?;
+    let app = db::apps::find_app_by_owner(&service.db, &user.id)
+        .await
+        .ok()
+        .flatten()
+        .ok_or_else(|| {
+            // A session without an app shouldn't happen (the callback
+            // self-heals missing apps); send them back through sign-in.
+            Redirect::to("/signup").into_response()
+        })?;
+    Ok((user, app))
+}
+
+/// `GET /signup/keys` — the key management dashboard.
+async fn dashboard(State(service): State<SignupService>, headers: HeaderMap) -> Response {
+    let (user, app) = match dashboard_context(&service, &headers).await {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+    let keys = match db::app_admin_keys::list_admin_keys(&service.db, &app.id).await {
+        Ok(keys) => keys,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list admin keys");
+            return message_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "Could not load your keys. Please try again.",
+            );
+        }
+    };
+
+    let rows: String = keys
+        .iter()
+        .map(|k| {
+            let (status, action) = match &k.revoked_at {
+                Some(at) => (
+                    format!(
+                        r#"<span class="revoked">revoked {}</span>"#,
+                        escape_html(at)
+                    ),
+                    String::new(),
+                ),
+                None => (
+                    "active".to_string(),
+                    format!(
+                        r#"<form class="inline" method="POST" action="/signup/keys/revoke">
+                           <input type="hidden" name="key_id" value="{}">
+                           <button type="submit" class="danger">revoke</button></form>"#,
+                        escape_html(&k.id)
+                    ),
+                ),
+            };
+            format!(
+                "<tr><td><code>{}…</code></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+                escape_html(&k.prefix),
+                escape_html(&k.created_at),
+                status,
+                action,
+            )
+        })
+        .collect();
+    let rows = if rows.is_empty() {
+        r#"<tr><td colspan="4">No keys yet — issue one below.</td></tr>"#.to_string()
+    } else {
+        rows
+    };
+
+    let body = DASHBOARD_PAGE
+        .replace("{{EMAIL}}", &escape_html(&user.email))
+        .replace("{{APP_ID}}", &escape_html(&app.id.to_string()))
+        .replace("{{KEY_ROWS}}", &rows);
+    Html(body).into_response()
+}
+
+/// `POST /signup/keys/issue` — issue a fresh admin key (cap enforced)
+/// and show it once.
+async fn issue_key(State(service): State<SignupService>, headers: HeaderMap) -> Response {
+    let (user, app) = match dashboard_context(&service, &headers).await {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+
+    let key = match app_admin::issue_admin_key(
+        &service.db,
+        &app.id,
+        Some(service.max_admin_keys_per_app),
     )
+    .await
+    {
+        Ok(key) => key,
+        Err(app_admin::IssueAdminKeyError::LimitReached(limit)) => {
+            return message_page(
+                StatusCode::CONFLICT,
+                "Key limit reached",
+                &format!(
+                    "This app already has {limit} active keys. Revoke one you no longer use, \
+                     then try again."
+                ),
+            );
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "web admin-key issuance failed");
+            return message_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "The key could not be issued. Please try again.",
+            );
+        }
+    };
+
+    let _ = db::audit_events::record_audit_event(
+        &service.db,
+        &app.id,
+        None,
+        "admin_key.issued_via_web",
+        serde_json::json!({ "key_id": key.id, "prefix": key.prefix, "user_id": user.id }),
+    )
+    .await
+    .inspect_err(|e| tracing::error!(error = %e, "audit event write failed"));
+
+    let body = REVEAL_PAGE
+        .replace("{{APP_ID}}", &escape_html(&app.id.to_string()))
+        .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token));
+    let mut response = Html(body).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    response
+}
+
+/// Form for `POST /signup/keys/revoke`.
+#[derive(Deserialize)]
+struct RevokeForm {
+    key_id: String,
+}
+
+/// `POST /signup/keys/revoke` — revoke one of the app's own keys.
+async fn revoke_key(
+    State(service): State<SignupService>,
+    headers: HeaderMap,
+    Form(form): Form<RevokeForm>,
+) -> Response {
+    let (user, app) = match dashboard_context(&service, &headers).await {
+        Ok(ctx) => ctx,
+        Err(response) => return response,
+    };
+
+    // Scoped to the session's app: a forged key_id belonging to another
+    // app is a no-op.
+    match db::app_admin_keys::revoke_admin_key_for_app(&service.db, &form.key_id, &app.id).await {
+        Ok(true) => {
+            let _ = db::audit_events::record_audit_event(
+                &service.db,
+                &app.id,
+                None,
+                "admin_key.revoked_via_web",
+                serde_json::json!({ "key_id": form.key_id, "user_id": user.id }),
+            )
+            .await
+            .inspect_err(|e| tracing::error!(error = %e, "audit event write failed"));
+        }
+        Ok(false) => {
+            tracing::info!(key_id = %form.key_id, "web revoke matched no active key");
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "web admin-key revocation failed");
+            return message_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "The key could not be revoked. Please try again.",
+            );
+        }
+    }
+    Redirect::to("/signup/keys").into_response()
+}
+
+/// `POST /signup/logout` — delete the session and clear the cookie.
+async fn logout(State(service): State<SignupService>, headers: HeaderMap) -> Response {
+    if let Some(token) = get_cookie(&headers, SESSION_COOKIE) {
+        let _ = db::web_sessions::delete_by_hash(&service.db, &auth::hash_api_key(&token))
+            .await
+            .inspect_err(|e| tracing::error!(error = %e, "session delete failed"));
+    }
+    let mut response = Redirect::to("/signup").into_response();
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        cookie_value(SESSION_COOKIE, "", 0, service.secure_cookies()),
+    );
+    response
 }
 
 #[cfg(test)]
@@ -873,6 +1068,179 @@ mod tests {
             .unwrap();
         assert_eq!(landing.status(), 303);
         assert_eq!(landing.headers()[header::LOCATION], "/signup");
+    }
+
+    #[tokio::test]
+    async fn dashboard_lists_keys_and_issues_new_ones() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Open, "sub-dash-1", "dash@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        // Dashboard shows the signup key's prefix and the user's email.
+        let dash = http
+            .get(format!("{base}/signup/keys"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(dash.status(), 200);
+        let body = dash.text().await.unwrap();
+        assert!(body.contains("dash@example.com"), "{body}");
+        assert!(body.contains("active"), "{body}");
+
+        // Issue a second key: one-time reveal, then two active keys.
+        let issue = http
+            .post(format!("{base}/signup/keys/issue"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(issue.status(), 200);
+        assert_eq!(issue.headers()[header::CACHE_CONTROL], "no-store");
+        assert!(issue.text().await.unwrap().contains("Your app is ready"));
+
+        let user =
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-dash-1")
+                .await
+                .unwrap()
+                .unwrap();
+        let app = db::apps::find_app_by_owner(&service.db, &user.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            db::app_admin_keys::count_active_admin_keys(&service.db, &app.id)
+                .await
+                .unwrap(),
+            2
+        );
+
+        // Audit trail records the web issuance.
+        let events = db::audit_events::list_audit_events_by_app(&service.db, &app.id)
+            .await
+            .unwrap();
+        assert!(
+            events
+                .iter()
+                .any(|e| e.event_type == "admin_key.issued_via_web")
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_at_cap_returns_conflict() {
+        let (callback, _service, base) =
+            run_flow(SignupMode::Open, "sub-dash-2", "cap@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        // Signup issued 1; cap is 5 → 4 more succeed, the 6th conflicts.
+        for _ in 0..4 {
+            let r = http
+                .post(format!("{base}/signup/keys/issue"))
+                .header(header::COOKIE, &session_header)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(r.status(), 200);
+        }
+        let over = http
+            .post(format!("{base}/signup/keys/issue"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(over.status(), 409);
+        assert!(over.text().await.unwrap().contains("Key limit reached"));
+    }
+
+    #[tokio::test]
+    async fn revoke_is_scoped_to_own_app() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Open, "sub-dash-3", "rev@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        // Another app's key must not be revocable via this session.
+        let other_app = db::apps::create_app(&service.db, "other-app", "o@x.com")
+            .await
+            .unwrap();
+        let other_key = app_admin::issue_admin_key(&service.db, &other_app.id, None)
+            .await
+            .unwrap();
+        let forged = http
+            .post(format!("{base}/signup/keys/revoke"))
+            .header(header::COOKIE, &session_header)
+            .form(&[("key_id", other_key.id.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(forged.status(), 303);
+        assert_eq!(
+            db::app_admin_keys::count_active_admin_keys(&service.db, &other_app.id)
+                .await
+                .unwrap(),
+            1,
+            "cross-app revoke must be a no-op"
+        );
+
+        // Revoking the app's own key works.
+        let user =
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-dash-3")
+                .await
+                .unwrap()
+                .unwrap();
+        let app = db::apps::find_app_by_owner(&service.db, &user.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let own_keys = db::app_admin_keys::list_admin_keys(&service.db, &app.id)
+            .await
+            .unwrap();
+        let own = http
+            .post(format!("{base}/signup/keys/revoke"))
+            .header(header::COOKIE, &session_header)
+            .form(&[("key_id", own_keys[0].id.as_str())])
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(own.status(), 303);
+        assert_eq!(
+            db::app_admin_keys::count_active_admin_keys(&service.db, &app.id)
+                .await
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn logout_kills_the_session() {
+        let (callback, _service, base) =
+            run_flow(SignupMode::Open, "sub-dash-4", "out@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        let logout = http
+            .post(format!("{base}/signup/logout"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(logout.status(), 303);
+
+        // The old token no longer authenticates.
+        let dash = http
+            .get(format!("{base}/signup/keys"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(dash.status(), 303);
+        assert_eq!(dash.headers()[header::LOCATION], "/signup");
     }
 
     #[test]
