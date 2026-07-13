@@ -12,7 +12,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Oyster is a Web2-friendly object storage API backed by [Walrus](https://walrus.xyz/) (decentralized blob storage) and [Sui](https://sui.io/) (on-chain state). Two services communicate via gRPC:
 
-- **Oyster** (`crates/oyster`): Axum HTTP server on `:3000`. Manages accounts, API keys, buckets, and blobs. Has two blob store backends: `LocalBlobStore` (filesystem) and `DirectWalrusBlobStore` (on-chain via Programmable Transaction Blocks). Runs a background extension task to auto-renew expiring blobs.
+- **Oyster** (`crates/oyster`): Axum HTTP server on `:3000`. Manages accounts, API keys, buckets, and blobs. Has two blob store backends: `LocalBlobStore` (filesystem) and `DirectWalrusBlobStore` (on-chain via Programmable Transaction Blocks). Runs a background extension task to auto-renew expiring blobs. Optionally serves self-serve web signup at `/signup` (`src/signup/`): Google OAuth + Cloudflare Turnstile, issuing per-app admin keys; mounted only when the signup env vars are configured (see `docs/src/guides/web-signup.md`).
 - **Pearl** (`crates/pearl`): Tonic gRPC server on `:50051`. Custodial wallet service — derives Ed25519 keys via HKDF-SHA256, signs Sui transaction blocks. Uses a shared-secret Bearer token for auth.
 - **oyster-cli** (`crates/oyster-cli`): CLI client for the Oyster HTTP API. Config via `client.yaml`.
 - **oyster-e2e-tests** (`crates/oyster-e2e-tests`): Full-stack tests booting Sui cluster + Walrus + Pearl + Oyster in-process.
@@ -23,11 +23,11 @@ API request → Oyster auth (Blake2s-256 hashed Bearer token) → route handler 
 
 ### Database
 
-Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `buckets`, `blobs`, `apps`. Pearl is stateless — keys are derived on-the-fly from `PEARL_MASTER_SEED` via HKDF-SHA256.
+Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `access_keys`, `buckets`, `blobs`, `blob_tags`, `apps`, `app_admin_keys`, `audit_events`, `dead_letter_orphans`, and the web-signup set (`users`, `user_identities`, `web_sessions`, `signup_requests`). Pearl is stateless — keys are derived on-the-fly from `PEARL_MASTER_SEED` via HKDF-SHA256.
 
 ### Proto
 
-`crates/pearl/proto/pearl.proto` defines the Pearl gRPC API (`CreateAccount`, `GetAddress`, `SignTransaction`). Both `build.rs` scripts compile protos via `tonic-prost-build`.
+`crates/pearl/proto/pearl.proto` defines the Pearl gRPC API (`GetAddress`, `SignTransaction`). Both `build.rs` scripts compile protos via `tonic-prost-build`.
 
 ## Code Conventions
 
@@ -47,6 +47,7 @@ Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev
 
 Oyster and Pearl are configured via environment variables (see `crates/oyster/src/config.rs` and `crates/pearl/src/config.rs`). Key vars:
 - Oyster: `BIND_ADDR`, `DATABASE_URL`, `PEARL_GRPC_URL`, `PEARL_SERVICE_SECRET`, `SUI_RPC_URL`. Supported SQLite floor is ≥ 3.35 (for `ALTER TABLE … DROP COLUMN`).
+- Oyster web signup (all five required to enable; see `.env.example`): `OYSTER_PUBLIC_BASE_URL`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`; plus `OYSTER_SIGNUP_MODE` (`open`|`waitlist`|`closed`, default `closed`), `OYSTER_SIGNUP_ALLOWED_DOMAINS`, `OYSTER_MAX_ADMIN_KEYS_PER_APP` (default 5). Waitlist review via `oysterd signup list|approve|reject`.
 - Pearl: `PEARL_BIND_ADDR`, `PEARL_SERVICE_SECRET`, `PEARL_MASTER_SEED`, `PEARL_METRICS_BIND_ADDR`, optional TLS via `PEARL_TLS_CERT_PATH`/`PEARL_TLS_KEY_PATH`
 
 ## OpenAPI Docs
