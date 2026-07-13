@@ -20,6 +20,8 @@ pub mod buckets;
 /// when a post-store DB write fails AND the compensating on-chain
 /// delete also fails. See `routes::blobs::compensation`.
 pub mod dead_letter_orphans;
+/// Signup-request queue database operations (gated signup modes).
+pub mod signup_requests;
 /// Web-signup user and identity database operations.
 pub mod users;
 /// Browser session database operations for the signup/dashboard pages.
