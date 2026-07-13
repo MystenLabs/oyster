@@ -42,6 +42,8 @@ pub mod routes;
 pub mod s3;
 /// Per-account storage cap evaluation (pure helper, no I/O).
 pub mod storage_cap;
+/// Self-serve web signup (Turnstile, Google OAuth, signup pages).
+pub mod signup;
 /// Read on-chain Sui object state (e.g. `StoragePoolInnerV1`) over gRPC.
 pub mod sui_object_reader;
 /// Sui transaction building, signing, and submission helpers.
