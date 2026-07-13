@@ -5,14 +5,8 @@ use std::{path::PathBuf, sync::Arc};
 use axum::http::{HeaderName, HeaderValue};
 use clap::{Parser, Subcommand};
 use oyster::{
-    AppId,
-    AppState,
-    blob_store::LocalBlobStore,
-    config::Config,
-    db,
-    direct_walrus_store::DirectWalrusBlobStore,
-    pearl_client::PearlConnection,
-    routes,
+    AppId, AppState, blob_store::LocalBlobStore, config::Config, db,
+    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
 };
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer, trace::TraceLayer};
 
@@ -39,6 +33,11 @@ enum Command {
     App {
         #[command(subcommand)]
         command: AppCommand,
+    },
+    /// Review self-serve signup requests (waitlist mode).
+    Signup {
+        #[command(subcommand)]
+        command: SignupCommand,
     },
 }
 
@@ -74,6 +73,28 @@ enum AppCommand {
     },
 }
 
+#[derive(Subcommand)]
+enum SignupCommand {
+    /// List signup requests (TSV: id, status, provider, email, name,
+    /// requested_at). Pending only unless --all.
+    List {
+        /// Include decided (approved/rejected) requests.
+        #[arg(long)]
+        all: bool,
+    },
+    /// Approve a signup request by id or email. The requester completes
+    /// signup on their next sign-in.
+    Approve {
+        /// Request id (UUID) or the request's email address.
+        id_or_email: String,
+    },
+    /// Reject a signup request by id or email.
+    Reject {
+        /// Request id (UUID) or the request's email address.
+        id_or_email: String,
+    },
+}
+
 #[tokio::main]
 async fn main() {
     // Walrus SDK pulls in both aws-lc-rs and ring; rustls can't auto-detect.
@@ -97,6 +118,10 @@ async fn main() {
 
     if let Some(Command::App { command }) = cli.command {
         handle_app_command(command).await;
+        return;
+    }
+    if let Some(Command::Signup { command }) = cli.command {
+        handle_signup_command(command).await;
         return;
     }
 
@@ -125,7 +150,7 @@ async fn main() {
     };
 
     match cli.command.unwrap_or(Command::Serve) {
-        Command::App { .. } => unreachable!("handled above"),
+        Command::App { .. } | Command::Signup { .. } => unreachable!("handled above"),
         Command::Serve => {
             tracing::info!("starting oyster server on {}", config.bind_addr);
 
@@ -324,6 +349,77 @@ async fn handle_app_command(command: AppCommand) {
             }
         }
     }
+}
+
+async fn handle_signup_command(command: SignupCommand) {
+    use oyster::db::signup_requests::{self, SignupRequestStatus};
+
+    let database_url =
+        std::env::var("DATABASE_URL").unwrap_or_else(|_| "sqlite:oyster.db?mode=rwc".to_string());
+    let pool = db::create_pool(&database_url)
+        .await
+        .expect("failed to create database pool");
+
+    match command {
+        SignupCommand::List { all } => {
+            let status = if all {
+                None
+            } else {
+                Some(SignupRequestStatus::Pending)
+            };
+            let requests = signup_requests::list(&pool, status)
+                .await
+                .expect("failed to list signup requests");
+            println!("ID\tSTATUS\tPROVIDER\tEMAIL\tNAME\tREQUESTED_AT");
+            for r in requests {
+                println!(
+                    "{}\t{}\t{}\t{}\t{}\t{}",
+                    r.id,
+                    r.status,
+                    r.provider,
+                    r.email,
+                    r.display_name.unwrap_or_default(),
+                    r.requested_at,
+                );
+            }
+        }
+        SignupCommand::Approve { id_or_email } => {
+            decide(&pool, &id_or_email, SignupRequestStatus::Approved).await;
+        }
+        SignupCommand::Reject { id_or_email } => {
+            decide(&pool, &id_or_email, SignupRequestStatus::Rejected).await;
+        }
+    }
+}
+
+/// Apply a decision to a request by id, falling back to email matching.
+/// Exits non-zero when nothing matched.
+async fn decide(
+    pool: &db::DbPool,
+    id_or_email: &str,
+    status: oyster::db::signup_requests::SignupRequestStatus,
+) {
+    use oyster::db::signup_requests;
+
+    let decided_by = format!(
+        "cli:{}",
+        std::env::var("USER").unwrap_or_else(|_| "?".into())
+    );
+    let by_id = signup_requests::set_status_by_id(pool, id_or_email, status, &decided_by)
+        .await
+        .expect("failed to update signup request");
+    if by_id {
+        println!("{status}: 1 request (by id)");
+        return;
+    }
+    let n = signup_requests::set_status_by_email(pool, id_or_email, status, &decided_by)
+        .await
+        .expect("failed to update signup requests");
+    if n == 0 {
+        eprintln!("no signup request matches: {id_or_email}");
+        std::process::exit(1);
+    }
+    println!("{status}: {n} request(s) (by email)");
 }
 
 async fn issue_admin_key_for(
