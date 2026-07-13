@@ -132,6 +132,17 @@ fn escape_html(s: &str) -> String {
         .replace('\'', "&#39;")
 }
 
+/// Escaped environment badge text for `{{ENV_LABEL}}` ("" when unset —
+/// the badge element hides itself via CSS `:empty`).
+fn env_label(service: &SignupService) -> String {
+    service
+        .config
+        .env_label
+        .as_deref()
+        .map(escape_html)
+        .unwrap_or_default()
+}
+
 /// Render the generic message page.
 fn message_page(status: StatusCode, title: &str, message: &str) -> Response {
     let body = MESSAGE_PAGE
@@ -173,7 +184,9 @@ async fn session_user(service: &SignupService, headers: &HeaderMap) -> Option<Us
 
 /// `GET /signup` — the signup/login page.
 async fn signup_page(State(service): State<SignupService>) -> Response {
-    let body = SIGNUP_PAGE.replace("{{TURNSTILE_SITE_KEY}}", &service.config.turnstile_site_key);
+    let body = SIGNUP_PAGE
+        .replace("{{TURNSTILE_SITE_KEY}}", &service.config.turnstile_site_key)
+        .replace("{{ENV_LABEL}}", &env_label(&service));
     Html(body).into_response()
 }
 
@@ -394,7 +407,8 @@ async fn complete_sign_in(
         Some((app_id, key)) => {
             let body = REVEAL_PAGE
                 .replace("{{APP_ID}}", &escape_html(&app_id))
-                .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token));
+                .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token))
+                .replace("{{ENV_LABEL}}", &env_label(service));
             let mut r = Html(body).into_response();
             r.headers_mut()
                 .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
@@ -625,7 +639,8 @@ async fn dashboard(State(service): State<SignupService>, headers: HeaderMap) -> 
     let body = DASHBOARD_PAGE
         .replace("{{EMAIL}}", &escape_html(&user.email))
         .replace("{{APP_ID}}", &escape_html(&app.id.to_string()))
-        .replace("{{KEY_ROWS}}", &rows);
+        .replace("{{KEY_ROWS}}", &rows)
+        .replace("{{ENV_LABEL}}", &env_label(&service));
     Html(body).into_response()
 }
 
@@ -677,7 +692,8 @@ async fn issue_key(State(service): State<SignupService>, headers: HeaderMap) -> 
 
     let body = REVEAL_PAGE
         .replace("{{APP_ID}}", &escape_html(&app.id.to_string()))
-        .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token));
+        .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token))
+        .replace("{{ENV_LABEL}}", &env_label(&service));
     let mut response = Html(body).into_response();
     response
         .headers_mut()
@@ -871,6 +887,7 @@ mod tests {
             config: SignupConfig {
                 mode,
                 allowed_domains: allowed_domains.iter().map(|d| d.to_string()).collect(),
+                env_label: Some("Testnet".into()),
                 google_auth_url: None,
                 google_token_url: None,
                 google_jwks_url: None,
@@ -982,10 +999,12 @@ mod tests {
         let base = serve(service.clone()).await;
         let http = client();
 
-        // Page renders with the sitekey.
+        // Page renders with the sitekey and the environment badge.
         let page = http.get(format!("{base}/signup")).send().await.unwrap();
         assert_eq!(page.status(), 200);
-        assert!(page.text().await.unwrap().contains("test-site-key"));
+        let page_body = page.text().await.unwrap();
+        assert!(page_body.contains("test-site-key"));
+        assert!(page_body.contains(r#"<span class="env-badge">Testnet</span>"#));
 
         let callback = sign_in(&base).await;
         (callback, service, base)

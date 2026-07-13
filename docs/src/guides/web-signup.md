@@ -45,6 +45,7 @@ Behavior knobs (optional):
 | `OYSTER_SIGNUP_MODE` | `closed` | `open` (anyone signs up), `waitlist` (operator approves), `closed` (no new signups; existing users still sign in) |
 | `OYSTER_SIGNUP_ALLOWED_DOMAINS` | — | Comma-separated email domains that skip the waitlist (Google-verified emails only) |
 | `OYSTER_MAX_ADMIN_KEYS_PER_APP` | `5` | Active-key cap on web issuance (the operator CLI bypasses it) |
+| `OYSTER_SIGNUP_ENV_LABEL` | — | Badge ("Testnet", "Mainnet", …) on the signup pages; set it when running multiple deployments so users can tell them apart |
 
 See `.env.example` at the repo root for a copy-paste template.
 

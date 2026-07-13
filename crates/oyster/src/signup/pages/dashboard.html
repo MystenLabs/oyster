@@ -25,11 +25,16 @@
     .footer { display: flex; justify-content: space-between; align-items: center;
               margin-top: .5rem; }
     button.plain { background: #fff; color: #444; border-color: #bbb; }
+    .env-badge { display: inline-block; font-size: .7rem; font-weight: 600;
+                 text-transform: uppercase; letter-spacing: .05em; color: #7a5b00;
+                 background: #fff3c4; border: 1px solid #e0c96a; border-radius: 999px;
+                 padding: .15rem .6rem; vertical-align: middle; margin-left: .4rem; }
+    .env-badge:empty { display: none; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Admin keys</h1>
+    <h1>Admin keys<span class="env-badge">{{ENV_LABEL}}</span></h1>
     <p class="sub">Signed in as {{EMAIL}} · App <code>{{APP_ID}}</code></p>
     <table>
       <thead>

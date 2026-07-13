@@ -57,6 +57,9 @@ pub struct SignupConfig {
     pub turnstile_site_key: String,
     /// Cloudflare Turnstile secret key (server-side siteverify).
     pub turnstile_secret_key: String,
+    /// Optional environment label ("Testnet", "Mainnet", …) rendered as
+    /// a badge on the signup pages so users can tell deployments apart.
+    pub env_label: Option<String>,
     /// **Dev-only.** Override Google's consent-screen URL (mock server).
     pub google_auth_url: Option<String>,
     /// **Dev-only.** Override Google's token endpoint (mock server).
@@ -77,6 +80,7 @@ impl fmt::Debug for SignupConfig {
             .field("google_client_secret", &"[redacted]")
             .field("turnstile_site_key", &self.turnstile_site_key)
             .field("turnstile_secret_key", &"[redacted]")
+            .field("env_label", &self.env_label)
             .field("google_auth_url", &self.google_auth_url)
             .field("google_token_url", &self.google_token_url)
             .field("google_jwks_url", &self.google_jwks_url)
@@ -146,6 +150,7 @@ fn signup_config_from(get: impl Fn(&str) -> Option<String>) -> Option<SignupConf
         google_client_secret: values.next().expect("five values"),
         turnstile_site_key: values.next().expect("five values"),
         turnstile_secret_key: values.next().expect("five values"),
+        env_label: get("OYSTER_SIGNUP_ENV_LABEL").filter(|v| !v.is_empty()),
         google_auth_url: get("GOOGLE_OAUTH_AUTH_URL"),
         google_token_url: get("GOOGLE_OAUTH_TOKEN_URL"),
         google_jwks_url: get("GOOGLE_OAUTH_JWKS_URL"),
@@ -364,9 +369,17 @@ mod tests {
             "OYSTER_SIGNUP_ALLOWED_DOMAINS",
             "MystenLabs.com, @example.org,,",
         ));
+        vars.push(("OYSTER_SIGNUP_ENV_LABEL", "Testnet"));
         let cfg = signup_config_from(lookup(&vars)).unwrap();
         assert_eq!(cfg.mode, SignupMode::Waitlist);
         assert_eq!(cfg.allowed_domains, vec!["mystenlabs.com", "example.org"]);
+        assert_eq!(cfg.env_label.as_deref(), Some("Testnet"));
+    }
+
+    #[test]
+    fn env_label_defaults_to_none() {
+        let cfg = signup_config_from(lookup(&ALL_SET)).unwrap();
+        assert!(cfg.env_label.is_none());
     }
 
     #[test]

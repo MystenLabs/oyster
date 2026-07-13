@@ -22,11 +22,16 @@
     button.copy { border: 1px solid #444; background: #fff; border-radius: 6px;
                   cursor: pointer; padding: 0 .8rem; }
     a.continue { display: inline-block; margin-top: .5rem; }
+    .env-badge { display: inline-block; font-size: .7rem; font-weight: 600;
+                 text-transform: uppercase; letter-spacing: .05em; color: #7a5b00;
+                 background: #fff3c4; border: 1px solid #e0c96a; border-radius: 999px;
+                 padding: .15rem .6rem; vertical-align: middle; margin-left: .4rem; }
+    .env-badge:empty { display: none; }
   </style>
 </head>
 <body>
   <main>
-    <h1>✓ Your app is ready</h1>
+    <h1>✓ Your app is ready<span class="env-badge">{{ENV_LABEL}}</span></h1>
     <dl>
       <dt>App ID</dt>
       <dd class="row"><code id="app-id">{{APP_ID}}</code>

@@ -16,11 +16,16 @@
     button { width: 100%; padding: .7rem 1rem; font-size: 1rem; border-radius: 6px;
              border: 1px solid #444; background: #1a1a1a; color: #fff; cursor: pointer; }
     button:hover { background: #333; }
+    .env-badge { display: inline-block; font-size: .7rem; font-weight: 600;
+                 text-transform: uppercase; letter-spacing: .05em; color: #7a5b00;
+                 background: #fff3c4; border: 1px solid #e0c96a; border-radius: 999px;
+                 padding: .15rem .6rem; vertical-align: middle; margin-left: .4rem; }
+    .env-badge:empty { display: none; }
   </style>
 </head>
 <body>
   <main>
-    <h1>🦪 Oyster</h1>
+    <h1>🦪 Oyster<span class="env-badge">{{ENV_LABEL}}</span></h1>
     <p class="tagline">Web2-friendly storage on Walrus</p>
     <form method="POST" action="/signup/start">
       <div class="cf-turnstile" data-sitekey="{{TURNSTILE_SITE_KEY}}"></div>
