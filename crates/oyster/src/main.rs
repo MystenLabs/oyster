@@ -205,6 +205,12 @@ async fn main() {
 
             let metrics_handle = oyster::metrics::setup();
 
+            // Hygiene sweep for expired browser sessions; only relevant
+            // when the signup pages are mounted.
+            if config.signup.is_some() {
+                tokio::spawn(oyster::signup::run_session_sweep(db.clone()));
+            }
+
             let state = AppState {
                 db,
                 blob_store,
