@@ -12,7 +12,8 @@ use std::time::Duration;
 use serde::Deserialize;
 
 /// Production `siteverify` endpoint.
-const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+/// (public so the router builder can default to it)
+pub const SITEVERIFY_URL: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 /// Timeout for the `siteverify` HTTP call.
 const SITEVERIFY_TIMEOUT: Duration = Duration::from_secs(10);

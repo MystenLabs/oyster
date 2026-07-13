@@ -77,12 +77,25 @@ pub fn build_signup_router(
     max_admin_keys_per_app: i64,
 ) -> Router {
     let redirect_uri = format!("{}/signup/callback", config.public_base_url);
+    // Dev-only endpoint overrides let the local testbed point at mock
+    // Google/Turnstile servers; production leaves them unset.
+    let or =
+        |over: &Option<String>, default: &str| over.clone().unwrap_or_else(|| default.to_string());
     let service = SignupService {
-        turnstile: TurnstileVerifier::new(config.turnstile_secret_key.clone()),
-        google: GoogleOAuthClient::new(
+        turnstile: TurnstileVerifier::with_endpoint(
+            config.turnstile_secret_key.clone(),
+            or(
+                &config.turnstile_siteverify_url,
+                crate::signup::turnstile::SITEVERIFY_URL,
+            ),
+        ),
+        google: GoogleOAuthClient::with_endpoints(
             config.google_client_id.clone(),
             config.google_client_secret.clone(),
             redirect_uri,
+            or(&config.google_auth_url, crate::signup::google::AUTH_URL),
+            or(&config.google_token_url, crate::signup::google::TOKEN_URL),
+            or(&config.google_jwks_url, crate::signup::google::JWKS_URL),
         ),
         db,
         max_admin_keys_per_app,
@@ -858,6 +871,10 @@ mod tests {
             config: SignupConfig {
                 mode,
                 allowed_domains: allowed_domains.iter().map(|d| d.to_string()).collect(),
+                google_auth_url: None,
+                google_token_url: None,
+                google_jwks_url: None,
+                turnstile_siteverify_url: None,
                 public_base_url: "http://localhost:3000".into(),
                 google_client_id: "test-client-id".into(),
                 google_client_secret: "test-client-secret".into(),

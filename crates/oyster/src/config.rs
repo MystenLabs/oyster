@@ -57,6 +57,14 @@ pub struct SignupConfig {
     pub turnstile_site_key: String,
     /// Cloudflare Turnstile secret key (server-side siteverify).
     pub turnstile_secret_key: String,
+    /// **Dev-only.** Override Google's consent-screen URL (mock server).
+    pub google_auth_url: Option<String>,
+    /// **Dev-only.** Override Google's token endpoint (mock server).
+    pub google_token_url: Option<String>,
+    /// **Dev-only.** Override Google's JWKS endpoint (mock server).
+    pub google_jwks_url: Option<String>,
+    /// **Dev-only.** Override Cloudflare's siteverify endpoint (mock server).
+    pub turnstile_siteverify_url: Option<String>,
 }
 
 impl fmt::Debug for SignupConfig {
@@ -69,6 +77,10 @@ impl fmt::Debug for SignupConfig {
             .field("google_client_secret", &"[redacted]")
             .field("turnstile_site_key", &self.turnstile_site_key)
             .field("turnstile_secret_key", &"[redacted]")
+            .field("google_auth_url", &self.google_auth_url)
+            .field("google_token_url", &self.google_token_url)
+            .field("google_jwks_url", &self.google_jwks_url)
+            .field("turnstile_siteverify_url", &self.turnstile_siteverify_url)
             .finish()
     }
 }
@@ -134,6 +146,10 @@ fn signup_config_from(get: impl Fn(&str) -> Option<String>) -> Option<SignupConf
         google_client_secret: values.next().expect("five values"),
         turnstile_site_key: values.next().expect("five values"),
         turnstile_secret_key: values.next().expect("five values"),
+        google_auth_url: get("GOOGLE_OAUTH_AUTH_URL"),
+        google_token_url: get("GOOGLE_OAUTH_TOKEN_URL"),
+        google_jwks_url: get("GOOGLE_OAUTH_JWKS_URL"),
+        turnstile_siteverify_url: get("TURNSTILE_SITEVERIFY_URL"),
     })
 }
 

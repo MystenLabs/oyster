@@ -13,11 +13,14 @@ use sha2::{Digest, Sha256};
 use crate::auth;
 
 /// Google's OAuth consent-screen endpoint.
-const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
+/// (public so the router builder can default to it)
+pub const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 /// Google's code→token exchange endpoint.
-const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
+/// (public so the router builder can default to it)
+pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
 /// Google's JWKS endpoint for id_token signature verification.
-const JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
+/// (public so the router builder can default to it)
+pub const JWKS_URL: &str = "https://www.googleapis.com/oauth2/v3/certs";
 
 /// Issuer values Google may put in an id_token (per OIDC discovery).
 const GOOGLE_ISSUERS: [&str; 2] = ["https://accounts.google.com", "accounts.google.com"];
