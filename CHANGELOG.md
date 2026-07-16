@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.13.0] - 2026-07-16
 
 ### Fixed
 - Restored on-chain operation against Sui fullnodes running `sui-node`
