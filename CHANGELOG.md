@@ -1,5 +1,29 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Restored on-chain operation against Sui fullnodes running `sui-node`
+  ≥ 1.75, which have removed the JSON-RPC interface. `walrus-sui`
+  `testnet-v1.48.1` defaulted to JSON-RPC and built a JSON-RPC client
+  unconditionally, so `SuiReadClient` construction — and every read
+  behind it, including the `current_epoch` lookup on the blob-store
+  write path — failed with HTTP 404 against
+  `https://fullnode.testnet.sui.io:443`. The Walrus bump below defaults
+  to a gRPC migration level that skips the JSON-RPC client entirely.
+
+### Changed
+- Walrus dependencies bumped from tag `testnet-v1.48.1` to
+  `testnet-v1.52.0`, and the Sui ecosystem pinned to the revisions that
+  release targets: `sui-sdk`/`sui-types`/`shared-crypto` →
+  `testnet-v1.75.1`, `sui-rpc` → rev `43c5bc13`, `fastcrypto` → rev
+  `c6010b90`. Embedders pinning the same revs must update.
+- Upstream `RetriableSuiClient::get_object_owner_address` now returns
+  `Option<SuiAddress>` rather than erroring for objects with no address
+  owner. The `StoragePool` owner check in `admin_storage_pool` treats a
+  missing owner as a mismatch, so a shared or immutable pool is refused
+  rather than submitted as a malformed `ObjectArg`.
+
 ## [0.12.1] - 2026-06-16
 
 ### Changed

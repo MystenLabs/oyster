@@ -4,7 +4,7 @@
 //! `StoragePool` when an admin lowers the account's
 //! `max_unencoded_bytes` cap below the currently-reserved encoded
 //! capacity. Walrus's upstream [`WalrusPtbBuilder`] (pinned to
-//! `testnet-v1.48.1`) exposes `create_storage_pool` and
+//! `testnet-v1.52.0`) exposes `create_storage_pool` and
 //! `increase_storage_pool_capacity` publicly but not
 //! `decrease_storage_pool_capacity_by_size`, so we build the PTB
 //! directly here using `sui_types::ProgrammableTransactionBuilder`
@@ -129,9 +129,11 @@ pub async fn decrease_storage_pool_capacity(
         .get_object_owner_address(pool_object_id)
         .await
         .map_err(|e| DecreaseError::Upstream(format!("get_object_owner_address pool: {e}")))?;
-    if pool_owner != sender {
+    // `None` means the pool has no address owner (shared or immutable),
+    // which is just as malformed here as a mismatched owner.
+    if pool_owner != Some(sender) {
         return Err(DecreaseError::Internal(format!(
-            "pool {pool_object_id} owner {pool_owner} != sender {sender}; refusing to submit \
+            "pool {pool_object_id} owner {pool_owner:?} != sender {sender}; refusing to submit \
              a malformed ObjectArg",
         )));
     }
