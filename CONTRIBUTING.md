@@ -210,7 +210,7 @@ creates an in-memory database, binds to a random port, and returns a connected c
 Tests build a full Axum `Router` with in-memory SQLite and a `LocalBlobStore`:
 
 ```rust
-let (app, _tmp) = test_app().await;
+let (app, _tmp, _pool) = test_app().await;
 let (account_id, api_key) = create_test_account(&app).await;
 ```
 
