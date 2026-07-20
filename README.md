@@ -75,7 +75,7 @@ API, and `oysterd extend` runs the blob extension background worker.
   per account.
 - **Bucket** -- Named container scoped to an account. Bucket names are unique per account.
 - **Blob** -- Content-addressed object stored in a bucket. Identified by `object_id` (unique
-  per upload) and `blob_id` (content hash, shared across deduplicates). When stored on Walrus,
+  per upload) and `blob_id` (content hash, shared across duplicate uploads). When stored on Walrus,
   has a `pooled_blob_object_id` pointing at the `PooledBlob` on-chain object registered under
   the account's `StoragePool`.
 - **Blob tags** -- User-defined key/value metadata attached to a blob. Up to 10 tags per blob,
@@ -304,7 +304,7 @@ A command-line client for the Oyster HTTP API. Install with `cargo install --pat
 
 ```
 oyster store photo.jpg --bucket media
-oyster read <object_id> -o photo.jpg
+oyster read photo.jpg --bucket media -o photo.jpg
 oyster list-blobs --bucket media
 oyster create-bucket backups
 oyster list-buckets
