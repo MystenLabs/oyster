@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- Web signup now sends `prompt=select_account` on every Google sign-in,
+  forcing the account chooser. Previously, signing out of Oyster and
+  back in silently reused the browser's active Google session — Oyster's
+  logout only clears its own session cookie, and without a `prompt`
+  parameter Google skips the chooser whenever the app was previously
+  approved, so there was no way to switch accounts. (#7)
+- `oyster info` no longer reports `config: (none)` when a config file
+  exists but cannot be loaded. All load errors — including the
+  insecure-permissions refusal (anything looser than `chmod 600`) and
+  YAML parse errors — were silently swallowed, making a refused config
+  indistinguishable from an absent one. `info` remains best-effort
+  (exit 0, `--json` stdout stays parseable) but now prints the load
+  error as a `warning:` on stderr. (#8)
+
 ## [0.13.0] - 2026-07-16
 
 ### Fixed
