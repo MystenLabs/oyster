@@ -16,21 +16,11 @@ use crate::{
     db,
     error::{self, AppError},
     models::{
-        BlobMetadata,
-        BlobTagsResponse,
-        CapExceededErrorResponse,
-        ErrorResponse,
-        InsufficientBalanceErrorResponse,
-        PaginatedResponse,
-        PaginationParams,
-        PatchTagsRequest,
-        PayloadTooLargeErrorResponse,
-        PutTagsRequest,
-        StoreBlobResponse,
-        UpdateBlobMetadataRequest,
+        BlobMetadata, BlobTagsResponse, CapExceededErrorResponse, ErrorResponse,
+        InsufficientBalanceErrorResponse, PaginatedResponse, PaginationParams, PatchTagsRequest,
+        PayloadTooLargeErrorResponse, PutTagsRequest, StoreBlobResponse, UpdateBlobMetadataRequest,
     },
-    pagination,
-    validation,
+    pagination, validation,
 };
 
 /// Maximum blob payload size accepted by `store_blob` (1 GiB).

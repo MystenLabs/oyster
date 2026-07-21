@@ -10,11 +10,9 @@
 use std::time::Duration;
 
 use crate::{
-    AccountId,
-    AppState,
+    AccountId, AppState,
     blob_store::{BlobId, StoreResult},
-    db,
-    metrics as metric_names,
+    db, metrics as metric_names,
 };
 
 /// Retry schedule for the compensating delete. Three attempts with
@@ -191,9 +189,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        AccountId,
-        AppId,
-        AppState,
+        AccountId, AppId, AppState,
         blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
         config::Config,
     };

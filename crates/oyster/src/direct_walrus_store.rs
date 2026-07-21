@@ -15,17 +15,12 @@ use sui_rpc::proto::sui::rpc::v2;
 use sui_types::base_types::{ObjectID, SuiAddress};
 use walrus_core::{Epoch, encoding::EncodingFactory as _, messages::BlobPersistenceType};
 use walrus_sdk::{
-    config::ClientConfig,
-    error::ClientErrorKind,
-    node_client::WalrusNodeClient,
+    config::ClientConfig, error::ClientErrorKind, node_client::WalrusNodeClient,
     uploader::TailHandling,
 };
 use walrus_sui::{
     client::{
-        BlobObjectMetadata,
-        BlobPersistence,
-        ReadClient,
-        SuiReadClient,
+        BlobObjectMetadata, BlobPersistence, ReadClient, SuiReadClient,
         transaction_builder::WalrusPtbBuilder,
     },
     types::PooledBlob,
@@ -33,8 +28,7 @@ use walrus_sui::{
 };
 
 use crate::{
-    AccountId,
-    FundingAmount,
+    AccountId, FundingAmount,
     blob_store::{BlobId, BlobStore, BlobStoreError, StoreResult},
     db::{self, accounts::StoragePoolState},
     pearl_client::PearlConnection,

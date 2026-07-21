@@ -2,11 +2,7 @@ use std::collections::BTreeSet;
 
 use futures::StreamExt;
 use s3s::{
-    S3Error,
-    S3ErrorCode,
-    S3Request,
-    S3Response,
-    S3Result,
+    S3Error, S3ErrorCode, S3Request, S3Response, S3Result,
     auth::{S3Auth, SecretKey},
     dto::*,
     service::S3ServiceBuilder,

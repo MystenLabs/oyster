@@ -5,12 +5,8 @@ use sui_rpc::{
     Client as SuiGrpcClient,
     client::ExecuteAndWaitError,
     proto::sui::rpc::v2::{
-        self as v2,
-        Bcs as ProtoBcs,
-        ExecuteTransactionRequest,
-        Transaction as ProtoTransaction,
-        UserSignature as ProtoUserSignature,
-        execution_error,
+        self as v2, Bcs as ProtoBcs, ExecuteTransactionRequest, Transaction as ProtoTransaction,
+        UserSignature as ProtoUserSignature, execution_error,
     },
 };
 use sui_types::{
