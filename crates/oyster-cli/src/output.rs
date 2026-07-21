@@ -26,3 +26,7 @@ impl Output {
 pub fn error(msg: &str) {
     eprintln!("error: {msg}");
 }
+
+pub fn warning(msg: &str) {
+    eprintln!("warning: {msg}");
+}
