@@ -39,13 +39,8 @@ pub fn run_e2e<F: std::future::Future<Output = ()> + Send + 'static>(f: F) {
 
 use axum::Router;
 use oyster::{
-    AppState,
-    blob_store::BlobStore,
-    config::Config,
-    db,
-    direct_walrus_store::DirectWalrusBlobStore,
-    pearl_client::PearlConnection,
-    routes,
+    AppState, blob_store::BlobStore, config::Config, db,
+    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
 };
 use pearl::{
     auth::check_service_secret,
@@ -53,21 +48,15 @@ use pearl::{
 };
 use sui_sdk::{SuiClientBuilder, rpc_types::SuiTransactionBlockResponseOptions};
 use sui_types::{
-    base_types::SuiAddress,
-    programmable_transaction_builder::ProgrammableTransactionBuilder,
-    transaction::TransactionData,
-    transaction_driver_types::ExecuteTransactionRequestType,
+    base_types::SuiAddress, programmable_transaction_builder::ProgrammableTransactionBuilder,
+    transaction::TransactionData, transaction_driver_types::ExecuteTransactionRequestType,
 };
 use tokio::sync::Mutex as TokioMutex;
 use walrus_service::test_utils::{
-    StorageNodeHandle,
-    TestCluster,
-    test_cluster::E2eTestSetupBuilder,
+    StorageNodeHandle, TestCluster, test_cluster::E2eTestSetupBuilder,
 };
 use walrus_sui::{
-    client::SuiContractClient,
-    test_utils::TestClusterHandle,
-    utils::BYTES_PER_UNIT_SIZE,
+    client::SuiContractClient, test_utils::TestClusterHandle, utils::BYTES_PER_UNIT_SIZE,
 };
 use walrus_test_utils::WithTempDir;
 

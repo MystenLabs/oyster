@@ -30,8 +30,7 @@ use sui_types::{
     transaction::{Command, ObjectArg, SharedObjectMutability},
 };
 use walrus_sui::client::{
-    SuiReadClient,
-    transaction_builder::build_transaction_data_with_min_gas_balance,
+    SuiReadClient, transaction_builder::build_transaction_data_with_min_gas_balance,
 };
 
 use crate::{

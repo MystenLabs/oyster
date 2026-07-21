@@ -13,14 +13,10 @@ use serde::Serialize;
 use uuid::Uuid;
 
 use crate::{
-    AccountId,
-    FundingAmount,
+    AccountId, FundingAmount,
     metrics::{
-        FUNDING_REQUIRED_WEBHOOKS_TOTAL,
-        WEBHOOK_ATTEMPTS_TOTAL,
-        WEBHOOK_CIRCUIT_OPEN_TOTAL,
-        WEBHOOK_FAILURES_TOTAL,
-        WEBHOOK_SUCCESSES_TOTAL,
+        FUNDING_REQUIRED_WEBHOOKS_TOTAL, WEBHOOK_ATTEMPTS_TOTAL, WEBHOOK_CIRCUIT_OPEN_TOTAL,
+        WEBHOOK_FAILURES_TOTAL, WEBHOOK_SUCCESSES_TOTAL,
     },
     webhook_keys,
 };

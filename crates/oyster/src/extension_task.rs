@@ -8,18 +8,12 @@ use uuid::Uuid;
 use walrus_sui::client::{ReadClient as _, transaction_builder::WalrusPtbBuilder};
 
 use crate::{
-    AccountId,
-    AppId,
-    FundingAmount,
+    AccountId, AppId, FundingAmount,
     db::{self, DbPool, accounts::ExpiringPool},
     extension_cost,
     metrics::{
-        EXTENSION_CYCLE_DURATION_SECONDS,
-        EXTENSION_CYCLE_POOLS_PROCESSED,
-        EXTENSION_CYCLES_TOTAL,
-        EXTENSION_ERRORS_TOTAL,
-        EXTENSION_POOLS_EXPIRING,
-        EXTENSION_POOLS_EXTENDED_TOTAL,
+        EXTENSION_CYCLE_DURATION_SECONDS, EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL,
+        EXTENSION_ERRORS_TOTAL, EXTENSION_POOLS_EXPIRING, EXTENSION_POOLS_EXTENDED_TOTAL,
         WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
     pearl_client::PearlConnection,

@@ -13,13 +13,10 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use oyster::{
-    AccountId,
-    AppState,
-    auth,
+    AccountId, AppState, auth,
     blob_store::{BlobId, BlobStore, BlobStoreError, LocalBlobStore, StoreResult},
     config::Config,
-    db,
-    routes,
+    db, routes,
     s3::OysterS3,
 };
 use serde_json::Value;
@@ -1617,8 +1614,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
 // ---------------------------------------------------------------------------
 
 use s3s::{
-    S3,
-    S3Request,
+    S3, S3Request,
     auth::{Credentials, SecretKey},
     dto::*,
 };

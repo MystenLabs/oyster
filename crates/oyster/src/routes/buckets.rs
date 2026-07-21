@@ -10,8 +10,7 @@ use crate::{
     db,
     error::AppError,
     models::{Bucket, CreateBucketRequest, ErrorResponse, PaginatedResponse, PaginationParams},
-    pagination,
-    validation,
+    pagination, validation,
 };
 
 #[utoipa::path(

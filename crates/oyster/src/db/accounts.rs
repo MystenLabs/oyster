@@ -4,8 +4,7 @@ use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::{
-    AccountId,
-    AppId,
+    AccountId, AppId,
     models::{Account, AccountSummary},
 };
 

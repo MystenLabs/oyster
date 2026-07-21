@@ -13,8 +13,7 @@ pub mod metrics;
 
 use axum::{Router, extract::DefaultBodyLimit};
 use utoipa::{
-    Modify,
-    OpenApi,
+    Modify, OpenApi,
     openapi::{
         security::{HttpAuthScheme, HttpBuilder, SecurityScheme},
         server::Server,
