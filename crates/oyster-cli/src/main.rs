@@ -896,9 +896,17 @@ async fn run(cli: Cli, out: &Output) -> Result<(), CliError> {
         }
 
         Command::Info => {
-            // Info is special: best-effort resolve, never errors on missing fields
-            let (file_config, config_path) =
-                config::load_file_config(cli.config.as_deref()).unwrap_or_default();
+            // Info is special: best-effort resolve, never errors on missing
+            // fields. But a config file that exists yet can't be loaded
+            // (insecure permissions, parse error) must be surfaced — silently
+            // reporting "config: (none)" hides the real problem.
+            let (file_config, config_path) = match config::load_file_config(cli.config.as_deref()) {
+                Ok(loaded) => loaded,
+                Err(e) => {
+                    output::warning(&e.to_string());
+                    Default::default()
+                }
+            };
             let env_ctx = std::env::var("OYSTER_CONTEXT").ok();
             let ctx_name = config::resolve_context_name(
                 cli.context.as_deref(),
