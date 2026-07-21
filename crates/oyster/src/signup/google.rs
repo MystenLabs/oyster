@@ -185,6 +185,11 @@ impl GoogleOAuthClient {
             .append_pair("nonce", &nonce)
             .append_pair("code_challenge", &challenge)
             .append_pair("code_challenge_method", "S256")
+            // Always show Google's account chooser. Without this, Google
+            // silently reuses the browser's active session, so signing out
+            // of Oyster and back in never offers a chance to switch
+            // accounts.
+            .append_pair("prompt", "select_account")
             .finish();
 
         AuthRequest {
@@ -440,6 +445,7 @@ kECkZZ7S0dzVVObk3uG0Tlt0
         assert_eq!(params["state"], req.state);
         assert_eq!(params["nonce"], req.nonce);
         assert_eq!(params["code_challenge_method"], "S256");
+        assert_eq!(params["prompt"], "select_account");
 
         // The challenge is the S256 of the returned verifier.
         let expected = base64::engine::general_purpose::URL_SAFE_NO_PAD
