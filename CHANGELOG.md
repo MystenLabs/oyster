@@ -2,7 +2,38 @@
 
 ## [Unreleased]
 
+### Added
+- `POST /account/extend`: user-triggered storage-pool extension retry.
+  After funding the wallet (see `/account/wallet` or the
+  `account.funding_required` webhook), calling this clears the
+  extension worker's retry backoff so the pool is re-attempted on the
+  next worker cycle instead of waiting out the backoff cap. Issues no
+  chain transactions itself; returns 202 with the current pool end
+  epoch, or 404 when the account has no pool.
+
+### Changed
+- The extension worker now retries failed pool extensions with
+  exponential backoff (`EXTENSION_CLAIM_COOLDOWN_SECS * 2^failures`,
+  capped by the new `EXTENSION_BACKOFF_CAP_SECS`, default 3600) instead
+  of a flat 60s cadence, and pre-checks the wallet's WAL balance
+  against the exact extension cost before each retry — one read RPC
+  instead of the full PTB-build + sign + execute chain while the wallet
+  remains unfunded. The `account.funding_required` webhook follows the
+  same (slower) schedule. Migration 022 adds
+  `accounts.extend_failure_count` (additive, defaulted — old pods keep
+  working against the new schema during rollout).
+
 ### Fixed
+- The extension worker no longer retries pools whose end epoch has
+  already passed — expired Walrus storage can never be extended, and
+  each doomed attempt burned the full RPC chain every cooldown,
+  contributing to fullnode rate limiting. Claimed pools with a past DB
+  end epoch are now reconciled against the chain: if an extension
+  landed outside Oyster, the stale DB epoch is repaired from the
+  on-chain value; if the chain confirms expiry, the account is reset
+  for lazy re-create (pool columns cleared, unrecoverable blob rows
+  deleted, an `account.pool_expired` audit event recorded). Existing
+  expired rows drain through this path automatically after deploy.
 - Web signup now sends `prompt=select_account` on every Google sign-in,
   forcing the account chooser. Previously, signing out of Oyster and
   back in silently reused the browser's active Google session — Oyster's
