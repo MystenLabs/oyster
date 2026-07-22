@@ -474,6 +474,17 @@ pub struct WalletResponse {
     pub address: String,
 }
 
+/// Response for a user-requested storage-pool extension retry.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ExtendRequestResponse {
+    /// Always `"scheduled"`: the background extension worker will retry
+    /// on its next cycle (typically within a minute).
+    pub status: String,
+    /// The pool's current end epoch as tracked by Oyster; advances once
+    /// the retried extension lands.
+    pub pool_end_epoch: i64,
+}
+
 // Query parameter types
 
 /// Pagination query parameters.

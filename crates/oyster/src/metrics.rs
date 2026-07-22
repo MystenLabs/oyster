@@ -34,6 +34,16 @@ pub const EXTENSION_CYCLE_DURATION_SECONDS: &str = "oyster_extension_cycle_durat
 pub const EXTENSION_POOLS_EXPIRING: &str = "oyster_extension_pools_expiring";
 /// Gauge: number of pools processed (extended + errored) in the current cycle.
 pub const EXTENSION_CYCLE_POOLS_PROCESSED: &str = "oyster_extension_cycle_pools_processed";
+/// Counter: pools whose stale DB `pool_end_epoch` was repaired from the
+/// on-chain value (an extension landed outside Oyster).
+pub const EXTENSION_POOLS_REPAIRED_TOTAL: &str = "oyster_extension_pools_repaired_total";
+/// Counter: pools confirmed expired on-chain and reset for lazy re-create.
+pub const EXTENSION_POOLS_EXPIRED_RESET_TOTAL: &str = "oyster_extension_pools_expired_reset_total";
+/// Counter: retry attempts skipped because the WAL balance pre-check showed
+/// the wallet still cannot cover the extension cost (1 read RPC instead of
+/// the full PTB-build + sign + execute chain).
+pub const EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL: &str =
+    "oyster_extension_balance_precheck_skips_total";
 
 // Webhook metrics
 

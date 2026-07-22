@@ -3,8 +3,9 @@ use axum::{Json, extract::State, http::StatusCode};
 use crate::{
     AppState,
     auth::AuthenticatedAccount,
+    db,
     error::AppError,
-    models::{ErrorResponse, WalletResponse},
+    models::{ErrorResponse, ExtendRequestResponse, WalletResponse},
 };
 
 // Stubs
@@ -79,4 +80,45 @@ pub async fn get_wallet(
         .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 
     Ok(Json(WalletResponse { address }))
+}
+
+#[utoipa::path(
+    post,
+    path = "/account/extend",
+    tag = "Account",
+    security(("bearer" = [])),
+    responses(
+        (status = 202, description = "Extension retry scheduled", body = ExtendRequestResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 404, description = "Account has no storage pool", body = ErrorResponse),
+    ),
+)]
+/// Request an immediate storage-pool extension retry.
+///
+/// Call this after funding the account's wallet (see `/account/wallet` or
+/// the `account.funding_required` webhook): it clears the extension
+/// worker's retry backoff so the pool is re-attempted on the next worker
+/// cycle instead of waiting out the exponential backoff. Issues no chain
+/// transactions itself — the background worker performs the extension.
+pub async fn request_extend(
+    State(state): State<AppState>,
+    auth: AuthenticatedAccount,
+) -> Result<(StatusCode, Json<ExtendRequestResponse>), AppError> {
+    let pool_state = db::accounts::get_storage_pool(&state.db, &auth.account_id)
+        .await?
+        .ok_or(AppError::NotFound)?;
+
+    if !db::accounts::request_extension_retry(&state.db, &auth.account_id).await? {
+        // Pool vanished between the two statements (e.g. concurrent
+        // expired-pool reset) — same outcome as never having had one.
+        return Err(AppError::NotFound);
+    }
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ExtendRequestResponse {
+            status: "scheduled".into(),
+            pool_end_epoch: pool_state.end_epoch,
+        }),
+    ))
 }

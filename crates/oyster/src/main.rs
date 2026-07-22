@@ -274,6 +274,9 @@ async fn main() {
                 claim_cooldown: std::time::Duration::from_secs(
                     config.extension_claim_cooldown_secs,
                 ),
+                failure_backoff_cap: std::time::Duration::from_secs(
+                    config.extension_backoff_cap_secs,
+                ),
             };
 
             oyster::extension_task::run_extension_loop(

@@ -211,6 +211,7 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -258,6 +259,7 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -969,6 +971,76 @@ async fn wallet_returns_503_without_pearl() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
 }
 
+#[tokio::test]
+async fn request_extend_clears_backoff_and_schedules_retry() {
+    let (app, _tmp, pool) = test_app().await;
+
+    // Typed account (create_test_account only returns strings) so the
+    // pool columns can be driven directly.
+    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
+        .await
+        .unwrap();
+    let raw_key = auth::generate_api_key();
+    let key_hash = auth::hash_api_key(&raw_key);
+    let prefix = auth::key_prefix(&raw_key);
+    db::api_keys::create_api_key(&pool, &account.id, &key_hash, &prefix, &raw_key, "api")
+        .await
+        .unwrap();
+    let post_extend = || {
+        Request::post("/api/v1/account/extend")
+            .header("authorization", format!("Bearer {raw_key}"))
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // No storage pool yet → 404.
+    let (status, _) = json_response(&app, post_extend()).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Pool parked in a deep retry backoff after a failed extension.
+    db::accounts::set_storage_pool(&pool, &account.id, "0xaaa", 10, 1_000, 0)
+        .await
+        .unwrap();
+    let far_future = chrono::Utc::now() + chrono::Duration::hours(1);
+    db::accounts::record_extension_failure(&pool, &account.id, far_future)
+        .await
+        .unwrap();
+
+    let (status, body) = json_response(&app, post_extend()).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(body["status"], "scheduled");
+    assert_eq!(body["pool_end_epoch"], 10);
+
+    // The worker can claim the row again right away, with the failure
+    // count (and thus the backoff schedule) reset.
+    let now = chrono::Utc::now();
+    let claims = db::accounts::claim_pools_for_extension(
+        &pool,
+        100,
+        100,
+        now + chrono::Duration::seconds(60),
+        now,
+    )
+    .await
+    .unwrap();
+    assert_eq!(claims.len(), 1);
+    assert_eq!(claims[0].account_id, account.id);
+    assert_eq!(claims[0].extend_failure_count, 0);
+}
+
+#[tokio::test]
+async fn request_extend_requires_auth() {
+    let (app, _tmp, _pool) = test_app().await;
+    let (status, _) = json_response(
+        &app,
+        Request::post("/api/v1/account/extend")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
 // ---------------------------------------------------------------------------
 // Oyster–Pearl integration (4.5.3)
 // ---------------------------------------------------------------------------
@@ -1119,6 +1191,7 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -1565,6 +1638,7 @@ async fn metrics_endpoint_returns_prometheus_format() {
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -1642,6 +1716,7 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -1869,6 +1944,7 @@ async fn test_s3_with_spy(
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: true,
@@ -4256,6 +4332,7 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         extension_busy_sleep_ms: 250,
         extension_claim_batch_size: 100,
         extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
         extension_metrics_bind_addr: "unused".into(),
         default_avg_blob_size: 0,
         allow_http_webhook_scheme: false,
@@ -4770,6 +4847,7 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
                 extension_busy_sleep_ms: 250,
                 extension_claim_batch_size: 100,
                 extension_claim_cooldown_secs: 60,
+                extension_backoff_cap_secs: 3600,
                 extension_metrics_bind_addr: "unused".into(),
                 default_avg_blob_size: 0,
                 allow_http_webhook_scheme: true,
