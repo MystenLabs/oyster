@@ -492,6 +492,28 @@ pub async fn reconcile_pool_after_drift(
     Ok(())
 }
 
+/// User-requested extension retry: clear the backoff stamp and failure
+/// count so the extension task claims the pool on its next cycle instead
+/// of waiting out the exponential backoff. Intended for the
+/// `POST /account/extend` endpoint after the user funds their wallet.
+/// Deliberately touches no chain state — all extension work stays in the
+/// single-writer background task, and the claim-time cooldown still
+/// bounds how often repeated calls can trigger real attempts. Returns
+/// `false` when the account has no `StoragePool` to extend.
+pub async fn request_extension_retry(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET extend_attempt_after = NULL, extend_failure_count = 0 \
+         WHERE id = ? AND storage_pool_object_id IS NOT NULL",
+    ))
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() == 1)
+}
+
 /// Audit event type recorded when an expired `StoragePool` is reset.
 pub const AUDIT_EVENT_POOL_EXPIRED: &str = "account.pool_expired";
 

@@ -118,6 +118,7 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(admin::update_max_storage))
         // Account
         .routes(routes!(account::get_wallet))
+        .routes(routes!(account::request_extend))
         // Stubs
         .routes(routes!(account::update_billing))
         .routes(routes!(account::get_report))
