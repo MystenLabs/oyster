@@ -32,6 +32,8 @@ pub struct ExpiringPool {
     pub pool_end_epoch: i64,
     /// Total encoded bytes reserved on the pool.
     pub pool_reserved_encoded_bytes: i64,
+    /// Consecutive failed extension attempts so far (drives retry backoff).
+    pub extend_failure_count: i64,
 }
 
 /// Insert a new account belonging to the given app. When
@@ -268,7 +270,7 @@ pub async fn claim_pools_for_extension(
              LIMIT ? \
          ) \
          RETURNING id, app_id, storage_pool_object_id, pool_end_epoch, \
-                   pool_reserved_encoded_bytes",
+                   pool_reserved_encoded_bytes, extend_failure_count",
     ))
     .bind(ts(claim_until))
     .bind(cutoff_epoch)
@@ -285,6 +287,7 @@ pub async fn claim_pools_for_extension(
             storage_pool_object_id: r.get("storage_pool_object_id"),
             pool_end_epoch: r.get("pool_end_epoch"),
             pool_reserved_encoded_bytes: r.get("pool_reserved_encoded_bytes"),
+            extend_failure_count: r.get("extend_failure_count"),
         })
         .collect())
 }
@@ -419,19 +422,46 @@ pub async fn set_max_unencoded_and_avg_blob_size(
     Ok(result.rows_affected() == 1)
 }
 
-/// Bump only `pool_end_epoch` after a successful `extend_storage_pool` PTB.
-/// Leaves reserved/used byte counters untouched.
+/// Bump only `pool_end_epoch` after a successful `extend_storage_pool` PTB
+/// (or a stale-DB repair from the on-chain value). Leaves reserved/used
+/// byte counters untouched. Also clears `extend_failure_count`: a forward
+/// move of the end epoch means the pool is healthy, so the retry backoff
+/// restarts from its base on the next shortfall.
 pub async fn bump_pool_end_epoch(
     pool: &super::DbPool,
     account_id: &AccountId,
     new_end_epoch: i64,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(&super::sql(
-        "UPDATE accounts SET pool_end_epoch = ? WHERE id = ? AND COALESCE(pool_end_epoch, 0) < ?",
+        "UPDATE accounts SET pool_end_epoch = ?, extend_failure_count = 0 \
+         WHERE id = ? AND COALESCE(pool_end_epoch, 0) < ?",
     ))
     .bind(new_end_epoch)
     .bind(account_id)
     .bind(new_end_epoch)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Record a failed extension attempt: increment the consecutive-failure
+/// counter and push `extend_attempt_after` out to `next_attempt_after`
+/// (the exponential-backoff stamp computed by the extension task). The
+/// stamp only ever moves forward relative to the claim-time cooldown, so
+/// a concurrent claim cannot shorten the backoff.
+pub async fn record_extension_failure(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    next_attempt_after: DateTime<Utc>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(&super::sql(
+        "UPDATE accounts SET \
+             extend_failure_count = extend_failure_count + 1, \
+             extend_attempt_after = ? \
+         WHERE id = ?",
+    ))
+    .bind(ts(next_attempt_after))
+    .bind(account_id)
     .execute(pool)
     .await?;
     Ok(())
@@ -496,7 +526,8 @@ pub async fn reset_expired_pool(
              pool_end_epoch = NULL, \
              pool_reserved_encoded_bytes = NULL, \
              pool_used_encoded_bytes = NULL, \
-             extend_attempt_after = NULL \
+             extend_attempt_after = NULL, \
+             extend_failure_count = 0 \
          WHERE id = ? AND storage_pool_object_id = ?",
     ))
     .bind(account_id)
@@ -1272,6 +1303,47 @@ mod tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn record_extension_failure_backoff_round_trip() {
+        let pool = test_pool().await;
+        let a = create_account(&pool, &AppId::INTERNAL, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+
+        // Fresh row claims with a zero failure count.
+        let first = claim_pools_for_extension(&pool, 100, 100, now_at(60), now_at(0))
+            .await
+            .unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].extend_failure_count, 0);
+
+        // Failure pushes the stamp past the claim-time cooldown and bumps
+        // the counter.
+        record_extension_failure(&pool, &a.id, now_at(240))
+            .await
+            .unwrap();
+        let during_backoff = claim_pools_for_extension(&pool, 100, 100, now_at(160), now_at(100))
+            .await
+            .unwrap();
+        assert!(during_backoff.is_empty(), "row must stay quiet in backoff");
+        let after_backoff = claim_pools_for_extension(&pool, 100, 100, now_at(300), now_at(240))
+            .await
+            .unwrap();
+        assert_eq!(after_backoff.len(), 1);
+        assert_eq!(after_backoff[0].extend_failure_count, 1);
+
+        // A successful extension resets the counter.
+        bump_pool_end_epoch(&pool, &a.id, 12).await.unwrap();
+        let after_success = claim_pools_for_extension(&pool, 100, 100, now_at(400), now_at(360))
+            .await
+            .unwrap();
+        assert_eq!(after_success.len(), 1);
+        assert_eq!(after_success[0].extend_failure_count, 0);
     }
 
     #[tokio::test]

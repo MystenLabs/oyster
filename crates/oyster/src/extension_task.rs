@@ -40,6 +40,25 @@ pub struct ExtensionConfig {
     /// Cooldown applied by `claim_pools_for_extension` — both the
     /// don't-double-claim and the don't-spam-Harbor backoff.
     pub claim_cooldown: std::time::Duration,
+    /// Ceiling for the exponential per-pool retry backoff
+    /// (`claim_cooldown * 2^failures`, capped here). Also bounds how long
+    /// a user waits after funding their wallet before the next attempt.
+    pub failure_backoff_cap: std::time::Duration,
+}
+
+/// Exponential backoff after `failures` consecutive failed attempts:
+/// `base * 2^failures`, saturating, capped at `cap`. `failures` counts
+/// the failure being recorded (so the first failure waits `2 * base`).
+fn failure_backoff(
+    base: std::time::Duration,
+    cap: std::time::Duration,
+    failures: i64,
+) -> std::time::Duration {
+    let shift = failures.clamp(0, 30) as u32;
+    let secs = base
+        .as_secs()
+        .saturating_mul(1u64.checked_shl(shift).unwrap_or(u64::MAX));
+    std::time::Duration::from_secs(secs).min(cap)
 }
 
 /// Run the background loop that continuously extends expiring `StoragePool`
@@ -229,6 +248,32 @@ pub async fn run_extension_cycle_once(
                 );
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
                 errors += 1;
+
+                // Exponential backoff: push the row's next attempt out by
+                // claim_cooldown * 2^failures (capped) so a persistently
+                // failing pool — typically an unfunded wallet — stops
+                // burning the full PTB/sign/execute RPC chain every
+                // cooldown. The counter is this failure's ordinal (prior
+                // count + 1); success resets it via bump_pool_end_epoch.
+                let backoff = failure_backoff(
+                    config.claim_cooldown,
+                    config.failure_backoff_cap,
+                    pool.extend_failure_count + 1,
+                );
+                let next_attempt_after = Utc::now()
+                    + chrono::Duration::from_std(backoff)
+                        .unwrap_or_else(|_| chrono::Duration::seconds(3600));
+                if let Err(db_err) =
+                    db::accounts::record_extension_failure(db, &pool.account_id, next_attempt_after)
+                        .await
+                {
+                    tracing::warn!(
+                        account_id = %pool.account_id,
+                        error = %db_err,
+                        "failed to record extension failure backoff"
+                    );
+                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                }
 
                 if webhook::is_insufficient_funds_error(e.as_ref())
                     && let Some(Some(wh_cfg)) = webhook_for_apps.get(&pool.app_id)
@@ -460,4 +505,45 @@ async fn extend_single_pool(
     sui_transaction::sign_and_submit(pearl, account_id, rpc_url, tx_data).await?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::failure_backoff;
+
+    #[test]
+    fn failure_backoff_doubles_per_failure() {
+        let base = Duration::from_secs(60);
+        let cap = Duration::from_secs(3600);
+        assert_eq!(failure_backoff(base, cap, 1), Duration::from_secs(120));
+        assert_eq!(failure_backoff(base, cap, 2), Duration::from_secs(240));
+        assert_eq!(failure_backoff(base, cap, 5), Duration::from_secs(1920));
+    }
+
+    #[test]
+    fn failure_backoff_caps() {
+        let base = Duration::from_secs(60);
+        let cap = Duration::from_secs(3600);
+        assert_eq!(failure_backoff(base, cap, 6), cap);
+        assert_eq!(failure_backoff(base, cap, 60), cap);
+        assert_eq!(failure_backoff(base, cap, i64::MAX), cap);
+    }
+
+    #[test]
+    fn failure_backoff_handles_degenerate_inputs() {
+        let cap = Duration::from_secs(3600);
+        // Zero / negative failure counts fall back to the base cooldown.
+        assert_eq!(
+            failure_backoff(Duration::from_secs(60), cap, 0),
+            Duration::from_secs(60)
+        );
+        assert_eq!(
+            failure_backoff(Duration::from_secs(60), cap, -3),
+            Duration::from_secs(60)
+        );
+        // Zero base never schedules a negative/overflowed duration.
+        assert_eq!(failure_backoff(Duration::ZERO, cap, 10), Duration::ZERO);
+    }
 }
