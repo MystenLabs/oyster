@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.13.1] - 2026-07-22
 
 ### Added
 - `POST /account/extend`: user-triggered storage-pool extension retry.
