@@ -5,15 +5,19 @@ use ed25519_dalek::SigningKey;
 use metrics::{counter, gauge, histogram};
 use sui_types::base_types::{ObjectID, SuiAddress};
 use uuid::Uuid;
-use walrus_sui::client::{ReadClient as _, transaction_builder::WalrusPtbBuilder};
+use walrus_sui::{
+    client::{ReadClient as _, SuiClientError, transaction_builder::WalrusPtbBuilder},
+    coin::CoinType,
+};
 
 use crate::{
     AccountId, AppId, FundingAmount,
     db::{self, DbPool, accounts::ExpiringPool},
     extension_cost,
     metrics::{
-        EXTENSION_CYCLE_DURATION_SECONDS, EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL,
-        EXTENSION_ERRORS_TOTAL, EXTENSION_POOLS_EXPIRED_RESET_TOTAL, EXTENSION_POOLS_EXPIRING,
+        EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL, EXTENSION_CYCLE_DURATION_SECONDS,
+        EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL, EXTENSION_ERRORS_TOTAL,
+        EXTENSION_POOLS_EXPIRED_RESET_TOTAL, EXTENSION_POOLS_EXPIRING,
         EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_REPAIRED_TOTAL,
         WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
@@ -178,6 +182,7 @@ pub async fn run_extension_cycle_once(
     let mut extended = 0u32;
     let mut errors = 0u32;
     let mut expired_handled = 0u32;
+    let mut skipped_unfunded = 0u32;
     let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
     let mut webhook_clients: HashMap<AppId, WebhookClient> = HashMap::new();
 
@@ -212,6 +217,36 @@ pub async fn run_extension_cycle_once(
                 }
             },
         };
+
+        // Retry attempts (failure count > 0) get a cheap pre-check: one
+        // coin-selection read against the exact WAL cost instead of the
+        // full PTB-build + sign + execute chain. If the wallet still
+        // cannot cover the cost, skip the attempt, keep the backoff
+        // growing, and re-notify the app. Fails open on any
+        // indeterminate result so a funded wallet is never starved.
+        if pool.extend_failure_count > 0
+            && let Some(cost) =
+                wal_shortfall(read_client, pool, sender_address, config.extend_epochs).await
+        {
+            counter!(EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL).increment(1);
+            tracing::info!(
+                account_id = %pool.account_id,
+                wal_frost_needed = cost.wal_frost,
+                extend_failure_count = pool.extend_failure_count,
+                "wallet still cannot cover extension cost, skipping attempt"
+            );
+            record_failure_backoff(db, pool, config).await;
+            notify_funding_required(
+                &webhook_for_apps,
+                &mut webhook_clients,
+                pool,
+                sender_address,
+                cost,
+            )
+            .await;
+            skipped_unfunded += 1;
+            continue;
+        }
 
         match extend_single_pool(
             read_client,
@@ -249,35 +284,9 @@ pub async fn run_extension_cycle_once(
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "extend_storage_pool").increment(1);
                 errors += 1;
 
-                // Exponential backoff: push the row's next attempt out by
-                // claim_cooldown * 2^failures (capped) so a persistently
-                // failing pool — typically an unfunded wallet — stops
-                // burning the full PTB/sign/execute RPC chain every
-                // cooldown. The counter is this failure's ordinal (prior
-                // count + 1); success resets it via bump_pool_end_epoch.
-                let backoff = failure_backoff(
-                    config.claim_cooldown,
-                    config.failure_backoff_cap,
-                    pool.extend_failure_count + 1,
-                );
-                let next_attempt_after = Utc::now()
-                    + chrono::Duration::from_std(backoff)
-                        .unwrap_or_else(|_| chrono::Duration::seconds(3600));
-                if let Err(db_err) =
-                    db::accounts::record_extension_failure(db, &pool.account_id, next_attempt_after)
-                        .await
-                {
-                    tracing::warn!(
-                        account_id = %pool.account_id,
-                        error = %db_err,
-                        "failed to record extension failure backoff"
-                    );
-                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
-                }
+                record_failure_backoff(db, pool, config).await;
 
-                if webhook::is_insufficient_funds_error(e.as_ref())
-                    && let Some(Some(wh_cfg)) = webhook_for_apps.get(&pool.app_id)
-                {
+                if webhook::is_insufficient_funds_error(e.as_ref()) {
                     let cost = match extension_cost::compute_extension_cost(
                         read_client,
                         pool,
@@ -298,36 +307,124 @@ pub async fn run_extension_cycle_once(
                             }
                         }
                     };
-
-                    let payload = FundingRequiredPayload {
-                        event_id: Uuid::new_v4(),
-                        event_type: EVENT_TYPE_FUNDING_REQUIRED,
-                        account_id: pool.account_id,
-                        pearl_address: sender_address.to_string(),
-                        amount: cost,
-                        timestamp: Utc::now(),
-                    };
-                    if let Some(wh) =
-                        get_or_build_webhook_client(&mut webhook_clients, &pool.app_id, wh_cfg)
-                    {
-                        wh.notify_funding_required(&payload).await;
-                    }
+                    notify_funding_required(
+                        &webhook_for_apps,
+                        &mut webhook_clients,
+                        pool,
+                        sender_address,
+                        cost,
+                    )
+                    .await;
                 }
             }
         }
     }
 
-    let processed = extended + errors + expired_handled;
+    let processed = extended + errors + expired_handled + skipped_unfunded;
     gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(processed as f64);
     histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
     tracing::info!(
         extended,
         errors,
         expired_handled,
+        skipped_unfunded,
         "extension cycle complete"
     );
 
     processed
+}
+
+/// Exponential backoff bookkeeping after a failed (or pre-check-skipped)
+/// extension attempt: push the row's next attempt out by
+/// `claim_cooldown * 2^failures` (capped) so a persistently failing pool —
+/// typically an unfunded wallet — stops burning the full PTB/sign/execute
+/// RPC chain every cooldown. The exponent is this failure's ordinal
+/// (prior count + 1); success resets the count via `bump_pool_end_epoch`.
+async fn record_failure_backoff(db: &DbPool, pool: &ExpiringPool, config: &ExtensionConfig) {
+    let backoff = failure_backoff(
+        config.claim_cooldown,
+        config.failure_backoff_cap,
+        pool.extend_failure_count + 1,
+    );
+    let next_attempt_after = Utc::now()
+        + chrono::Duration::from_std(backoff).unwrap_or_else(|_| chrono::Duration::seconds(3600));
+    if let Err(db_err) =
+        db::accounts::record_extension_failure(db, &pool.account_id, next_attempt_after).await
+    {
+        tracing::warn!(
+            account_id = %pool.account_id,
+            error = %db_err,
+            "failed to record extension failure backoff"
+        );
+        counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+    }
+}
+
+/// Send the `account.funding_required` webhook for `pool` if its app has
+/// one configured. Fire-and-forget: delivery failures are handled inside
+/// `WebhookClient`.
+async fn notify_funding_required(
+    webhook_for_apps: &HashMap<AppId, Option<db::accounts::AppWebhook>>,
+    webhook_clients: &mut HashMap<AppId, WebhookClient>,
+    pool: &ExpiringPool,
+    sender_address: SuiAddress,
+    cost: FundingAmount,
+) {
+    let Some(Some(wh_cfg)) = webhook_for_apps.get(&pool.app_id) else {
+        return;
+    };
+    let payload = FundingRequiredPayload {
+        event_id: Uuid::new_v4(),
+        event_type: EVENT_TYPE_FUNDING_REQUIRED,
+        account_id: pool.account_id,
+        pearl_address: sender_address.to_string(),
+        amount: cost,
+        timestamp: Utc::now(),
+    };
+    if let Some(wh) = get_or_build_webhook_client(webhook_clients, &pool.app_id, wh_cfg) {
+        wh.notify_funding_required(&payload).await;
+    }
+}
+
+/// WAL-balance pre-check for a retry attempt. Returns `Some(cost)` when
+/// the sender's wallet demonstrably cannot cover the WAL cost of the next
+/// extension (the dominant shortfall — SUI gas is not checked because a
+/// tight-but-sufficient gas balance must not cause a false skip), `None`
+/// when the wallet can cover it or the check is indeterminate (cost or
+/// coin lookup failed — fail open so a funded wallet is never starved).
+async fn wal_shortfall(
+    read_client: &std::sync::Arc<walrus_sui::client::SuiReadClient>,
+    pool: &ExpiringPool,
+    sender_address: SuiAddress,
+    extend_epochs: u32,
+) -> Option<FundingAmount> {
+    let cost = match extension_cost::compute_extension_cost(read_client, pool, extend_epochs).await
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                account_id = %pool.account_id,
+                error = %e,
+                "balance pre-check could not compute extension cost; attempting anyway"
+            );
+            return None;
+        }
+    };
+    match read_client
+        .get_coins_with_total_balance(sender_address, CoinType::Wal, cost.wal_frost, vec![])
+        .await
+    {
+        Ok(_) => None,
+        Err(SuiClientError::NoCompatibleWalCoins) => Some(cost),
+        Err(e) => {
+            tracing::warn!(
+                account_id = %pool.account_id,
+                error = %e,
+                "balance pre-check coin lookup failed; attempting anyway"
+            );
+            None
+        }
+    }
 }
 
 /// Handle a claimed pool whose DB `pool_end_epoch` says it already
