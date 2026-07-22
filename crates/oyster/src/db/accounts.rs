@@ -462,6 +462,81 @@ pub async fn reconcile_pool_after_drift(
     Ok(())
 }
 
+/// Audit event type recorded when an expired `StoragePool` is reset.
+pub const AUDIT_EVENT_POOL_EXPIRED: &str = "account.pool_expired";
+
+/// Reset an account whose `StoragePool` has expired on-chain (Walrus
+/// storage cannot be extended past its end epoch). In one transaction:
+///
+/// * null out the pool columns so the account lazy-creates a fresh pool
+///   on its next funded upload, and so the extension task permanently
+///   stops claiming the row (`storage_pool_object_id IS NOT NULL`);
+/// * delete the account's blob rows (their Walrus storage lapsed with
+///   the pool; `blob_tags` cascade via the FK); and
+/// * record an `account.pool_expired` audit event carrying
+///   `event_data` plus the deleted-blob count, so support can answer
+///   "where did my data go" after the fact.
+///
+/// Guarded on `storage_pool_object_id` still matching
+/// `expected_pool_object_id`: if a concurrent writer replaced the pool,
+/// nothing is touched and `None` is returned. On success returns the
+/// number of blob rows deleted.
+pub async fn reset_expired_pool(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    app_id: &AppId,
+    expected_pool_object_id: &str,
+    mut event_data: serde_json::Value,
+) -> Result<Option<u64>, sqlx::Error> {
+    let mut tx = pool.begin().await?;
+
+    let reset = sqlx::query(&super::sql(
+        "UPDATE accounts SET \
+             storage_pool_object_id = NULL, \
+             pool_end_epoch = NULL, \
+             pool_reserved_encoded_bytes = NULL, \
+             pool_used_encoded_bytes = NULL, \
+             extend_attempt_after = NULL \
+         WHERE id = ? AND storage_pool_object_id = ?",
+    ))
+    .bind(account_id)
+    .bind(expected_pool_object_id)
+    .execute(&mut *tx)
+    .await?;
+    if reset.rows_affected() != 1 {
+        tx.rollback().await?;
+        return Ok(None);
+    }
+
+    let deleted = sqlx::query(&super::sql("DELETE FROM blobs WHERE account_id = ?"))
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+
+    if let Some(obj) = event_data.as_object_mut() {
+        obj.insert("deleted_blob_count".into(), deleted.into());
+    }
+    // Mirrors `audit_events::record_audit_event`, inlined so the event
+    // commits atomically with the reset (microsecond timestamp for a
+    // stable `(created_at, id)` sort, matching that helper).
+    let created_at = Utc::now().format("%Y-%m-%d %H:%M:%S%.6f").to_string();
+    sqlx::query(&super::sql(
+        "INSERT INTO audit_events (id, app_id, actor_admin_key_id, event_type, event_data, created_at) \
+         VALUES (?, ?, NULL, ?, ?, ?)",
+    ))
+    .bind(uuid::Uuid::new_v4().to_string())
+    .bind(app_id)
+    .bind(AUDIT_EVENT_POOL_EXPIRED)
+    .bind(serde_json::to_string(&event_data).expect("serialize pool_expired event_data"))
+    .bind(&created_at)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(Some(deleted))
+}
+
 /// Decrement the used-byte counter after a successful `delete_pooled_blob`.
 pub async fn update_pool_after_delete(
     pool: &super::DbPool,
@@ -1129,5 +1204,125 @@ mod tests {
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].id, acc_a.id);
         assert_eq!(summaries[0].name, "for-a");
+    }
+
+    #[tokio::test]
+    async fn reset_expired_pool_clears_state_blobs_and_records_audit() {
+        let pool = test_pool().await;
+        let a = create_account(&pool, &AppId::INTERNAL, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+        db::buckets::create_bucket(&pool, &a.id, "expired-bkt")
+            .await
+            .unwrap();
+        db::blobs::insert_blob(
+            &pool,
+            "k1",
+            "blob1",
+            "expired-bkt",
+            &a.id,
+            "text/plain",
+            3,
+            "md5",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let deleted = reset_expired_pool(
+            &pool,
+            &a.id,
+            &AppId::INTERNAL,
+            "0xaaa",
+            serde_json::json!({"db_pool_end_epoch": 10}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted, Some(1));
+
+        // Pool columns nulled → account lazy-recreates on next upload.
+        assert!(get_storage_pool(&pool, &a.id).await.unwrap().is_none());
+        assert_eq!(db::blobs::count_blobs(&pool).await.unwrap(), 0);
+
+        // Row is no longer claimable by the extension task.
+        let claims = claim_pools_for_extension(&pool, 100, 100, now_at(60), now_at(0))
+            .await
+            .unwrap();
+        assert!(claims.is_empty());
+
+        // Audit event committed with the deleted-blob count merged in.
+        let events = db::audit_events::list_audit_events_by_app(&pool, &AppId::INTERNAL)
+            .await
+            .unwrap();
+        let ev = events
+            .iter()
+            .find(|e| e.event_type == AUDIT_EVENT_POOL_EXPIRED)
+            .expect("pool_expired audit event");
+        let data: serde_json::Value = serde_json::from_str(&ev.event_data).unwrap();
+        assert_eq!(data["deleted_blob_count"], 1);
+        assert_eq!(data["db_pool_end_epoch"], 10);
+
+        // A fresh pool can be set afterwards (first-writer-wins on NULL).
+        assert!(
+            set_storage_pool(&pool, &a.id, "0xbbb", 99, 1_000, 0)
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn reset_expired_pool_guard_mismatch_is_noop() {
+        let pool = test_pool().await;
+        let a = create_account(&pool, &AppId::INTERNAL, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+        db::buckets::create_bucket(&pool, &a.id, "kept-bkt")
+            .await
+            .unwrap();
+        db::blobs::insert_blob(
+            &pool,
+            "k1",
+            "blob1",
+            "kept-bkt",
+            &a.id,
+            "text/plain",
+            3,
+            "md5",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // Pool was concurrently replaced — expected id no longer matches.
+        let deleted = reset_expired_pool(
+            &pool,
+            &a.id,
+            &AppId::INTERNAL,
+            "0xstale",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(deleted, None);
+
+        // Nothing was touched: pool, blobs, and audit log all intact.
+        assert!(get_storage_pool(&pool, &a.id).await.unwrap().is_some());
+        assert_eq!(db::blobs::count_blobs(&pool).await.unwrap(), 1);
+        let events = db::audit_events::list_audit_events_by_app(&pool, &AppId::INTERNAL)
+            .await
+            .unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|e| e.event_type == AUDIT_EVENT_POOL_EXPIRED)
+        );
     }
 }

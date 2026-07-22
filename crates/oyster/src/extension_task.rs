@@ -13,11 +13,12 @@ use crate::{
     extension_cost,
     metrics::{
         EXTENSION_CYCLE_DURATION_SECONDS, EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL,
-        EXTENSION_ERRORS_TOTAL, EXTENSION_POOLS_EXPIRING, EXTENSION_POOLS_EXTENDED_TOTAL,
+        EXTENSION_ERRORS_TOTAL, EXTENSION_POOLS_EXPIRED_RESET_TOTAL, EXTENSION_POOLS_EXPIRING,
+        EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_REPAIRED_TOTAL,
         WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
     pearl_client::PearlConnection,
-    sui_transaction,
+    sui_object_reader, sui_transaction,
     webhook::{self, EVENT_TYPE_FUNDING_REQUIRED, FundingRequiredPayload, WebhookClient},
     webhook_keys,
 };
@@ -157,10 +158,22 @@ pub async fn run_extension_cycle_once(
 
     let mut extended = 0u32;
     let mut errors = 0u32;
+    let mut expired_handled = 0u32;
     let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
     let mut webhook_clients: HashMap<AppId, WebhookClient> = HashMap::new();
 
     for pool in &pools {
+        // A pool whose end epoch is already past cannot be extended on
+        // Walrus (storage end epochs are exclusive) — attempting the PTB
+        // would just burn RPCs and gas every cycle, forever. Reconcile
+        // against the chain: the DB value can be stale-low when an
+        // extension landed outside Oyster.
+        if pool.pool_end_epoch <= current_epoch as i64 {
+            handle_expired_pool(db, rpc_url, pool, current_epoch).await;
+            expired_handled += 1;
+            continue;
+        }
+
         let sender_address = match address_cache.get(&pool.account_id) {
             Some(&addr) => addr,
             None => match sui_transaction::resolve_sender_address(pearl, &pool.account_id).await {
@@ -259,12 +272,135 @@ pub async fn run_extension_cycle_once(
         }
     }
 
-    let processed = extended + errors;
+    let processed = extended + errors + expired_handled;
     gauge!(EXTENSION_CYCLE_POOLS_PROCESSED).set(processed as f64);
     histogram!(EXTENSION_CYCLE_DURATION_SECONDS).record(cycle_start.elapsed().as_secs_f64());
-    tracing::info!(extended, errors, "extension cycle complete");
+    tracing::info!(
+        extended,
+        errors,
+        expired_handled,
+        "extension cycle complete"
+    );
 
     processed
+}
+
+/// Handle a claimed pool whose DB `pool_end_epoch` says it already
+/// expired. One on-chain read decides between two outcomes:
+///
+/// * chain end epoch is still in the future — the DB was stale (an
+///   extension landed outside Oyster); repair `pool_end_epoch` and let
+///   the normal flow re-claim the row next cycle if needed.
+/// * chain confirms expiry — the pool can never be extended again;
+///   reset the account for lazy re-create ([`db::accounts::reset_expired_pool`]).
+///
+/// On a read failure the row is left claimed (its cooldown stamp keeps
+/// it quiet) and will be re-examined on a later cycle.
+async fn handle_expired_pool(db: &DbPool, rpc_url: &str, pool: &ExpiringPool, current_epoch: u32) {
+    let pool_object_id: ObjectID = match pool.storage_pool_object_id.parse() {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::error!(
+                account_id = %pool.account_id,
+                storage_pool_object_id = %pool.storage_pool_object_id,
+                error = %e,
+                "stored pool ObjectID unparsable, cannot reconcile expired pool"
+            );
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "expiry_check").increment(1);
+            return;
+        }
+    };
+
+    let on_chain = match sui_object_reader::read_storage_pool_state(rpc_url, pool_object_id).await {
+        Ok(state) => state,
+        Err(e) => {
+            tracing::warn!(
+                account_id = %pool.account_id,
+                storage_pool_object_id = %pool.storage_pool_object_id,
+                error = %e,
+                "failed to read on-chain state for expired pool, will retry later"
+            );
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "expiry_check").increment(1);
+            return;
+        }
+    };
+
+    if on_chain.end_epoch as i64 > current_epoch as i64 {
+        // Stale DB — an extension landed outside Oyster. Repair and move on.
+        db_repair_end_epoch(db, pool, on_chain.end_epoch).await;
+        return;
+    }
+
+    let event_data = serde_json::json!({
+        "account_id": pool.account_id.to_string(),
+        "storage_pool_object_id": pool.storage_pool_object_id,
+        "db_pool_end_epoch": pool.pool_end_epoch,
+        "on_chain_end_epoch": on_chain.end_epoch,
+        "current_epoch": current_epoch,
+    });
+    match db::accounts::reset_expired_pool(
+        db,
+        &pool.account_id,
+        &pool.app_id,
+        &pool.storage_pool_object_id,
+        event_data,
+    )
+    .await
+    {
+        Ok(Some(deleted_blobs)) => {
+            counter!(EXTENSION_POOLS_EXPIRED_RESET_TOTAL).increment(1);
+            tracing::warn!(
+                account_id = %pool.account_id,
+                storage_pool_object_id = %pool.storage_pool_object_id,
+                db_pool_end_epoch = pool.pool_end_epoch,
+                on_chain_end_epoch = on_chain.end_epoch,
+                current_epoch,
+                deleted_blobs,
+                "storage pool expired on-chain; account reset for lazy re-create"
+            );
+        }
+        Ok(None) => {
+            // Concurrent writer changed the pool between claim and reset —
+            // whatever replaced it will be picked up by a later cycle.
+            tracing::info!(
+                account_id = %pool.account_id,
+                "expired-pool reset skipped: pool changed concurrently"
+            );
+        }
+        Err(e) => {
+            tracing::error!(
+                account_id = %pool.account_id,
+                error = %e,
+                "failed to reset expired pool in DB"
+            );
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "expired_reset").increment(1);
+        }
+    }
+}
+
+/// Repair a stale-low DB `pool_end_epoch` from the authoritative
+/// on-chain value. `bump_pool_end_epoch` only ever moves the value
+/// forward, so a concurrent extension cannot be regressed.
+async fn db_repair_end_epoch(db: &DbPool, pool: &ExpiringPool, on_chain_end_epoch: u64) {
+    match db::accounts::bump_pool_end_epoch(db, &pool.account_id, on_chain_end_epoch as i64).await {
+        Ok(()) => {
+            counter!(EXTENSION_POOLS_REPAIRED_TOTAL).increment(1);
+            tracing::info!(
+                account_id = %pool.account_id,
+                db_pool_end_epoch = pool.pool_end_epoch,
+                on_chain_end_epoch,
+                "repaired stale pool_end_epoch from on-chain value"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                account_id = %pool.account_id,
+                error = %e,
+                "failed to repair pool_end_epoch from on-chain value"
+            );
+            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "expiry_repair").increment(1);
+        }
+    }
 }
 
 /// Build or retrieve a `WebhookClient` for `app_id` using the per-app

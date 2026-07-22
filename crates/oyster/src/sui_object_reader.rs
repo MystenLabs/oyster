@@ -20,15 +20,18 @@ use sui_rpc::{
 };
 use sui_types::base_types::ObjectID;
 
-/// On-chain `StoragePoolInnerV1` snapshot. Encoded-byte counters only;
-/// other fields (blob_count, the `blobs` table) are deliberately not
-/// surfaced.
+/// On-chain `StoragePoolInnerV1` snapshot. Encoded-byte counters and the
+/// storage reservation's end epoch; other fields (blob_count, the `blobs`
+/// table) are deliberately not surfaced.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnChainStoragePoolState {
     /// `storage.storage_size` — total encoded bytes reserved by the pool.
     pub reserved_encoded_bytes: u64,
     /// `used_encoded_bytes` — sum of all registered blobs' encoded sizes.
     pub used_encoded_bytes: u64,
+    /// `storage.end_epoch` — Walrus epoch at which the reservation lapses
+    /// (exclusive: the pool is expired once `current_epoch >= end_epoch`).
+    pub end_epoch: u64,
 }
 
 /// Fetch the on-chain `StoragePoolInnerV1` for `pool_id`.
@@ -166,9 +169,11 @@ pub fn parse_storage_pool_inner_v1(value: &Value) -> Option<OnChainStoragePoolSt
     let storage = unwrap_struct(outer.fields.get("storage")?)?;
     let reserved = parse_u64_value(storage.fields.get("storage_size")?)?;
     let used = parse_u64_value(outer.fields.get("used_encoded_bytes")?)?;
+    let end_epoch = parse_u64_value(storage.fields.get("end_epoch")?)?;
     Some(OnChainStoragePoolState {
         reserved_encoded_bytes: reserved,
         used_encoded_bytes: used,
+        end_epoch,
     })
 }
 
@@ -239,13 +244,17 @@ mod tests {
         let inner = struct_value(&[
             (
                 "storage",
-                struct_value(&[("storage_size", string_value("1048576"))]),
+                struct_value(&[
+                    ("storage_size", string_value("1048576")),
+                    ("end_epoch", string_value("42")),
+                ]),
             ),
             ("used_encoded_bytes", string_value("512")),
         ]);
         let parsed = parse_storage_pool_inner_v1(&inner).expect("must parse");
         assert_eq!(parsed.reserved_encoded_bytes, 1_048_576);
         assert_eq!(parsed.used_encoded_bytes, 512);
+        assert_eq!(parsed.end_epoch, 42);
     }
 
     #[test]
@@ -253,13 +262,17 @@ mod tests {
         let inner = struct_value(&[
             (
                 "storage",
-                struct_value(&[("storage_size", number_value(2048.0))]),
+                struct_value(&[
+                    ("storage_size", number_value(2048.0)),
+                    ("end_epoch", number_value(9.0)),
+                ]),
             ),
             ("used_encoded_bytes", number_value(7.0)),
         ]);
         let parsed = parse_storage_pool_inner_v1(&inner).expect("must parse");
         assert_eq!(parsed.reserved_encoded_bytes, 2048);
         assert_eq!(parsed.used_encoded_bytes, 7);
+        assert_eq!(parsed.end_epoch, 9);
     }
 
     #[test]
@@ -272,7 +285,10 @@ mod tests {
     fn missing_used_returns_none() {
         let inner = struct_value(&[(
             "storage",
-            struct_value(&[("storage_size", string_value("1024"))]),
+            struct_value(&[
+                ("storage_size", string_value("1024")),
+                ("end_epoch", string_value("42")),
+            ]),
         )]);
         assert!(parse_storage_pool_inner_v1(&inner).is_none());
     }
@@ -280,7 +296,25 @@ mod tests {
     #[test]
     fn missing_storage_size_returns_none() {
         let inner = struct_value(&[
-            ("storage", struct_value(&[("foo", string_value("1024"))])),
+            (
+                "storage",
+                struct_value(&[
+                    ("foo", string_value("1024")),
+                    ("end_epoch", string_value("42")),
+                ]),
+            ),
+            ("used_encoded_bytes", string_value("0")),
+        ]);
+        assert!(parse_storage_pool_inner_v1(&inner).is_none());
+    }
+
+    #[test]
+    fn missing_end_epoch_returns_none() {
+        let inner = struct_value(&[
+            (
+                "storage",
+                struct_value(&[("storage_size", string_value("1024"))]),
+            ),
             ("used_encoded_bytes", string_value("0")),
         ]);
         assert!(parse_storage_pool_inner_v1(&inner).is_none());
@@ -296,7 +330,10 @@ mod tests {
         let inner = struct_value(&[
             (
                 "storage",
-                struct_value(&[("storage_size", string_value("not-a-number"))]),
+                struct_value(&[
+                    ("storage_size", string_value("not-a-number")),
+                    ("end_epoch", string_value("42")),
+                ]),
             ),
             ("used_encoded_bytes", string_value("0")),
         ]);
@@ -308,7 +345,10 @@ mod tests {
         let inner = struct_value(&[
             (
                 "storage",
-                struct_value(&[("storage_size", string_value("4096"))]),
+                struct_value(&[
+                    ("storage_size", string_value("4096")),
+                    ("end_epoch", string_value("42")),
+                ]),
             ),
             ("used_encoded_bytes", string_value("100")),
         ]);
