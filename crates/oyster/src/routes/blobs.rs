@@ -396,6 +396,17 @@ pub async fn read_blob(
         [
             ("content-type", metadata.content_type.as_str()),
             ("etag", etag.as_str()),
+            // Reads are public and serve caller-supplied Content-Type
+            // verbatim, so a `text/html`/`image/svg+xml` blob would
+            // otherwise execute as a page on this origin (stored XSS).
+            // `nosniff` alone does not stop an *explicit* active type
+            // from rendering; force top-level navigations to download
+            // and sandbox anything that is rendered anyway. Subresource
+            // loads (`<img>`, `<video>`, `fetch`) ignore the disposition,
+            // so legitimate embedding still works. The S3 read paths
+            // apply the same triad via `s3::apply_read_security_headers`.
+            ("content-disposition", "attachment"),
+            ("content-security-policy", "default-src 'none'; sandbox"),
             ("x-content-type-options", "nosniff"),
         ],
         data,
@@ -439,6 +450,12 @@ pub async fn read_blob_by_blob_id(
         StatusCode::OK,
         [
             ("content-type", "application/octet-stream"),
+            // Same public-read XSS hardening as `read_blob`. This path
+            // already forces `application/octet-stream`, but keep the
+            // disposition/CSP/nosniff triad identical so both public
+            // read surfaces are neutralized the same way.
+            ("content-disposition", "attachment"),
+            ("content-security-policy", "default-src 'none'; sandbox"),
             ("x-content-type-options", "nosniff"),
         ],
         data,

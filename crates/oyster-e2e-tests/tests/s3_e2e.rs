@@ -149,6 +149,9 @@ fn s3_e2e_full_lifecycle() {
             .await
             .expect("GetObject failed");
         assert_eq!(get.e_tag().unwrap(), put_etag);
+        // Stored-XSS hardening survives the full HTTP round-trip: a real
+        // S3 client sees the download disposition on GetObject.
+        assert_eq!(get.content_disposition(), Some("attachment"));
         let body_bytes = get.body.collect().await.expect("collect body").into_bytes();
         assert_eq!(&body_bytes[..], b"Hello S3");
 

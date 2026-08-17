@@ -635,6 +635,43 @@ async fn read_blob_includes_nosniff_header() {
     assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
 }
 
+/// Stored-XSS hardening: a public `read_blob` of a caller-supplied
+/// `text/html` payload must not be renderable in a browser. The
+/// Content-Type is still echoed verbatim (so downloads/embeds get the
+/// right type), but the response forces a download disposition and a
+/// script-disabling CSP, and keeps `nosniff`.
+#[tokio::test]
+async fn read_blob_forces_download_and_csp_for_html() {
+    let (app, _tmp, pool) = test_app().await;
+    let (_, key) = create_test_account(&pool).await;
+    create_test_bucket(&app, &key, "xss-test").await;
+    store_test_blob(
+        &app,
+        &key,
+        "xss-test",
+        "evil.html",
+        "text/html",
+        b"<script>alert(document.domain)</script>",
+    )
+    .await;
+    let req = Request::get("/api/v1/buckets/xss-test/blobs/evil.html")
+        .body(Body::empty())
+        .unwrap();
+    let (status, headers, _) = full_response(&app, req).await;
+    assert_eq!(status, StatusCode::OK);
+    // Verbatim type is preserved (needed for correct download/embed).
+    assert_eq!(headers.get("content-type").unwrap(), "text/html");
+    // But the browser is forced to download rather than render it, any
+    // rendered content is sandboxed with no script execution, and MIME
+    // sniffing stays disabled.
+    assert_eq!(headers.get("content-disposition").unwrap(), "attachment");
+    assert_eq!(
+        headers.get("content-security-policy").unwrap(),
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(headers.get("x-content-type-options").unwrap(), "nosniff");
+}
+
 #[tokio::test]
 async fn different_accounts_same_bucket_name() {
     let (app, _tmp, pool) = test_app().await;
@@ -1882,6 +1919,20 @@ async fn s3_put_get_delete_object() {
         .await
         .unwrap();
     assert_eq!(get_resp.output.content_type, Some("text/plain".into()));
+    // Stored-XSS hardening: force download + sandbox + nosniff so a
+    // browser can't render a caller-supplied active Content-Type.
+    assert_eq!(
+        get_resp.output.content_disposition.as_deref(),
+        Some("attachment")
+    );
+    assert_eq!(
+        get_resp.headers.get("content-security-policy").unwrap(),
+        "default-src 'none'; sandbox"
+    );
+    assert_eq!(
+        get_resp.headers.get("x-content-type-options").unwrap(),
+        "nosniff"
+    );
     // Read the body
     let mut stream = get_resp.output.body.unwrap();
     let mut data = Vec::new();

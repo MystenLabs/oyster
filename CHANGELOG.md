@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Security
+- Blob reads no longer let a caller-supplied `Content-Type` execute in a
+  browser (stored XSS). Reads are public and echoed the stored MIME type
+  verbatim, so a `text/html` (or `image/svg+xml`) blob rendered as an
+  active page on the Oyster origin; `X-Content-Type-Options: nosniff`
+  alone does not stop an *explicit* active type from rendering. All read
+  paths — the public JSON `GET .../blobs/{key}` and `.../by-blob-id/…`,
+  plus S3 `GetObject`/`HeadObject` — now return `Content-Disposition:
+  attachment` and `Content-Security-Policy: default-src 'none'; sandbox`
+  alongside the existing `nosniff`. Direct top-level navigation to a blob
+  downloads instead of rendering; embedding as a subresource (`<img>`,
+  `<video>`, `<script src>`, `fetch`) is unaffected, and the stored
+  Content-Type is still returned verbatim for correct download/embed
+  handling.
+
 ### Fixed
 - The `EInsufficientCapacity` register-retry path now re-runs the
   per-account storage-cap check against the refreshed on-chain usage

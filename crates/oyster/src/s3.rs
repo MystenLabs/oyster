@@ -25,6 +25,29 @@ fn internal_error(e: impl std::error::Error + Send + Sync + 'static) -> S3Error 
     S3Error::with_source(S3ErrorCode::InternalError, Box::new(e))
 }
 
+/// Browser-XSS hardening headers for blob read responses.
+///
+/// `GetObject`/`HeadObject` echo the caller-supplied `Content-Type`
+/// verbatim, so a `text/html`/`image/svg+xml` object rendered in a
+/// browser would execute on this origin (stored XSS). `nosniff` alone
+/// does not stop an *explicit* active type from rendering, so we also
+/// force a download disposition and sandbox anything rendered anyway.
+/// Mirrors the triad on the public JSON read paths
+/// (`routes::blobs::read_blob`). s3s serializes `content_disposition`
+/// from the output DTO; the other two have no DTO field, so they are
+/// injected into the response header map.
+fn apply_read_security_headers(headers: &mut axum::http::HeaderMap) {
+    use axum::http::{HeaderName, HeaderValue, header};
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        HeaderName::from_static("content-security-policy"),
+        HeaderValue::from_static("default-src 'none'; sandbox"),
+    );
+}
+
 fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
     use crate::blob_store::BlobStoreError;
     match e {
@@ -611,15 +634,21 @@ impl s3s::S3 for OysterS3 {
             .await
             .map_err(internal_error)? as i32;
 
-        Ok(S3Response::new(GetObjectOutput {
+        let mut resp = S3Response::new(GetObjectOutput {
             body: Some(body),
             content_length: Some(metadata.size),
             content_type: Some(metadata.content_type),
+            // Force top-level navigations to download rather than
+            // render the caller-supplied Content-Type. See
+            // `apply_read_security_headers`.
+            content_disposition: Some("attachment".to_string()),
             e_tag: Some(etag_from_md5(&metadata.md5)),
             last_modified: parse_timestamp(&metadata.created_at),
             tag_count: Some(tag_count),
             ..Default::default()
-        }))
+        });
+        apply_read_security_headers(&mut resp.headers);
+        Ok(resp)
     }
 
     async fn head_object(
@@ -648,13 +677,18 @@ impl s3s::S3 for OysterS3 {
             true,
         )?;
 
-        Ok(S3Response::new(HeadObjectOutput {
+        let mut resp = S3Response::new(HeadObjectOutput {
             content_length: Some(metadata.size),
             content_type: Some(metadata.content_type),
+            // Keep HEAD headers consistent with GET so a HEAD preflight
+            // sees the same download disposition and hardening headers.
+            content_disposition: Some("attachment".to_string()),
             e_tag: Some(etag_from_md5(&metadata.md5)),
             last_modified: parse_timestamp(&metadata.created_at),
             ..Default::default()
-        }))
+        });
+        apply_read_security_headers(&mut resp.headers);
+        Ok(resp)
     }
 
     async fn delete_object(

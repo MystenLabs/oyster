@@ -207,6 +207,14 @@ curl -s -o /dev/null -w "%{http_code}" \
 - **Body:** Raw binary blob data
 - **Content-Type:** The MIME type set during upload
 - **ETag:** Quoted MD5 digest (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`)
+- **Content-Disposition:** `attachment` — because reads are public and
+  serve a caller-supplied Content-Type, blobs are returned as downloads
+  so a `text/html`/SVG payload can't execute as a page on the Oyster
+  origin. The response also carries `X-Content-Type-Options: nosniff`
+  and `Content-Security-Policy: default-src 'none'; sandbox`. Embedding
+  a blob as a subresource (`<img>`, `<video>`, `<script src>`, `fetch`)
+  is unaffected — only direct top-level navigation downloads instead of
+  rendering.
 
 **Errors:**
 
