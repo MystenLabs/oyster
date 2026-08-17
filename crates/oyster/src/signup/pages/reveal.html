@@ -44,7 +44,7 @@
       later. Store it somewhere safe before continuing.</p>
     <a class="continue" href="/signup/keys">I’ve saved my key — continue</a>
   </main>
-  <script>
+  <script nonce="{{NONCE}}">
     document.querySelectorAll("button.copy").forEach(function (btn) {
       btn.addEventListener("click", function () {
         var el = document.getElementById(btn.dataset.target);

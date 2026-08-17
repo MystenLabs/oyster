@@ -16,6 +16,19 @@
   `<video>`, `<script src>`, `fetch`) is unaffected, and the stored
   Content-Type is still returned verbatim for correct download/embed
   handling.
+- Hardened the self-serve signup surface, which mints admin keys and
+  shares an origin with public blob content, as defense-in-depth behind
+  the blob-read fix. The state-changing POSTs (`/signup/keys/issue`,
+  `/signup/keys/revoke`, `/signup/logout`) were authenticated only by the
+  session cookie the browser attaches automatically; they now require the
+  request `Origin` (falling back to `Referer`) to match the signup
+  origin, an application-level CSRF guard that does not depend on the
+  browser's `SameSite` default. All signup responses also carry a strict
+  `Content-Security-Policy` (script-free for the dashboard/message pages;
+  a per-response nonce for the reveal page's clipboard script; a
+  Turnstile allowlist for the landing page), plus `X-Content-Type-Options:
+  nosniff`, `X-Frame-Options: DENY`, and `Referrer-Policy: same-origin`,
+  to shrink the blast radius of any future same-origin XSS.
 
 ### Fixed
 - The `EInsufficientCapacity` register-retry path now re-runs the

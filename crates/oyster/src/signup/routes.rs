@@ -15,9 +15,11 @@ use axum::{
     Router,
     extract::{Form, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware::map_response,
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use rand::RngExt;
 use serde::Deserialize;
 
 use crate::{
@@ -116,6 +118,60 @@ pub fn router_with_service(service: SignupService) -> Router {
         .route("/signup/keys/revoke", post(revoke_key))
         .route("/signup/logout", post(logout))
         .with_state(service)
+        // Baseline hardening on every signup response: a script-free CSP
+        // (handlers that need scripts — the signup landing's Turnstile,
+        // the reveal page's clipboard button — set their own CSP, which
+        // this layer leaves in place), plus nosniff and anti-framing.
+        // These pages issue admin keys, so shrinking the blast radius of
+        // any future same-origin XSS is worth the few headers.
+        .layer(map_response(signup_security_headers))
+}
+
+/// CSP for signup pages that run no JavaScript (dashboard, message and
+/// error pages): block all script, keep everything else same-origin.
+const CSP_NO_SCRIPT: &str = "default-src 'none'; style-src 'self' 'unsafe-inline'; \
+     img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+/// CSP for the signup landing page, which loads the Cloudflare Turnstile
+/// widget (external script + challenge iframe).
+const CSP_SIGNUP: &str = "default-src 'none'; \
+     script-src https://challenges.cloudflare.com; \
+     style-src 'self' 'unsafe-inline'; \
+     frame-src https://challenges.cloudflare.com; \
+     connect-src https://challenges.cloudflare.com; \
+     img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+
+/// CSP for the one-time key-reveal page: the only script permitted is the
+/// inline clipboard helper, pinned to this response's nonce.
+fn csp_reveal(nonce: &str) -> String {
+    format!(
+        "default-src 'none'; script-src 'nonce-{nonce}'; \
+         style-src 'self' 'unsafe-inline'; img-src 'self' data:; \
+         form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+    )
+}
+
+/// Response-header middleware for the signup router. Sets a script-free
+/// CSP unless the handler already chose one, and always stamps nosniff,
+/// anti-framing, and a same-origin referrer policy.
+async fn signup_security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    if !headers.contains_key(header::CONTENT_SECURITY_POLICY) {
+        headers.insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(CSP_NO_SCRIPT),
+        );
+    }
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    response
 }
 
 // ---------------------------------------------------------------------------
@@ -130,6 +186,70 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
+}
+
+/// Random per-response CSP nonce (128 bits, hex) for inline scripts.
+fn csp_nonce() -> String {
+    let mut bytes = [0u8; 16];
+    rand::rng().fill(&mut bytes);
+    hex::encode(bytes)
+}
+
+/// Application-level CSRF guard for state-changing signup POSTs.
+///
+/// `issue`/`revoke`/`logout` are authenticated only by the session
+/// cookie the browser attaches automatically, so without this an
+/// attacker page (cross-origin) could drive them with the victim's
+/// ambient cookie. We require the request's `Origin` — falling back to
+/// `Referer` — to match our own signup origin. This does not depend on
+/// the browser's `SameSite` cookie default; modern browsers send
+/// `Origin` on every POST, so a state-changing request that carries
+/// neither header (a non-browser or forged caller) is rejected. It does
+/// *not* stop a same-origin XSS (that shares our origin) — the blob-read
+/// hardening and CSP address that layer; this closes the cross-origin
+/// vector.
+fn origin_ok(service: &SignupService, headers: &HeaderMap) -> bool {
+    let base = service.config.public_base_url.trim_end_matches('/');
+    if let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) {
+        return origin.trim_end_matches('/') == base;
+    }
+    if let Some(referer) = headers.get(header::REFERER).and_then(|v| v.to_str().ok()) {
+        // Referer carries a path; accept only when it is under our origin.
+        return referer
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'));
+    }
+    false
+}
+
+/// 403 page for a request that failed [`origin_ok`].
+fn csrf_rejected() -> Response {
+    message_page(
+        StatusCode::FORBIDDEN,
+        "Request blocked",
+        "This request could not be verified as coming from the Oyster \
+         signup site. Please retry from the dashboard.",
+    )
+}
+
+/// Render the one-time key-reveal page. Attaches a per-response CSP
+/// nonce (bound to the inline clipboard script) and `Cache-Control:
+/// no-store` so the raw key is never cached.
+fn reveal_response(app_id: &str, admin_key: &str, env_label: &str) -> Response {
+    let nonce = csp_nonce();
+    let body = REVEAL_PAGE
+        .replace("{{APP_ID}}", &escape_html(app_id))
+        .replace("{{ADMIN_KEY}}", &escape_html(admin_key))
+        .replace("{{ENV_LABEL}}", env_label)
+        .replace("{{NONCE}}", &nonce);
+    let mut response = Html(body).into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_str(&csp_reveal(&nonce)).expect("csp nonce header is ascii"),
+    );
+    response
 }
 
 /// Escaped environment badge text for `{{ENV_LABEL}}` ("" when unset —
@@ -187,7 +307,13 @@ async fn signup_page(State(service): State<SignupService>) -> Response {
     let body = SIGNUP_PAGE
         .replace("{{TURNSTILE_SITE_KEY}}", &service.config.turnstile_site_key)
         .replace("{{ENV_LABEL}}", &env_label(&service));
-    Html(body).into_response()
+    let mut response = Html(body).into_response();
+    // Loosen the baseline CSP just enough for the Turnstile widget.
+    response.headers_mut().insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP_SIGNUP),
+    );
+    response
 }
 
 /// Form posted by the signup page; the Turnstile widget injects the
@@ -404,16 +530,7 @@ async fn complete_sign_in(
 
     let mut response = match fresh_key {
         // One-time reveal. The raw key exists in this response only.
-        Some((app_id, key)) => {
-            let body = REVEAL_PAGE
-                .replace("{{APP_ID}}", &escape_html(&app_id))
-                .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token))
-                .replace("{{ENV_LABEL}}", &env_label(service));
-            let mut r = Html(body).into_response();
-            r.headers_mut()
-                .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-            r
-        }
+        Some((app_id, key)) => reveal_response(&app_id, &key.bearer_token, &env_label(service)),
         None => Redirect::to("/signup/keys").into_response(),
     };
     response
@@ -647,6 +764,9 @@ async fn dashboard(State(service): State<SignupService>, headers: HeaderMap) -> 
 /// `POST /signup/keys/issue` — issue a fresh admin key (cap enforced)
 /// and show it once.
 async fn issue_key(State(service): State<SignupService>, headers: HeaderMap) -> Response {
+    if !origin_ok(&service, &headers) {
+        return csrf_rejected();
+    }
     let (user, app) = match dashboard_context(&service, &headers).await {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -690,15 +810,7 @@ async fn issue_key(State(service): State<SignupService>, headers: HeaderMap) -> 
     .await
     .inspect_err(|e| tracing::error!(error = %e, "audit event write failed"));
 
-    let body = REVEAL_PAGE
-        .replace("{{APP_ID}}", &escape_html(&app.id.to_string()))
-        .replace("{{ADMIN_KEY}}", &escape_html(&key.bearer_token))
-        .replace("{{ENV_LABEL}}", &env_label(&service));
-    let mut response = Html(body).into_response();
-    response
-        .headers_mut()
-        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
-    response
+    reveal_response(&app.id.to_string(), &key.bearer_token, &env_label(&service))
 }
 
 /// Form for `POST /signup/keys/revoke`.
@@ -713,6 +825,9 @@ async fn revoke_key(
     headers: HeaderMap,
     Form(form): Form<RevokeForm>,
 ) -> Response {
+    if !origin_ok(&service, &headers) {
+        return csrf_rejected();
+    }
     let (user, app) = match dashboard_context(&service, &headers).await {
         Ok(ctx) => ctx,
         Err(response) => return response,
@@ -749,6 +864,9 @@ async fn revoke_key(
 
 /// `POST /signup/logout` — delete the session and clear the cookie.
 async fn logout(State(service): State<SignupService>, headers: HeaderMap) -> Response {
+    if !origin_ok(&service, &headers) {
+        return csrf_rejected();
+    }
     if let Some(token) = get_cookie(&headers, SESSION_COOKIE) {
         let _ = db::web_sessions::delete_by_hash(&service.db, &auth::hash_api_key(&token))
             .await
@@ -768,6 +886,10 @@ mod tests {
 
     use super::*;
     use crate::config::SignupMode;
+
+    /// Matches the test `SignupConfig::public_base_url`, so state-changing
+    /// POSTs pass the `origin_ok` CSRF guard the way a browser would.
+    const TEST_ORIGIN: &str = "http://localhost:3000";
 
     // Reuse the Google test key/JWKS from the google module's tests via
     // fresh constants here (test-only material, not secrets).
@@ -1229,6 +1351,7 @@ mod tests {
         let issue = http
             .post(format!("{base}/signup/keys/issue"))
             .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .send()
             .await
             .unwrap();
@@ -1276,6 +1399,7 @@ mod tests {
             let r = http
                 .post(format!("{base}/signup/keys/issue"))
                 .header(header::COOKIE, &session_header)
+                .header(header::ORIGIN, TEST_ORIGIN)
                 .send()
                 .await
                 .unwrap();
@@ -1284,6 +1408,7 @@ mod tests {
         let over = http
             .post(format!("{base}/signup/keys/issue"))
             .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .send()
             .await
             .unwrap();
@@ -1309,6 +1434,7 @@ mod tests {
         let forged = http
             .post(format!("{base}/signup/keys/revoke"))
             .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .form(&[("key_id", other_key.id.as_str())])
             .send()
             .await
@@ -1338,6 +1464,7 @@ mod tests {
         let own = http
             .post(format!("{base}/signup/keys/revoke"))
             .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .form(&[("key_id", own_keys[0].id.as_str())])
             .send()
             .await
@@ -1362,6 +1489,7 @@ mod tests {
         let logout = http
             .post(format!("{base}/signup/logout"))
             .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
             .send()
             .await
             .unwrap();
@@ -1376,6 +1504,101 @@ mod tests {
             .unwrap();
         assert_eq!(dash.status(), 303);
         assert_eq!(dash.headers()[header::LOCATION], "/signup");
+    }
+
+    #[tokio::test]
+    async fn issue_rejects_cross_origin_and_missing_origin() {
+        let (callback, service, base) =
+            run_flow(SignupMode::Open, "sub-csrf-1", "csrf@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        // A cross-origin POST carrying the victim's session cookie — the
+        // CSRF shape — is rejected before any key is minted.
+        let foreign = http
+            .post(format!("{base}/signup/keys/issue"))
+            .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, "https://evil.example.com")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(foreign.status(), 403);
+
+        // A POST with neither Origin nor Referer is rejected too.
+        let bare = http
+            .post(format!("{base}/signup/keys/issue"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(bare.status(), 403);
+
+        // Neither blocked request issued a key: still just the signup key.
+        let user =
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-csrf-1")
+                .await
+                .unwrap()
+                .unwrap();
+        let app = db::apps::find_app_by_owner(&service.db, &user.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            db::app_admin_keys::count_active_admin_keys(&service.db, &app.id)
+                .await
+                .unwrap(),
+            1,
+            "CSRF-blocked issue must not mint a key"
+        );
+    }
+
+    #[tokio::test]
+    async fn signup_responses_carry_security_headers() {
+        let (callback, _service, base) =
+            run_flow(SignupMode::Open, "sub-hdr-1", "hdr@example.com", true).await;
+        let session = cookie_from(&callback, SESSION_COOKIE).unwrap();
+        let http = client();
+        let session_header = format!("{SESSION_COOKIE}={session}");
+
+        // Dashboard: script-free CSP + nosniff + anti-framing baseline.
+        let dash = http
+            .get(format!("{base}/signup/keys"))
+            .header(header::COOKIE, &session_header)
+            .send()
+            .await
+            .unwrap();
+        let csp = dash.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(csp.contains("default-src 'none'"), "{csp}");
+        assert!(
+            !csp.contains("script-src"),
+            "dashboard needs no script: {csp}"
+        );
+        assert_eq!(dash.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+        assert_eq!(dash.headers()[header::X_FRAME_OPTIONS], "DENY");
+
+        // Reveal page: CSP pins the inline clipboard script to a nonce,
+        // and the served `<script>` carries the matching nonce attribute.
+        let issue = http
+            .post(format!("{base}/signup/keys/issue"))
+            .header(header::COOKIE, &session_header)
+            .header(header::ORIGIN, TEST_ORIGIN)
+            .send()
+            .await
+            .unwrap();
+        let reveal_csp = issue.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(reveal_csp.contains("script-src 'nonce-"), "{reveal_csp}");
+        let body = issue.text().await.unwrap();
+        assert!(
+            body.contains("<script nonce=\""),
+            "reveal inline script must be nonced"
+        );
     }
 
     #[tokio::test]
