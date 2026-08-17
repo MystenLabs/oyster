@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Fixed
+- The `EInsufficientCapacity` register-retry path now re-runs the
+  per-account storage-cap check against the refreshed on-chain usage
+  before buying new pool capacity. That abort fires precisely when a
+  concurrent upload consumed capacity between this request's cap check
+  and its register, so the original verdict is stale — previously the
+  retry recomputed `grow_by` from the refreshed pool state and grew the
+  pool straight through the cap. When the refreshed pool already has
+  enough reserved capacity (`retry_grow_by == 0`), the retry proceeds
+  without re-checking: reserved capacity is already paid for, and
+  consuming it is allowed even past the cap.
 - S3 `PutObject` now enforces the same 1 GiB `MAX_BLOB_SIZE` cap as the
   JSON upload route. The S3 surface is mounted as a raw-request
   fallback, so the JSON route's axum `DefaultBodyLimit` never applied

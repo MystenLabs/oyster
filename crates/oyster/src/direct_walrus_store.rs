@@ -654,6 +654,29 @@ impl DirectWalrusBlobStore {
                     let on_chain_remaining = (on_chain.reserved_encoded_bytes as i64)
                         - (on_chain.used_encoded_bytes as i64);
                     let retry_grow_by = grow_by_bytes(on_chain_remaining, encoded_size);
+
+                    // The abort means a concurrent upload consumed the
+                    // capacity this request's cap check was quoted
+                    // against, so that verdict is stale. Re-run the cap
+                    // gate against the refreshed usage before buying
+                    // more capacity — but only when the retry would buy
+                    // (`retry_grow_by > 0`): reserved pool capacity is
+                    // already paid for, and consuming it is allowed even
+                    // past the cap. Without this re-check the retry
+                    // would grow the pool straight through the cap in
+                    // exactly the raced case it exists to handle.
+                    if retry_grow_by > 0
+                        && let Err(violation) = storage_cap::enforce_storage_cap(
+                            cap_u64,
+                            on_chain.used_encoded_bytes,
+                            unencoded_size,
+                            avg_blob_size_u64,
+                            n_shards,
+                        )
+                    {
+                        return Err(cap_violation_to_error(violation));
+                    }
+
                     let retry_grow_funding = if retry_grow_by > 0 {
                         estimate_storage_funding(&self.read_client, retry_grow_by, remaining_epochs)
                             .await
