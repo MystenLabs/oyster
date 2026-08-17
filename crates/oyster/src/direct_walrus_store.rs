@@ -427,7 +427,7 @@ impl DirectWalrusBlobStore {
 
     async fn store_impl(
         &self,
-        data: &[u8],
+        data: Vec<u8>,
         account_id: &AccountId,
     ) -> Result<StoreResult, BlobStoreError> {
         // Pearl is a first-party internal service, so failures here are
@@ -439,19 +439,31 @@ impl DirectWalrusBlobStore {
         // 1. Encode the blob data. Encoding runs locally — failures here
         // are server-internal (RS2 encoder invariant), not upstream.
         let encoding_config = self.node_client.encoding_config();
+        let n_shards = encoding_config.n_shards();
+        let max_unencoded_for_network = walrus_core::encoding::max_blob_size_for_n_shards(
+            n_shards,
+            walrus_core::EncodingType::RS2,
+        );
+        let unencoded_len = data.len() as u64;
+        // Reject over-ceiling payloads *before* encoding: the encoder
+        // would materialize the ~4.5x sliver expansion (or fail after
+        // significant allocation) for a blob we already know is too big.
+        if unencoded_len > max_unencoded_for_network {
+            return Err(BlobStoreError::PayloadTooLarge {
+                unencoded_size: unencoded_len,
+                n_shards: n_shards.get(),
+                max_unencoded_for_network,
+            });
+        }
         let encoding = encoding_config.get_for_type(walrus_core::EncodingType::RS2);
         let (sliver_pairs, metadata) =
-            encoding.encode_with_metadata(data.to_vec()).map_err(|_e| {
-                let n_shards = encoding_config.n_shards();
-                BlobStoreError::PayloadTooLarge {
-                    unencoded_size: data.len() as u64,
+            encoding
+                .encode_with_metadata(data)
+                .map_err(|_e| BlobStoreError::PayloadTooLarge {
+                    unencoded_size: unencoded_len,
                     n_shards: n_shards.get(),
-                    max_unencoded_for_network: walrus_core::encoding::max_blob_size_for_n_shards(
-                        n_shards,
-                        walrus_core::EncodingType::RS2,
-                    ),
-                }
-            })?;
+                    max_unencoded_for_network,
+                })?;
 
         let blob_obj_metadata = BlobObjectMetadata::try_from(&metadata)
             .map_err(|e| BlobStoreError::Internal(format!("blob metadata error: {e}")))?;
@@ -530,7 +542,6 @@ impl DirectWalrusBlobStore {
             sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
                 .await
                 .map_err(|e| BlobStoreError::Upstream(format!("read_storage_pool_state: {e}")))?;
-        let n_shards = encoding_config.n_shards();
         let cap_u64 = u64::try_from(max_unencoded_bytes).map_err(|_| {
             // Migration 018 backfills with `5_000_000_000` and the
             // route layer rejects non-positive overrides, so a
@@ -865,12 +876,11 @@ impl DirectWalrusBlobStore {
 impl BlobStore for DirectWalrusBlobStore {
     fn store(
         &self,
-        data: &[u8],
+        data: Vec<u8>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
-        let data = data.to_vec();
         let account_id = *account_id;
-        Box::pin(async move { self.store_impl(&data, &account_id).await })
+        Box::pin(async move { self.store_impl(data, &account_id).await })
     }
 
     fn read(&self, blob_id: &BlobId) -> BoxFuture<'_, Result<Vec<u8>, BlobStoreError>> {

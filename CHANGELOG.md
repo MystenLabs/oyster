@@ -1,5 +1,28 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- S3 `PutObject` now enforces the same 1 GiB `MAX_BLOB_SIZE` cap as the
+  JSON upload route. The S3 surface is mounted as a raw-request
+  fallback, so the JSON route's axum `DefaultBodyLimit` never applied
+  to it: a client could stream an arbitrarily large body and the
+  server would buffer all of it into memory. Oversized uploads are now
+  rejected from the declared `Content-Length` before the body is read,
+  and again while draining (for clients that lie about or omit the
+  length), returning S3 `EntityTooLarge` and incrementing
+  `oyster_payload_too_large_responses_total{reason="body_limit"}`.
+
+### Changed
+- Blob uploads no longer hold multiple full copies of the payload in
+  memory. `BlobStore::store` takes ownership of the buffer, and the
+  Walrus backend feeds it straight into the RS2 encoder instead of
+  cloning it twice along the way — peak per-upload memory drops by up
+  to two payload-sized allocations (2 GiB for a max-size blob). The
+  Walrus per-network encoder ceiling is also checked *before* encoding,
+  so an over-ceiling payload is rejected without first materializing
+  the ~4.5x sliver expansion.
+
 ## [0.13.1] - 2026-07-22
 
 ### Added

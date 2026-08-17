@@ -431,6 +431,24 @@ impl s3s::S3 for OysterS3 {
             .unwrap_or_else(|| "application/octet-stream".to_string());
         tracing::info!(account_id = %account_id, bucket_name = %bucket_name, key = %key, content_type = %content_type, "s3 put_object");
 
+        // The S3 surface is mounted as a raw-request fallback, so axum's
+        // `DefaultBodyLimit` on the JSON upload route does not apply here.
+        // Enforce the same `MAX_BLOB_SIZE` cap ourselves: reject on the
+        // declared Content-Length before reading the body, and again while
+        // draining so a client that lies about (or omits) the length can't
+        // buffer more than the cap into memory.
+        let max_size = crate::routes::blobs::MAX_BLOB_SIZE;
+        if let Some(declared) = req.input.content_length
+            && (declared < 0 || declared as u128 > max_size as u128)
+        {
+            metrics::counter!(
+                crate::metrics::PAYLOAD_TOO_LARGE_RESPONSES_TOTAL,
+                "reason" => "body_limit",
+            )
+            .increment(1);
+            return Err(S3Error::new(S3ErrorCode::EntityTooLarge));
+        }
+
         // Collect body bytes
         let body_bytes = match req.input.body {
             Some(blob) => {
@@ -439,6 +457,14 @@ impl s3s::S3 for OysterS3 {
                 while let Some(chunk) = stream.next().await {
                     let bytes =
                         chunk.map_err(|e| internal_error(std::io::Error::other(e.to_string())))?;
+                    if data.len() + bytes.len() > max_size {
+                        metrics::counter!(
+                            crate::metrics::PAYLOAD_TOO_LARGE_RESPONSES_TOTAL,
+                            "reason" => "body_limit",
+                        )
+                        .increment(1);
+                        return Err(S3Error::new(S3ErrorCode::EntityTooLarge));
+                    }
                     data.extend_from_slice(&bytes);
                 }
                 data
@@ -463,11 +489,14 @@ impl s3s::S3 for OysterS3 {
         )?;
 
         let md5_digest = format!("{:x}", md5::compute(&body_bytes));
+        let content_length = body_bytes.len();
 
+        // The store consumes the buffer; the Walrus backend feeds it
+        // straight into the encoder without another full-body copy.
         let result = self
             .state
             .blob_store
-            .store(&body_bytes, &account_id)
+            .store(body_bytes, &account_id)
             .await
             .map_err(blob_store_error)?;
 
@@ -485,7 +514,7 @@ impl s3s::S3 for OysterS3 {
             &bucket_name,
             &account_id,
             &content_type,
-            body_bytes.len() as i64,
+            content_length as i64,
             &md5_digest,
             result.pooled_blob_object_id.as_deref(),
             result.encoded_size.map(|e| e as i64),

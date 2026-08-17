@@ -197,8 +197,16 @@ pub async fn store_blob(
     );
 
     let md5_digest = format!("{:x}", md5::compute(&body));
+    let content_length = body.len();
 
-    let result = match state.blob_store.store(&body, &auth.account_id).await {
+    // `Vec::from(Bytes)` reclaims the buffer without copying when the
+    // handle is unique; the store consumes it, so no second full-body
+    // allocation is held across the encode.
+    let result = match state
+        .blob_store
+        .store(Vec::from(body), &auth.account_id)
+        .await
+    {
         Ok(r) => {
             metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
                 "operation" => "store", "result" => "ok"
@@ -222,7 +230,7 @@ pub async fn store_blob(
         &bucket_name,
         &auth.account_id,
         content_type,
-        body.len() as i64,
+        content_length as i64,
         &md5_digest,
         result.pooled_blob_object_id.as_deref(),
         result.encoded_size.map(|e| e as i64),

@@ -125,9 +125,9 @@ pub enum BlobStoreError {
         new_unencoded_bytes: u64,
     },
     /// Upload exceeded the Walrus encoder's per-blob ceiling for the
-    /// network's `n_shards`. Surfaced from the encode step in
-    /// `DirectWalrusBlobStore::store_impl` before any on-chain work,
-    /// and maps to 413 Payload Too Large.
+    /// network's `n_shards`. Surfaced by the pre-encode size check in
+    /// `DirectWalrusBlobStore::store_impl` before any encoding or
+    /// on-chain work, and maps to 413 Payload Too Large.
     #[error(
         "payload too large: unencoded_size {unencoded_size} > \
          max_unencoded_bytes_for_network {max_unencoded_for_network} (n_shards={n_shards})"
@@ -193,9 +193,14 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// Trait abstracting over different blob storage backends.
 pub trait BlobStore: Send + Sync + 'static {
     /// Store blob data and return the resulting blob ID.
+    ///
+    /// Takes ownership of `data`: the Walrus encoder consumes an owned
+    /// `Vec<u8>`, so a by-reference signature would force every backend
+    /// to re-copy the full blob. Callers hand over their buffer instead
+    /// of cloning it.
     fn store(
         &self,
-        data: &[u8],
+        data: Vec<u8>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>>;
     /// Read blob data by its ID.
@@ -249,12 +254,11 @@ fn compute_blob_id(data: &[u8]) -> BlobId {
 impl BlobStore for LocalBlobStore {
     fn store(
         &self,
-        data: &[u8],
+        data: Vec<u8>,
         _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
-        let blob_id = compute_blob_id(data);
+        let blob_id = compute_blob_id(&data);
         let path = self.blob_path(&blob_id);
-        let data = data.to_vec();
         Box::pin(async move {
             if path.exists() {
                 return Ok(StoreResult {

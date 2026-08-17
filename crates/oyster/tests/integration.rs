@@ -126,7 +126,7 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 impl BlobStore for SpyBlobStore {
     fn store(
         &self,
-        data: &[u8],
+        data: Vec<u8>,
         account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         self.calls.lock().unwrap().push(*account_id);
@@ -1915,6 +1915,56 @@ async fn s3_put_get_delete_object() {
         .await
         .unwrap_err();
     assert_eq!(err.code(), &s3s::S3ErrorCode::NoSuchKey);
+}
+
+#[tokio::test]
+async fn s3_put_object_rejects_oversized_content_length() {
+    let (s3, ak, _tmp) = test_s3_with_account().await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "data".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    // A declared Content-Length over MAX_BLOB_SIZE is rejected before the
+    // body stream is drained — the tiny actual body must never be read.
+    let body = StreamingBlob::from(s3s::Body::from(b"tiny".to_vec()));
+    let err = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "data".into(),
+                key: "huge.bin".into(),
+                body: Some(body),
+                content_length: Some(oyster::routes::blobs::MAX_BLOB_SIZE as i64 + 1),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::EntityTooLarge);
+
+    // A negative declared Content-Length is likewise rejected.
+    let body = StreamingBlob::from(s3s::Body::from(b"tiny".to_vec()));
+    let err = s3
+        .put_object(s3_req(
+            PutObjectInput {
+                bucket: "data".into(),
+                key: "huge.bin".into(),
+                body: Some(body),
+                content_length: Some(-1),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code(), &s3s::S3ErrorCode::EntityTooLarge);
 }
 
 /// Like `test_s3_with_account` but backs the state with the provided
@@ -4778,7 +4828,7 @@ struct InsufficientStubBlobStore;
 impl BlobStore for InsufficientStubBlobStore {
     fn store(
         &self,
-        _data: &[u8],
+        _data: Vec<u8>,
         _account_id: &AccountId,
     ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
         Box::pin(async move {

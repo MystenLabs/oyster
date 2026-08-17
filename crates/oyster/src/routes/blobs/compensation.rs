@@ -214,7 +214,7 @@ mod tests {
     impl BlobStore for RecordingBlobStore {
         fn store(
             &self,
-            _data: &[u8],
+            _data: Vec<u8>,
             _account_id: &AccountId,
         ) -> BoxFuture<'_, Result<StoreResult, BlobStoreError>> {
             unreachable!("RecordingBlobStore::store should not be called")
