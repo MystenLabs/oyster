@@ -30,10 +30,11 @@ use crate::{
     signup::{google::GoogleOAuthClient, turnstile::TurnstileVerifier},
 };
 
-/// Cookie carrying `state.nonce.pkce_verifier` between `/signup/start`
-/// and the callback. The values are compared against what Google echoes
-/// back — a cross-site attacker cannot read or set this cookie, which is
-/// what makes `state` an effective CSRF check (double-submit pattern).
+/// Cookie carrying an opaque, single-use token that keys the server-side
+/// [`db::oauth_attempts`] record between `/signup/start` and the
+/// callback. The record — created only after Turnstile passes — holds the
+/// `state`/`nonce`/PKCE secrets, so neither the anti-bot gate nor the
+/// OAuth `state` CSRF check can be satisfied by a caller-written cookie.
 const OAUTH_COOKIE: &str = "oyster_oauth";
 /// Lifetime of the OAuth state cookie (one consent-screen round trip).
 const OAUTH_COOKIE_MAX_AGE_SECS: i64 = 600;
@@ -358,12 +359,34 @@ async fn signup_start(
     }
 
     let auth_request = service.google.begin_auth();
+
+    // Persist the attempt server-side (only reachable once Turnstile has
+    // passed) and hand the browser an opaque token, not the secrets. The
+    // callback consumes this record single-use; a fabricated cookie has
+    // no matching row, so the anti-bot gate can no longer be bypassed by
+    // writing your own cookie, nor replayed after one solved challenge.
+    let cookie_token = match db::oauth_attempts::create_attempt(
+        &service.db,
+        &auth_request.state,
+        &auth_request.nonce,
+        &auth_request.pkce_verifier,
+        chrono::Duration::seconds(OAUTH_COOKIE_MAX_AGE_SECS),
+    )
+    .await
+    {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to persist oauth attempt");
+            return message_page(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Something went wrong",
+                "Could not start sign-in. Please try again.",
+            );
+        }
+    };
     let cookie = cookie_value(
         OAUTH_COOKIE,
-        &format!(
-            "{}.{}.{}",
-            auth_request.state, auth_request.nonce, auth_request.pkce_verifier
-        ),
+        &cookie_token,
         OAUTH_COOKIE_MAX_AGE_SECS,
         service.secure_cookies(),
     );
@@ -407,7 +430,9 @@ async fn signup_callback(
         );
     };
 
-    // Recover this attempt's secrets from the cookie and validate state.
+    // The cookie carries only an opaque token; the secrets live in a
+    // server-side attempt record. Clear the cookie on every path below.
+    let clear_oauth = cookie_value(OAUTH_COOKIE, "", 0, service.secure_cookies());
     let Some(oauth_cookie) = get_cookie(&headers, OAUTH_COOKIE) else {
         return message_page(
             StatusCode::BAD_REQUEST,
@@ -415,31 +440,50 @@ async fn signup_callback(
             "Your sign-in attempt expired or the cookie is missing. Please try again.",
         );
     };
-    let mut parts = oauth_cookie.splitn(3, '.');
-    let (Some(expected_state), Some(nonce), Some(pkce_verifier)) =
-        (parts.next(), parts.next(), parts.next())
-    else {
-        return message_page(
-            StatusCode::BAD_REQUEST,
-            "Sign-in expired",
-            "Your sign-in attempt could not be validated. Please try again.",
-        );
-    };
-    if state != expected_state {
+
+    // Atomically consume the attempt (single-use). A hand-crafted cookie,
+    // an expired attempt, or a replay of an already-used one finds no
+    // live record and is rejected here — this is what re-anchors the
+    // Turnstile gate to a server-side fact instead of a client value.
+    let (expected_state, nonce, pkce_verifier) =
+        match db::oauth_attempts::consume_attempt(&service.db, &auth::hash_api_key(&oauth_cookie))
+            .await
+        {
+            Ok(Some(secrets)) => secrets,
+            Ok(None) => {
+                let mut r = message_page(
+                    StatusCode::BAD_REQUEST,
+                    "Sign-in expired",
+                    "Your sign-in attempt expired or was already used. Please try again.",
+                );
+                r.headers_mut().append(header::SET_COOKIE, clear_oauth);
+                return r;
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "oauth attempt lookup failed");
+                let mut r = message_page(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Something went wrong",
+                    "Sign-in could not be completed. Please try again.",
+                );
+                r.headers_mut().append(header::SET_COOKIE, clear_oauth);
+                return r;
+            }
+        };
+    if state != &expected_state {
         tracing::warn!("oauth state mismatch");
-        return message_page(
+        let mut r = message_page(
             StatusCode::BAD_REQUEST,
             "Sign-in rejected",
             "State validation failed. Please try signing in again.",
         );
+        r.headers_mut().append(header::SET_COOKIE, clear_oauth);
+        return r;
     }
 
-    // The state cookie is single-use: clear it on every path below.
-    let clear_oauth = cookie_value(OAUTH_COOKIE, "", 0, service.secure_cookies());
-
     // Exchange the code and verify the id_token.
-    let identity = match service.google.exchange_code(code, pkce_verifier).await {
-        Ok(id_token) => match service.google.verify_id_token(&id_token, nonce).await {
+    let identity = match service.google.exchange_code(code, &pkce_verifier).await {
+        Ok(id_token) => match service.google.verify_id_token(&id_token, &nonce).await {
             Ok(identity) => identity,
             Err(e) => {
                 tracing::warn!(error = %e, "id_token verification failed");
@@ -1309,6 +1353,91 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(callback.status(), 400);
+    }
+
+    /// The reporter's Turnstile-bypass PoC: a caller fabricates an
+    /// `oyster_oauth` cookie and a matching `state` query param without
+    /// ever calling `/signup/start` (so Turnstile is never solved). With
+    /// the secrets now held server-side, the fabricated cookie keys no
+    /// attempt record, so the callback is rejected *before* any Google
+    /// code exchange — the state check can no longer be satisfied by a
+    /// self-consistent client value.
+    #[tokio::test]
+    async fn self_made_cookie_cannot_bypass_turnstile() {
+        let google = mock_google("sub-forge", "forge@x.com", true).await;
+        let turnstile = mock_turnstile().await;
+        let service = test_service(SignupMode::Open, &google, &turnstile).await;
+        let base = serve(service.clone()).await;
+
+        // Attacker-chosen cookie and matching state — self-consistent by
+        // construction, exactly as in the report.
+        let callback = client()
+            .get(format!("{base}/signup/callback?code=BOGUS&state=AAA"))
+            .header(header::COOKIE, format!("{OAUTH_COOKIE}=AAA.BBB.CCC"))
+            .send()
+            .await
+            .unwrap();
+        // Rejected as an expired/unknown attempt (400), and — crucially —
+        // no user was created because the flow never reached Google.
+        assert_eq!(callback.status(), 400);
+        assert!(
+            callback.text().await.unwrap().contains("Sign-in expired"),
+            "self-made cookie must be rejected before the Google exchange"
+        );
+        assert!(
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-forge")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// One solved Turnstile challenge must not cover more than one
+    /// callback: the attempt record is single-use, so replaying a real
+    /// start's cookie + code after the first callback fails.
+    #[tokio::test]
+    async fn oauth_attempt_cannot_be_replayed() {
+        let google = mock_google("sub-replay", "replay@x.com", true).await;
+        let turnstile = mock_turnstile().await;
+        let service = test_service(SignupMode::Open, &google, &turnstile).await;
+        let base = serve(service.clone()).await;
+        let http = client();
+
+        // Real start → capture the cookie and the state/nonce it minted.
+        let start = http
+            .post(format!("{base}/signup/start"))
+            .form(&[("cf-turnstile-response", "pass")])
+            .send()
+            .await
+            .unwrap();
+        let oauth_cookie = cookie_from(&start, OAUTH_COOKIE).unwrap();
+        let location = start.headers()[header::LOCATION].to_str().unwrap();
+        let auth_url = url::Url::parse(location).unwrap();
+        let params: std::collections::HashMap<_, _> = auth_url.query_pairs().into_owned().collect();
+        let callback_url = format!(
+            "{base}/signup/callback?code={}&state={}",
+            params["nonce"], params["state"]
+        );
+
+        // First use succeeds (mock Google mints a verified id_token).
+        let first = http
+            .get(&callback_url)
+            .header(header::COOKIE, format!("{OAUTH_COOKIE}={oauth_cookie}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(first.status(), 200);
+
+        // Replaying the exact same cookie + code is now rejected: the
+        // server-side attempt was consumed on first use.
+        let replay = http
+            .get(&callback_url)
+            .header(header::COOKIE, format!("{OAUTH_COOKIE}={oauth_cookie}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), 400);
+        assert!(replay.text().await.unwrap().contains("Sign-in expired"));
     }
 
     #[tokio::test]

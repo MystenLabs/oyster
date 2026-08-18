@@ -23,7 +23,7 @@ API request → Oyster auth (Blake2s-256 hashed Bearer token) → route handler 
 
 ### Database
 
-Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `access_keys`, `buckets`, `blobs`, `blob_tags`, `apps`, `app_admin_keys`, `audit_events`, `dead_letter_orphans`, and the web-signup set (`users`, `user_identities`, `web_sessions`, `signup_requests`). Pearl is stateless — keys are derived on-the-fly from `PEARL_MASTER_SEED` via HKDF-SHA256.
+Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `access_keys`, `buckets`, `blobs`, `blob_tags`, `apps`, `app_admin_keys`, `audit_events`, `dead_letter_orphans`, and the web-signup set (`users`, `user_identities`, `web_sessions`, `signup_requests`, `oauth_attempts`). Pearl is stateless — keys are derived on-the-fly from `PEARL_MASTER_SEED` via HKDF-SHA256.
 
 ### Proto
 

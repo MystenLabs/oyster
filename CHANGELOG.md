@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Security
+- Closed a Turnstile anti-bot bypass in the Google OAuth signup flow.
+  `/signup/start` ran the Turnstile check but stored the OAuth
+  `state`/`nonce`/PKCE-verifier only in the caller-controlled
+  `oyster_oauth` cookie, and `/signup/callback` validated the query
+  `state` against that same cookie — so a client could fabricate a
+  self-consistent cookie + `state` and reach the Google code exchange
+  without ever solving Turnstile, and replay one solved challenge
+  indefinitely (cookie expiry/deletion are browser-side only). The
+  attempt secrets now live in a server-side `oauth_attempts` record
+  (migration 023) created only after Turnstile passes; the cookie
+  carries only an opaque, hashed token. The callback atomically consumes
+  the record (single-use, via `DELETE … RETURNING`) and enforces expiry
+  server-side, so fabricated cookies and replays are rejected before any
+  Google exchange. A periodic sweep prunes expired attempts.
 - Blob reads no longer let a caller-supplied `Content-Type` execute in a
   browser (stored XSS). Reads are public and echoed the stored MIME type
   verbatim, so a `text/html` (or `image/svg+xml`) blob rendered as an

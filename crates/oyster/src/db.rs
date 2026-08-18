@@ -20,6 +20,9 @@ pub mod buckets;
 /// when a post-store DB write fails AND the compensating on-chain
 /// delete also fails. See `routes::blobs::compensation`.
 pub mod dead_letter_orphans;
+/// Server-side, single-use, expiring records for in-flight Google OAuth
+/// login attempts (anti-bot/replay hardening for the signup callback).
+pub mod oauth_attempts;
 /// Signup-request queue database operations (gated signup modes).
 pub mod signup_requests;
 /// Web-signup user and identity database operations.
