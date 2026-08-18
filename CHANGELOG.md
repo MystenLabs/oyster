@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.0] - 2026-08-17
 
 ### Security
 - Closed a Turnstile anti-bot bypass in the Google OAuth signup flow.
