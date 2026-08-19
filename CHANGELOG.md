@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- The signup landing page's `Content-Security-Policy` no longer blocks the
+  Cloudflare Turnstile widget. The 0.14.0 signup hardening applied a
+  `default-src 'none'` CSP to every signup page, which silently blocked
+  Turnstile's Web Worker (and other unlisted fetches) so the widget never
+  emitted its token — making "Continue with Google" fail with
+  "Verification required" on every attempt. The landing page now scopes
+  only `script-src`/`frame-src` to `challenges.cloudflare.com` (matching
+  Cloudflare's documented Turnstile CSP) and leaves the other fetch
+  directives unrestricted; it carries no user data or session. The strict
+  script-free CSP is retained on the credential pages (dashboard, reveal,
+  message).
+
 ## [0.14.0] - 2026-08-17
 
 ### Security

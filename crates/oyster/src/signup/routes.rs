@@ -133,14 +133,29 @@ pub fn router_with_service(service: SignupService) -> Router {
 const CSP_NO_SCRIPT: &str = "default-src 'none'; style-src 'self' 'unsafe-inline'; \
      img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 
-/// CSP for the signup landing page, which loads the Cloudflare Turnstile
-/// widget (external script + challenge iframe).
-const CSP_SIGNUP: &str = "default-src 'none'; \
-     script-src https://challenges.cloudflare.com; \
-     style-src 'self' 'unsafe-inline'; \
+/// CSP for the signup landing page. This is the one signup page that
+/// embeds the Cloudflare Turnstile widget, which loads an external
+/// script, opens a challenge iframe, spawns a Web Worker, and issues its
+/// own network requests — all from `challenges.cloudflare.com`. A
+/// `default-src 'none'` base (as the other pages use) silently blocks the
+/// worker and other unlisted fetches, so the widget never finishes and
+/// never injects its `cf-turnstile-response` token, and every submit
+/// fails the empty-token guard in `signup_start` with "Verification
+/// required".
+///
+/// So we scope only `script-src`/`frame-src` to Cloudflare — matching
+/// Cloudflare's documented Turnstile CSP — and leave the remaining fetch
+/// directives unrestricted (no `default-src`), which is what lets the
+/// worker/XHR/styles load. This page carries no user-controlled data and
+/// no session, so the looser policy has little to protect; `base-uri` /
+/// `frame-ancestors` (which don't affect Turnstile) plus the middleware's
+/// `X-Frame-Options`/`nosniff`/`Referrer-Policy` still apply. `script-src`
+/// keeps `'unsafe-inline'` as a robustness margin for any inline bootstrap
+/// Turnstile injects (harmless here — no first-party inline script, no
+/// user data). The strict script-free CSP stays on the credential pages.
+const CSP_SIGNUP: &str = "script-src 'unsafe-inline' https://challenges.cloudflare.com; \
      frame-src https://challenges.cloudflare.com; \
-     connect-src https://challenges.cloudflare.com; \
-     img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+     base-uri 'none'; frame-ancestors 'none'";
 
 /// CSP for the one-time key-reveal page: the only script permitted is the
 /// inline clipboard helper, pinned to this response's nonce.
@@ -1174,6 +1189,34 @@ mod tests {
 
         let callback = sign_in(&base).await;
         (callback, service, base)
+    }
+
+    /// The signup landing page's CSP must permit the Cloudflare Turnstile
+    /// widget. A `default-src 'none'` base blocks the widget's Web Worker,
+    /// so it never injects its token and every submit fails the empty-token
+    /// guard with "Verification required". The strict, script-free CSP
+    /// belongs on the credential pages, not this pre-auth page.
+    #[tokio::test]
+    async fn signup_page_csp_allows_turnstile() {
+        let google = mock_google("sub-csp", "csp@x.com", true).await;
+        let turnstile = mock_turnstile().await;
+        let service = test_service(SignupMode::Open, &google, &turnstile).await;
+        let base = serve(service).await;
+
+        let page = client().get(format!("{base}/signup")).send().await.unwrap();
+        assert_eq!(page.status(), 200);
+        let csp = page.headers()[header::CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            csp.contains("https://challenges.cloudflare.com"),
+            "Turnstile host must be allowed by the signup CSP: {csp}"
+        );
+        assert!(
+            !csp.contains("default-src 'none'"),
+            "a default-src 'none' base blocks the Turnstile worker: {csp}"
+        );
     }
 
     #[tokio::test]
