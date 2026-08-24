@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.1] - 2026-08-24
 
 ### Added
 - Master-seed key versioning across Pearl and Oyster, laying the
