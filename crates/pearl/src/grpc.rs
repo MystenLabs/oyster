@@ -11,8 +11,23 @@ use proto::pearl_server::Pearl;
 
 /// The Pearl gRPC service implementation.
 pub struct PearlService {
-    /// Service configuration (contains master seed for key derivation).
+    /// Service configuration (contains the master seeds for key derivation).
     pub config: config::Config,
+}
+
+impl PearlService {
+    /// Resolve the master seed for a requested key version (0 = version 1,
+    /// the pre-versioning default). Requests for versions with no
+    /// configured seed are refused rather than falling back — signing with
+    /// the wrong seed would produce a key for the wrong wallet.
+    fn seed_for_version(&self, requested: u32) -> Result<&[u8], Status> {
+        self.config
+            .seed_for_version(requested)
+            .map(|s| s.as_slice())
+            .ok_or_else(|| {
+                Status::failed_precondition(format!("no master seed for key version {requested}"))
+            })
+    }
 }
 
 #[tonic::async_trait]
@@ -25,7 +40,8 @@ impl Pearl for PearlService {
         let result = async {
             let req = request.into_inner();
 
-            let address = derivation::derive_address(&self.config.master_seed, &req.account_id);
+            let seed = self.seed_for_version(req.key_version)?;
+            let address = derivation::derive_address(seed, &req.account_id);
 
             Ok(Response::new(proto::GetAddressResponse { address }))
         }
@@ -47,8 +63,8 @@ impl Pearl for PearlService {
         let result = async {
             let req = request.into_inner();
 
-            let private_key =
-                derivation::derive_private_key(&self.config.master_seed, &req.account_id);
+            let seed = self.seed_for_version(req.key_version)?;
+            let private_key = derivation::derive_private_key(seed, &req.account_id);
             let signed_bytes =
                 crate::signing::sign_transaction(&private_key, &req.tx_data).map_err(to_status)?;
 
@@ -66,6 +82,16 @@ impl Pearl for PearlService {
             .increment(1);
 
         result
+    }
+
+    async fn get_active_key_version(
+        &self,
+        _request: Request<proto::GetActiveKeyVersionRequest>,
+    ) -> Result<Response<proto::GetActiveKeyVersionResponse>, Status> {
+        ::metrics::counter!(pearl_metrics::GRPC_REQUESTS_TOTAL, "method" => "get_active_key_version", "status" => "ok").increment(1);
+        Ok(Response::new(proto::GetActiveKeyVersionResponse {
+            key_version: self.config.active_key_version,
+        }))
     }
 }
 

@@ -140,7 +140,7 @@ mod tests {
     #[tokio::test]
     async fn count_active_api_keys_zero_initially() {
         let pool = test_pool().await;
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         assert_eq!(
@@ -154,7 +154,7 @@ mod tests {
     #[tokio::test]
     async fn count_active_api_keys_increments_on_create() {
         let pool = test_pool().await;
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         make_key(&pool, &account.id, "api").await;
@@ -176,7 +176,7 @@ mod tests {
     #[tokio::test]
     async fn count_active_api_keys_excludes_revoked() {
         let pool = test_pool().await;
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         let k = make_key(&pool, &account.id, "api").await;
@@ -200,7 +200,7 @@ mod tests {
     #[tokio::test]
     async fn list_api_keys_by_account_returns_metadata_no_secret() {
         let pool = test_pool().await;
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         let created = make_key(&pool, &account.id, "deploy").await;
@@ -219,7 +219,7 @@ mod tests {
     #[tokio::test]
     async fn create_api_key_persists_note() {
         let pool = test_pool().await;
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         make_key(&pool, &account.id, "ci-key").await;

@@ -124,7 +124,7 @@ impl OysterTestHarness {
         // 3. Generate an operator account ID and derive its address from Pearl.
         let operator_account_id = oyster::AccountId::new();
         let operator_address = pearl
-            .get_address(&operator_account_id)
+            .get_address(&operator_account_id, pearl.active_key_version())
             .await
             .expect("failed to get operator Pearl address");
         eprintln!("[harness] operator address: {operator_address}");
@@ -482,7 +482,12 @@ async fn start_pearl_in_process() -> PearlConnection {
     let config = pearl::config::Config {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
-        master_seed: zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
+        master_seeds: [(
+            1,
+            zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
+        )]
+        .into(),
+        active_key_version: 1,
         tls_cert_path: None,
         tls_key_path: None,
         metrics_bind_addr: "127.0.0.1:0".into(),

@@ -312,9 +312,10 @@ async fn full_response(
 
 /// Helper: create an account directly via DB, returns (account_id, api_key_secret).
 async fn create_test_account(pool: &db::DbPool) -> (String, String) {
-    let account = db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None, None, None)
-        .await
-        .unwrap();
+    let account =
+        db::accounts::create_account(pool, &oyster::AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
@@ -1014,9 +1015,10 @@ async fn request_extend_clears_backoff_and_schedules_retry() {
 
     // Typed account (create_test_account only returns strings) so the
     // pool columns can be driven directly.
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
-        .await
-        .unwrap();
+    let account =
+        db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
     let raw_key = auth::generate_api_key();
     let key_hash = auth::hash_api_key(&raw_key);
     let prefix = auth::key_prefix(&raw_key);
@@ -1095,7 +1097,12 @@ async fn start_pearl() -> oyster::pearl_client::PearlConnection {
     let config = Config {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
-        master_seed: zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
+        master_seeds: [(
+            1,
+            zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
+        )]
+        .into(),
+        active_key_version: 1,
         tls_cert_path: None,
         tls_key_path: None,
         metrics_bind_addr: "127.0.0.1:0".into(),
@@ -1144,7 +1151,7 @@ async fn pearl_client_get_address() {
     let account_id = AccountId::new();
 
     // Fetch address through the wrapper — any account_id works now (stateless).
-    let address = pearl.get_address(&account_id).await.unwrap();
+    let address = pearl.get_address(&account_id, 1).await.unwrap();
     assert!(address.starts_with("0x"));
     assert_eq!(
         address.len(),
@@ -1153,7 +1160,7 @@ async fn pearl_client_get_address() {
     );
 
     // Same account_id returns the same address (deterministic).
-    let address2 = pearl.get_address(&account_id).await.unwrap();
+    let address2 = pearl.get_address(&account_id, 1).await.unwrap();
     assert_eq!(address, address2);
 }
 
@@ -1168,7 +1175,7 @@ async fn pearl_client_sign_transaction_success() {
     let pearl = start_pearl().await;
 
     let account_id = AccountId::new();
-    let address = pearl.get_address(&account_id).await.unwrap();
+    let address = pearl.get_address(&account_id, 1).await.unwrap();
 
     let sender: SuiAddress = address.parse().expect("valid SuiAddress");
     let gas_ref = (
@@ -1181,7 +1188,7 @@ async fn pearl_client_sign_transaction_success() {
     let tx_data_bytes = bcs::to_bytes(&tx_data).unwrap();
 
     let signed_bytes = pearl
-        .sign_transaction(&account_id, tx_data_bytes)
+        .sign_transaction(&account_id, 1, tx_data_bytes)
         .await
         .unwrap();
 
@@ -1197,7 +1204,7 @@ async fn pearl_client_sign_transaction_invalid_tx_data() {
     let pearl = start_pearl().await;
 
     let err = pearl
-        .sign_transaction(&AccountId::new(), vec![1, 2, 3])
+        .sign_transaction(&AccountId::new(), 1, vec![1, 2, 3])
         .await
         .unwrap_err();
     assert_eq!(err.code(), tonic::Code::InvalidArgument);
@@ -1773,9 +1780,10 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
-        .await
-        .unwrap();
+    let account =
+        db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
         .await
         .unwrap();
@@ -2064,9 +2072,10 @@ async fn test_s3_with_spy(
         metrics_handle: None,
     };
 
-    let account = db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None)
-        .await
-        .unwrap();
+    let account =
+        db::accounts::create_account(&pool, &oyster::AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
     let access_key = db::access_keys::create_access_key(&pool, &account.id)
         .await
         .unwrap();

@@ -74,8 +74,11 @@ pub async fn get_wallet(
         ));
     };
 
+    let key_version = db::accounts::get_key_version(&state.db, &auth.account_id)
+        .await?
+        .ok_or_else(|| AppError::Internal("authenticated account has no row".into()))?;
     let address = pearl
-        .get_address(&auth.account_id)
+        .get_address(&auth.account_id, key_version)
         .await
         .map_err(|e| AppError::Internal(format!("Pearl get_address failed: {e}")))?;
 

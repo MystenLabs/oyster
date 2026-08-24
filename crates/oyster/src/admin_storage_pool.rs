@@ -92,6 +92,7 @@ pub async fn decrease_storage_pool_capacity(
     pearl: &PearlConnection,
     rpc_url: &str,
     account_id: &AccountId,
+    key_version: u32,
     pool_object_id: ObjectID,
     extract_size: u64,
 ) -> Result<DecreaseOutcome, DecreaseError> {
@@ -105,7 +106,7 @@ pub async fn decrease_storage_pool_capacity(
         ));
     }
 
-    let sender = sui_transaction::resolve_sender_address(pearl, account_id)
+    let sender = sui_transaction::resolve_sender_address(pearl, account_id, key_version)
         .await
         .map_err(|e| DecreaseError::Internal(format!("resolve sender address: {e}")))?;
 
@@ -192,7 +193,7 @@ pub async fn decrease_storage_pool_capacity(
     .await
     .map_err(|e| DecreaseError::Upstream(format!("build_transaction_data: {e}")))?;
 
-    match sui_transaction::sign_and_submit(pearl, account_id, rpc_url, tx_data).await {
+    match sui_transaction::sign_and_submit(pearl, account_id, key_version, rpc_url, tx_data).await {
         Ok(outcome) => Ok(DecreaseOutcome {
             tx_digest: outcome.digest,
         }),

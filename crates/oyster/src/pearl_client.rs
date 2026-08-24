@@ -17,14 +17,21 @@ pub struct PearlConnection {
     /// gRPC health check client (unauthenticated).
     health_client: HealthClient<Channel>,
     service_secret: String,
+    /// Pearl's active key version at connect time. New accounts are
+    /// stamped with this; existing accounts always sign with their
+    /// stored per-account version, so a value that goes stale while a
+    /// rotation flips Pearl's active version only affects which (still
+    /// valid) version brand-new accounts land on until Oyster restarts.
+    active_key_version: u32,
 }
 
 impl PearlConnection {
-    /// Connect to a Pearl gRPC server at the given URL.
+    /// Connect to a Pearl gRPC server at the given URL and fetch its
+    /// active key version.
     pub async fn connect(
         url: &str,
         service_secret: String,
-    ) -> Result<Self, tonic::transport::Error> {
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let channel = if url.starts_with("https://") {
             let tls_config = tonic::transport::ClientTlsConfig::new().with_enabled_roots();
             tonic::transport::Endpoint::from_shared(url.to_string())
@@ -40,11 +47,26 @@ impl PearlConnection {
         };
         let client = PearlClient::new(channel.clone());
         let health_client = HealthClient::new(channel);
-        Ok(Self {
+        let mut conn = Self {
             client,
             health_client,
             service_secret,
-        })
+            active_key_version: 0,
+        };
+        let req = conn.authenticated(proto::GetActiveKeyVersionRequest {});
+        let resp = conn
+            .client
+            .get_active_key_version(req)
+            .await
+            .map_err(|e| format!("pearl get_active_key_version failed: {e}"))?
+            .into_inner();
+        conn.active_key_version = resp.key_version;
+        Ok(conn)
+    }
+
+    /// The key version Pearl stamps on newly created accounts.
+    pub fn active_key_version(&self) -> u32 {
+        self.active_key_version
     }
 
     fn authenticated<T>(&self, msg: T) -> Request<T> {
@@ -58,10 +80,16 @@ impl PearlConnection {
         req
     }
 
-    /// Get the Sui wallet address for a Pearl account.
-    pub async fn get_address(&self, account_id: &AccountId) -> Result<String, tonic::Status> {
+    /// Get the Sui wallet address for a Pearl account, derived from the
+    /// given master-seed version (the account's stored `key_version`).
+    pub async fn get_address(
+        &self,
+        account_id: &AccountId,
+        key_version: u32,
+    ) -> Result<String, tonic::Status> {
         let req = self.authenticated(proto::GetAddressRequest {
             account_id: account_id.as_bytes().to_vec(),
+            key_version,
         });
         let start = std::time::Instant::now();
         let result = self.client.clone().get_address(req).await;
@@ -89,14 +117,17 @@ impl PearlConnection {
         }
     }
 
-    /// Sign a transaction using the Pearl account's derived key.
+    /// Sign a transaction with the Pearl account's key, derived from the
+    /// given master-seed version (the account's stored `key_version`).
     pub async fn sign_transaction(
         &self,
         account_id: &AccountId,
+        key_version: u32,
         tx_data: Vec<u8>,
     ) -> Result<Vec<u8>, tonic::Status> {
         let req = self.authenticated(proto::SignTransactionRequest {
             account_id: account_id.as_bytes().to_vec(),
+            key_version,
             tx_data,
         });
         let start = std::time::Instant::now();

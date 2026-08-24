@@ -200,7 +200,13 @@ pub async fn run_extension_cycle_once(
 
         let sender_address = match address_cache.get(&pool.account_id) {
             Some(&addr) => addr,
-            None => match sui_transaction::resolve_sender_address(pearl, &pool.account_id).await {
+            None => match sui_transaction::resolve_sender_address(
+                pearl,
+                &pool.account_id,
+                pool.key_version,
+            )
+            .await
+            {
                 Ok(addr) => {
                     address_cache.insert(pool.account_id, addr);
                     addr
@@ -599,7 +605,7 @@ async fn extend_single_pool(
     .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, account_id, rpc_url, tx_data).await?;
+    sui_transaction::sign_and_submit(pearl, account_id, pool.key_version, rpc_url, tx_data).await?;
 
     Ok(())
 }
