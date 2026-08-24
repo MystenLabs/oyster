@@ -91,6 +91,31 @@ fn parse_versioned_seed_name(name: &str) -> Option<u32> {
     Some(version)
 }
 
+/// Extract `PEARL_MASTER_SEED_V<N>` seeds from an iterator of raw
+/// environment `(name, value)` pairs, returning `(version, seed)` pairs.
+///
+/// Takes `OsString`s (from `std::env::vars_os`) rather than `String`s
+/// because `std::env::vars` panics mid-iteration if *any* variable in
+/// the environment — Pearl-related or not — holds non-UTF-8 data, which
+/// would crash startup over an unrelated variable. A non-UTF-8 *name*
+/// can't match our ASCII prefix, so it is skipped; UTF-8 is only
+/// required for the *value* of a variable already identified as one of
+/// ours, and a malformed one panics with an explicit message.
+fn scan_versioned_seeds<I>(vars: I) -> Vec<(u32, Zeroizing<Vec<u8>>)>
+where
+    I: IntoIterator<Item = (std::ffi::OsString, std::ffi::OsString)>,
+{
+    vars.into_iter()
+        .filter_map(|(name, value)| {
+            let version = parse_versioned_seed_name(name.to_str()?)?;
+            let value = value.to_str().unwrap_or_else(|| {
+                panic!("master seed for key version {version} must be valid UTF-8 hex")
+            });
+            Some((version, decode_seed(version, value)))
+        })
+        .collect()
+}
+
 impl Config {
     /// Load configuration from environment variables, with optional secret overrides.
     pub fn new(overrides: SecretOverrides) -> Self {
@@ -109,14 +134,12 @@ impl Config {
         let mut master_seeds = BTreeMap::new();
         master_seeds.insert(1, decode_seed(1, &master_seed_hex));
 
-        for (name, value) in std::env::vars() {
-            if let Some(version) = parse_versioned_seed_name(&name) {
-                let previous = master_seeds.insert(version, decode_seed(version, &value));
-                assert!(
-                    previous.is_none(),
-                    "duplicate master seed for version {version}"
-                );
-            }
+        for (version, seed) in scan_versioned_seeds(std::env::vars_os()) {
+            let previous = master_seeds.insert(version, seed);
+            assert!(
+                previous.is_none(),
+                "duplicate master seed for version {version}"
+            );
         }
         for (version, seed_hex) in &overrides.versioned_master_seeds_hex {
             assert!(
@@ -214,6 +237,44 @@ mod tests {
     #[should_panic(expected = "at least 32 bytes")]
     fn short_seed_is_rejected() {
         decode_seed(1, "abcd");
+    }
+
+    #[test]
+    fn scan_ignores_non_utf8_and_unrelated_vars() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let vars = vec![
+            // Unrelated variable with a non-UTF-8 value: must not panic.
+            (
+                OsString::from("SOME_BINARY_VAR"),
+                OsString::from_vec(vec![0xff, 0xfe]),
+            ),
+            // Unrelated UTF-8 variable.
+            (OsString::from("PATH"), OsString::from("/usr/bin")),
+            // A real versioned seed.
+            (
+                OsString::from("PEARL_MASTER_SEED_V2"),
+                OsString::from("cd".repeat(32)),
+            ),
+        ];
+        let seeds = scan_versioned_seeds(vars);
+        assert_eq!(seeds.len(), 1);
+        assert_eq!(seeds[0].0, 2);
+        assert_eq!(seeds[0].1.as_slice(), vec![0xcd; 32].as_slice());
+    }
+
+    #[test]
+    #[should_panic(expected = "must be valid UTF-8 hex")]
+    fn scan_rejects_non_utf8_seed_value() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let vars = vec![(
+            OsString::from("PEARL_MASTER_SEED_V2"),
+            OsString::from_vec(vec![0xff; 32]),
+        )];
+        let _ = scan_versioned_seeds(vars);
     }
 
     fn test_config_with_seeds(versions: &[u32]) -> Config {
