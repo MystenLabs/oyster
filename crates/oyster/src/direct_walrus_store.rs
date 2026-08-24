@@ -333,9 +333,21 @@ impl DirectWalrusBlobStore {
         })
     }
 
+    /// Fetch the account's stored master-seed version. Every Pearl call
+    /// in a flow must use it so the account signs with its own wallet key
+    /// across seed rotations.
+    async fn account_key_version(&self, account_id: &AccountId) -> Result<u32, BlobStoreError> {
+        db::accounts::get_key_version(&self.db, account_id)
+            .await?
+            .ok_or_else(|| {
+                BlobStoreError::Internal(format!("account {account_id} not found in database"))
+            })
+    }
+
     async fn create_pool_for_account(
         &self,
         account_id: &AccountId,
+        key_version: u32,
         sender: SuiAddress,
         current_epoch: Epoch,
     ) -> Result<StoragePoolState, BlobStoreError> {
@@ -362,10 +374,15 @@ impl DirectWalrusBlobStore {
             .build_transaction_data(None)
             .await
             .map_err(|e| classify_create_pool_error(format!("build tx: {e}"), funding_estimate))?;
-        let resp =
-            sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
-                .await
-                .map_err(|e| classify_create_pool_error(e.to_string(), funding_estimate))?;
+        let resp = sui_transaction::sign_and_submit(
+            &self.pearl,
+            account_id,
+            key_version,
+            &self.rpc_url,
+            tx_data,
+        )
+        .await
+        .map_err(|e| classify_create_pool_error(e.to_string(), funding_estimate))?;
 
         let pool_object_id = extract_created_by_type(&resp, |module, name| {
             module == "storage_pool" && name == "StoragePool"
@@ -432,9 +449,11 @@ impl DirectWalrusBlobStore {
     ) -> Result<StoreResult, BlobStoreError> {
         // Pearl is a first-party internal service, so failures here are
         // genuinely server-internal rather than Sui/Walrus upstream errors.
-        let sender_address = sui_transaction::resolve_sender_address(&self.pearl, account_id)
-            .await
-            .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
+        let key_version = self.account_key_version(account_id).await?;
+        let sender_address =
+            sui_transaction::resolve_sender_address(&self.pearl, account_id, key_version)
+                .await
+                .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
 
         // 1. Encode the blob data. Encoding runs locally — failures here
         // are server-internal (RS2 encoder invariant), not upstream.
@@ -522,7 +541,7 @@ impl DirectWalrusBlobStore {
         let pool_state = match db::accounts::get_storage_pool(&self.db, account_id).await? {
             Some(state) => state,
             None => {
-                self.create_pool_for_account(account_id, sender_address, current_epoch)
+                self.create_pool_for_account(account_id, key_version, sender_address, current_epoch)
                     .await?
             }
         };
@@ -617,208 +636,214 @@ impl DirectWalrusBlobStore {
         // `applied_grow_by` in the eventual `update_pool_after_register`
         // delta below so the counters land at the correct post-state
         // whether or not we retried.
-        let (register_resp, applied_grow_by) =
-            match sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
-                .await
+        let (register_resp, applied_grow_by) = match sui_transaction::sign_and_submit(
+            &self.pearl,
+            account_id,
+            key_version,
+            &self.rpc_url,
+            tx_data,
+        )
+        .await
+        {
+            Ok(resp) => (resp, grow_by),
+            Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
+                if f.is_move_abort("storage_pool", "add_blob", 6) =>
             {
-                Ok(resp) => (resp, grow_by),
-                Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
-                    if f.is_move_abort("storage_pool", "add_blob", 6) =>
-                {
-                    tracing::warn!(
-                        account_id = %account_id,
-                        pool_object_id = %pool_object_id,
-                        abort = %f,
-                        db_reserved = pool_state.reserved_encoded_bytes,
-                        db_used = pool_state.used_encoded_bytes,
-                        "register PTB aborted with EInsufficientCapacity; \
-                         refreshing pool state from chain and retrying once",
-                    );
-                    let on_chain =
-                        sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
-                            .await
-                            .map_err(|e| {
-                                BlobStoreError::Upstream(format!(
-                                    "on-chain pool refresh after EInsufficientCapacity failed: {e}"
-                                ))
-                            })?;
-                    db::accounts::reconcile_pool_after_drift(
-                        &self.db,
-                        account_id,
-                        on_chain.reserved_encoded_bytes as i64,
-                        on_chain.used_encoded_bytes as i64,
-                    )
-                    .await?;
-
-                    // Recompute grow_by from the on-chain truth.
-                    let on_chain_remaining = (on_chain.reserved_encoded_bytes as i64)
-                        - (on_chain.used_encoded_bytes as i64);
-                    let retry_grow_by = grow_by_bytes(on_chain_remaining, encoded_size);
-
-                    // The abort means a concurrent upload consumed the
-                    // capacity this request's cap check was quoted
-                    // against, so that verdict is stale. Re-run the cap
-                    // gate against the refreshed usage before buying
-                    // more capacity — but only when the retry would buy
-                    // (`retry_grow_by > 0`): reserved pool capacity is
-                    // already paid for, and consuming it is allowed even
-                    // past the cap. Without this re-check the retry
-                    // would grow the pool straight through the cap in
-                    // exactly the raced case it exists to handle.
-                    if retry_grow_by > 0
-                        && let Err(violation) = storage_cap::enforce_storage_cap(
-                            cap_u64,
-                            on_chain.used_encoded_bytes,
-                            unencoded_size,
-                            avg_blob_size_u64,
-                            n_shards,
-                        )
-                    {
-                        return Err(cap_violation_to_error(violation));
-                    }
-
-                    let retry_grow_funding = if retry_grow_by > 0 {
-                        estimate_storage_funding(&self.read_client, retry_grow_by, remaining_epochs)
-                            .await
-                    } else {
-                        None
-                    };
-
-                    // Rebuild the PTB. The original `blob_obj_metadata`
-                    // was moved into the first builder, so reconstruct
-                    // it from `metadata` (same source as the first
-                    // attempt, just one extra cheap clone).
-                    let blob_obj_metadata_retry =
-                        BlobObjectMetadata::try_from(&metadata).map_err(|e| {
-                            BlobStoreError::Internal(format!("retry blob metadata error: {e}"))
-                        })?;
-                    let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
-                    if retry_grow_by > 0 {
-                        ptb.increase_storage_pool_capacity(
-                            pool_object_id,
-                            retry_grow_by,
-                            remaining_epochs,
-                        )
+                tracing::warn!(
+                    account_id = %account_id,
+                    pool_object_id = %pool_object_id,
+                    abort = %f,
+                    db_reserved = pool_state.reserved_encoded_bytes,
+                    db_used = pool_state.used_encoded_bytes,
+                    "register PTB aborted with EInsufficientCapacity; \
+                     refreshing pool state from chain and retrying once",
+                );
+                let on_chain =
+                    sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
                         .await
                         .map_err(|e| {
-                            classify_upstream_error(
-                                format!("retry increase_storage_pool_capacity: {e}"),
-                                retry_grow_funding,
-                            )
+                            BlobStoreError::Upstream(format!(
+                                "on-chain pool refresh after EInsufficientCapacity failed: {e}"
+                            ))
                         })?;
-                    }
-                    ptb.register_pooled_blobs(
-                        pool_object_id,
-                        vec![blob_obj_metadata_retry],
-                        BlobPersistence::Deletable,
+                db::accounts::reconcile_pool_after_drift(
+                    &self.db,
+                    account_id,
+                    on_chain.reserved_encoded_bytes as i64,
+                    on_chain.used_encoded_bytes as i64,
+                )
+                .await?;
+
+                // Recompute grow_by from the on-chain truth.
+                let on_chain_remaining =
+                    (on_chain.reserved_encoded_bytes as i64) - (on_chain.used_encoded_bytes as i64);
+                let retry_grow_by = grow_by_bytes(on_chain_remaining, encoded_size);
+
+                // The abort means a concurrent upload consumed the
+                // capacity this request's cap check was quoted
+                // against, so that verdict is stale. Re-run the cap
+                // gate against the refreshed usage before buying
+                // more capacity — but only when the retry would buy
+                // (`retry_grow_by > 0`): reserved pool capacity is
+                // already paid for, and consuming it is allowed even
+                // past the cap. Without this re-check the retry
+                // would grow the pool straight through the cap in
+                // exactly the raced case it exists to handle.
+                if retry_grow_by > 0
+                    && let Err(violation) = storage_cap::enforce_storage_cap(
+                        cap_u64,
+                        on_chain.used_encoded_bytes,
+                        unencoded_size,
+                        avg_blob_size_u64,
+                        n_shards,
                     )
-                    .await
-                    .map_err(|e| {
-                        classify_upstream_error(
-                            format!("retry register_pooled_blobs: {e}"),
-                            write_funding,
-                        )
-                    })?;
-                    let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
-                        classify_upstream_error(
-                            format!("retry build_transaction_data: {e}"),
-                            write_funding,
-                        )
-                    })?;
-                    let resp = sui_transaction::sign_and_submit(
-                        &self.pearl,
-                        account_id,
-                        &self.rpc_url,
-                        tx_data,
-                    )
-                    .await
-                    .map_err(|e| {
-                        classify_upstream_error(format!("retry register tx: {e}"), write_funding)
-                    })?;
-                    (resp, retry_grow_by)
-                }
-                Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
-                    if f.is_move_abort("dynamic_field", "add", 0) =>
                 {
-                    // `EFieldAlreadyExists` from `storage_pool::add_blob` —
-                    // a `PooledBlob` for `walrus_blob_id` is already
-                    // present in this pool's `blobs: ObjectTable<u256,
-                    // PooledBlob>`. Self-heal: look it up on-chain and
-                    // return Ok with the existing object ID. This
-                    // covers TOCTOU dedup races (two concurrent uploads
-                    // of the same content for one account both miss
-                    // the DB dedup) and orphans left behind when a
-                    // prior delete tx failed but its DB row was
-                    // dropped anyway.
-                    tracing::warn!(
-                        account_id = %account_id,
-                        pool_object_id = %pool_object_id,
-                        walrus_blob_id = %walrus_blob_id_str,
-                        abort = %f,
-                        "register PTB aborted with EFieldAlreadyExists; \
-                         self-healing via on-chain blob lookup",
-                    );
-                    let recovered = sui_object_reader::lookup_pooled_blob_object_id(
-                        &self.rpc_url,
+                    return Err(cap_violation_to_error(violation));
+                }
+
+                let retry_grow_funding = if retry_grow_by > 0 {
+                    estimate_storage_funding(&self.read_client, retry_grow_by, remaining_epochs)
+                        .await
+                } else {
+                    None
+                };
+
+                // Rebuild the PTB. The original `blob_obj_metadata`
+                // was moved into the first builder, so reconstruct
+                // it from `metadata` (same source as the first
+                // attempt, just one extra cheap clone).
+                let blob_obj_metadata_retry =
+                    BlobObjectMetadata::try_from(&metadata).map_err(|e| {
+                        BlobStoreError::Internal(format!("retry blob metadata error: {e}"))
+                    })?;
+                let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
+                if retry_grow_by > 0 {
+                    ptb.increase_storage_pool_capacity(
                         pool_object_id,
-                        &walrus_blob_id,
+                        retry_grow_by,
+                        remaining_epochs,
                     )
                     .await
                     .map_err(|e| {
-                        BlobStoreError::Upstream(format!(
-                            "on-chain blob lookup after EFieldAlreadyExists failed: {e}"
-                        ))
-                    })?
-                    .ok_or_else(|| {
-                        BlobStoreError::Internal(format!(
-                            "dynamic_field::add abort but blob {walrus_blob_id_str} not \
-                             found in pool {pool_object_id}"
-                        ))
+                        classify_upstream_error(
+                            format!("retry increase_storage_pool_capacity: {e}"),
+                            retry_grow_funding,
+                        )
                     })?;
-
-                    // Label the cause from what the DB knows. If a row
-                    // for this (account, blob_id) carrying a non-NULL
-                    // `pooled_blob_object_id` exists, the DB dedup
-                    // simply lost a TOCTOU race. Otherwise the on-chain
-                    // `PooledBlob` is an orphan from a prior
-                    // delete-tx-failed → DB-delete-only path.
-                    let cause = if db::blobs::find_pooled_blob_object_id_for_account(
-                        &self.db,
-                        account_id,
-                        &walrus_blob_id_str,
-                    )
-                    .await?
-                    .is_some()
-                    {
-                        "db_miss"
-                    } else {
-                        "orphan_recovered"
-                    };
-                    metrics::counter!(
-                        crate::metrics::REGISTER_DEDUP_SELF_HEAL_TOTAL,
-                        "cause" => cause,
-                    )
-                    .increment(1);
-
-                    // Skip `update_pool_after_register` and the certify
-                    // step: the on-chain `used_encoded_bytes` already
-                    // accounts for this PooledBlob, and re-certifying
-                    // an already-registered blob is unnecessary (the
-                    // existing DB-dedup short-circuit above also skips
-                    // certify).
-                    return Ok(StoreResult {
-                        blob_id: BlobId(walrus_blob_id_str),
-                        pooled_blob_object_id: Some(recovered.to_string()),
-                        encoded_size: Some(encoded_size),
-                    });
                 }
-                Err(e) => {
-                    return Err(classify_upstream_error(
-                        format!("register tx error: {e}"),
+                ptb.register_pooled_blobs(
+                    pool_object_id,
+                    vec![blob_obj_metadata_retry],
+                    BlobPersistence::Deletable,
+                )
+                .await
+                .map_err(|e| {
+                    classify_upstream_error(
+                        format!("retry register_pooled_blobs: {e}"),
                         write_funding,
-                    ));
-                }
-            };
+                    )
+                })?;
+                let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
+                    classify_upstream_error(
+                        format!("retry build_transaction_data: {e}"),
+                        write_funding,
+                    )
+                })?;
+                let resp = sui_transaction::sign_and_submit(
+                    &self.pearl,
+                    account_id,
+                    key_version,
+                    &self.rpc_url,
+                    tx_data,
+                )
+                .await
+                .map_err(|e| {
+                    classify_upstream_error(format!("retry register tx: {e}"), write_funding)
+                })?;
+                (resp, retry_grow_by)
+            }
+            Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
+                if f.is_move_abort("dynamic_field", "add", 0) =>
+            {
+                // `EFieldAlreadyExists` from `storage_pool::add_blob` —
+                // a `PooledBlob` for `walrus_blob_id` is already
+                // present in this pool's `blobs: ObjectTable<u256,
+                // PooledBlob>`. Self-heal: look it up on-chain and
+                // return Ok with the existing object ID. This
+                // covers TOCTOU dedup races (two concurrent uploads
+                // of the same content for one account both miss
+                // the DB dedup) and orphans left behind when a
+                // prior delete tx failed but its DB row was
+                // dropped anyway.
+                tracing::warn!(
+                    account_id = %account_id,
+                    pool_object_id = %pool_object_id,
+                    walrus_blob_id = %walrus_blob_id_str,
+                    abort = %f,
+                    "register PTB aborted with EFieldAlreadyExists; \
+                     self-healing via on-chain blob lookup",
+                );
+                let recovered = sui_object_reader::lookup_pooled_blob_object_id(
+                    &self.rpc_url,
+                    pool_object_id,
+                    &walrus_blob_id,
+                )
+                .await
+                .map_err(|e| {
+                    BlobStoreError::Upstream(format!(
+                        "on-chain blob lookup after EFieldAlreadyExists failed: {e}"
+                    ))
+                })?
+                .ok_or_else(|| {
+                    BlobStoreError::Internal(format!(
+                        "dynamic_field::add abort but blob {walrus_blob_id_str} not \
+                             found in pool {pool_object_id}"
+                    ))
+                })?;
+
+                // Label the cause from what the DB knows. If a row
+                // for this (account, blob_id) carrying a non-NULL
+                // `pooled_blob_object_id` exists, the DB dedup
+                // simply lost a TOCTOU race. Otherwise the on-chain
+                // `PooledBlob` is an orphan from a prior
+                // delete-tx-failed → DB-delete-only path.
+                let cause = if db::blobs::find_pooled_blob_object_id_for_account(
+                    &self.db,
+                    account_id,
+                    &walrus_blob_id_str,
+                )
+                .await?
+                .is_some()
+                {
+                    "db_miss"
+                } else {
+                    "orphan_recovered"
+                };
+                metrics::counter!(
+                    crate::metrics::REGISTER_DEDUP_SELF_HEAL_TOTAL,
+                    "cause" => cause,
+                )
+                .increment(1);
+
+                // Skip `update_pool_after_register` and the certify
+                // step: the on-chain `used_encoded_bytes` already
+                // accounts for this PooledBlob, and re-certifying
+                // an already-registered blob is unnecessary (the
+                // existing DB-dedup short-circuit above also skips
+                // certify).
+                return Ok(StoreResult {
+                    blob_id: BlobId(walrus_blob_id_str),
+                    pooled_blob_object_id: Some(recovered.to_string()),
+                    encoded_size: Some(encoded_size),
+                });
+            }
+            Err(e) => {
+                return Err(classify_upstream_error(
+                    format!("register tx error: {e}"),
+                    write_funding,
+                ));
+            }
+        };
 
         tracing::info!(tx_digest = %register_resp.digest, "register tx submitted");
 
@@ -880,13 +905,19 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data error: {e}")))?;
 
-        sui_transaction::sign_and_submit(&self.pearl, account_id, &self.rpc_url, tx_data)
-            .await
-            .map_err(|e| {
-                // Certify doesn't take new funds (it consumes the registered
-                // blob slot), so we don't attach a funding estimate here.
-                classify_upstream_error(format!("certify tx error: {e}"), None)
-            })?;
+        sui_transaction::sign_and_submit(
+            &self.pearl,
+            account_id,
+            key_version,
+            &self.rpc_url,
+            tx_data,
+        )
+        .await
+        .map_err(|e| {
+            // Certify doesn't take new funds (it consumes the registered
+            // blob slot), so we don't attach a funding estimate here.
+            classify_upstream_error(format!("certify tx error: {e}"), None)
+        })?;
 
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id_str),
@@ -957,9 +988,13 @@ impl BlobStore for DirectWalrusBlobStore {
                 .parse()
                 .map_err(|e| BlobStoreError::Internal(format!("invalid walrus blob_id: {e}")))?;
 
-            let sender_address = sui_transaction::resolve_sender_address(&self.pearl, &account_id)
-                .await
-                .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
+            let key_version = self.account_key_version(&account_id).await?;
+            let sender_address =
+                sui_transaction::resolve_sender_address(&self.pearl, &account_id, key_version)
+                    .await
+                    .map_err(|e| {
+                        BlobStoreError::Internal(format!("resolve sender address: {e}"))
+                    })?;
 
             let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
             ptb.delete_pooled_blob(pool_object_id, walrus_blob_id)
@@ -969,14 +1004,20 @@ impl BlobStore for DirectWalrusBlobStore {
                 .build_transaction_data(None)
                 .await
                 .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data: {e}")))?;
-            sui_transaction::sign_and_submit(&self.pearl, &account_id, &self.rpc_url, tx_data)
-                .await
-                .map_err(|e| {
-                    // The delete path only needs SUI gas; the FE can already
-                    // infer the SUI buffer from `/account/wallet`, so we
-                    // intentionally don't attach a WAL funding estimate here.
-                    classify_upstream_error(format!("delete tx: {e}"), None)
-                })?;
+            sui_transaction::sign_and_submit(
+                &self.pearl,
+                &account_id,
+                key_version,
+                &self.rpc_url,
+                tx_data,
+            )
+            .await
+            .map_err(|e| {
+                // The delete path only needs SUI gas; the FE can already
+                // infer the SUI buffer from `/account/wallet`, so we
+                // intentionally don't attach a WAL funding estimate here.
+                classify_upstream_error(format!("delete tx: {e}"), None)
+            })?;
 
             if encoded_size > 0 {
                 db::accounts::update_pool_after_delete(&self.db, &account_id, encoded_size as i64)

@@ -23,7 +23,7 @@ API request → Oyster auth (Blake2s-256 hashed Bearer token) → route handler 
 
 ### Database
 
-Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `access_keys`, `buckets`, `blobs`, `blob_tags`, `apps`, `app_admin_keys`, `audit_events`, `dead_letter_orphans`, and the web-signup set (`users`, `user_identities`, `web_sessions`, `signup_requests`, `oauth_attempts`). Pearl is stateless — keys are derived on-the-fly from `PEARL_MASTER_SEED` via HKDF-SHA256.
+Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev) and PostgreSQL (production). The backend is determined at runtime by the connection URL. SQLite uses WAL journal mode. Migration-based schema management with separate migration sets under `crates/oyster/migrations/sqlite/` and `crates/oyster/migrations/postgres/`. Tables: `accounts`, `api_keys`, `access_keys`, `buckets`, `blobs`, `blob_tags`, `apps`, `app_admin_keys`, `audit_events`, `dead_letter_orphans`, and the web-signup set (`users`, `user_identities`, `web_sessions`, `signup_requests`, `oauth_attempts`). Pearl is stateless — keys are derived on-the-fly from versioned master seeds (`PEARL_MASTER_SEED` = version 1, `PEARL_MASTER_SEED_V<N>` for later rotations) via HKDF-SHA256; each account's `accounts.key_version` records which seed its wallet derives from.
 
 ### Proto
 
@@ -48,7 +48,7 @@ Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev
 Oyster and Pearl are configured via environment variables (see `crates/oyster/src/config.rs` and `crates/pearl/src/config.rs`). Key vars:
 - Oyster: `BIND_ADDR`, `DATABASE_URL`, `PEARL_GRPC_URL`, `PEARL_SERVICE_SECRET`, `SUI_RPC_URL`. Supported SQLite floor is ≥ 3.35 (for `ALTER TABLE … DROP COLUMN`).
 - Oyster web signup (all five required to enable; see `.env.example`): `OYSTER_PUBLIC_BASE_URL`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`; plus `OYSTER_SIGNUP_MODE` (`open`|`waitlist`|`closed`, default `closed`), `OYSTER_SIGNUP_ALLOWED_DOMAINS`, `OYSTER_MAX_ADMIN_KEYS_PER_APP` (default 5). Waitlist review via `oysterd signup list|approve|reject`.
-- Pearl: `PEARL_BIND_ADDR`, `PEARL_SERVICE_SECRET`, `PEARL_MASTER_SEED`, `PEARL_METRICS_BIND_ADDR`, optional TLS via `PEARL_TLS_CERT_PATH`/`PEARL_TLS_KEY_PATH`
+- Pearl: `PEARL_BIND_ADDR`, `PEARL_SERVICE_SECRET`, `PEARL_MASTER_SEED` (key version 1), `PEARL_MASTER_SEED_V<N>` (additional seed versions for rotation), `PEARL_ACTIVE_KEY_VERSION` (version stamped on new accounts, default 1), `PEARL_METRICS_BIND_ADDR`, optional TLS via `PEARL_TLS_CERT_PATH`/`PEARL_TLS_KEY_PATH`
 
 ## OpenAPI Docs
 

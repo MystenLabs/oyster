@@ -177,12 +177,14 @@ pub fn build_sui_grpc_client(
     Ok(SuiGrpcClient::new(rpc_url)?)
 }
 
-/// Resolve a Pearl account ID to its Sui wallet address.
+/// Resolve a Pearl account ID to its Sui wallet address. `key_version`
+/// is the account's stored master-seed version.
 pub async fn resolve_sender_address(
     pearl: &PearlConnection,
     account_id: &AccountId,
+    key_version: u32,
 ) -> Result<SuiAddress, Box<dyn std::error::Error + Send + Sync>> {
-    let address = pearl.get_address(account_id).await?;
+    let address = pearl.get_address(account_id, key_version).await?;
     let addr = address.parse()?;
     Ok(addr)
 }
@@ -194,6 +196,7 @@ pub async fn resolve_sender_address(
 pub async fn sign_and_submit(
     pearl: &PearlConnection,
     account_id: &AccountId,
+    key_version: u32,
     rpc_url: &str,
     tx_data: TransactionData,
 ) -> Result<SignedTxOutcome, SignAndSubmitError> {
@@ -201,7 +204,7 @@ pub async fn sign_and_submit(
     // `Transaction` envelope (intent message + signatures).
     let tx_bytes = bcs::to_bytes(&tx_data)?;
     let signed_bytes = pearl
-        .sign_transaction(account_id, tx_bytes)
+        .sign_transaction(account_id, key_version, tx_bytes)
         .await
         .map_err(|e| format!("pearl sign error: {e}"))?;
     let signed_tx: Transaction = bcs::from_bytes(&signed_bytes)?;

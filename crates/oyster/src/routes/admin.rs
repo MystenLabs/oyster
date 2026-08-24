@@ -93,12 +93,17 @@ pub async fn create_account(
     let avg_blob_size =
         Some(avg_blob_size.unwrap_or_else(|| clamp_u64_to_i64(state.config.default_avg_blob_size)));
     let note = body.and_then(|b| b.note).unwrap_or_else(|| "api".into());
+    // Stamp the new account with Pearl's active master-seed version so
+    // its wallet derives from the current seed; local-only deployments
+    // (no Pearl) fall back to version 1.
+    let key_version = state.pearl.as_ref().map(|p| p.active_key_version());
     let account = db::accounts::create_account(
         &state.db,
         &auth.app_id,
         name.as_deref(),
         max_unencoded_bytes,
         avg_blob_size,
+        key_version,
     )
     .await?;
 
@@ -617,11 +622,15 @@ pub async fn update_max_storage(
     let mut shrink_tx_digest: Option<String> = None;
     if reserved_encoded > threshold {
         let extract_size = reserved_encoded - threshold;
+        let key_version = db::accounts::get_key_version(&state.db, &account_id)
+            .await?
+            .ok_or_else(|| AppError::Internal("account has no row".into()))?;
         match admin_storage_pool::decrease_storage_pool_capacity(
             read_client.as_ref(),
             pearl,
             rpc_url,
             &account_id,
+            key_version,
             pool_object_id,
             extract_size,
         )

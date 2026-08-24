@@ -17,15 +17,16 @@ use tonic::{Request, transport::Channel};
 
 const TEST_SECRET: &str = "test-secret-42";
 
-fn test_seed() -> zeroize::Zeroizing<Vec<u8>> {
-    zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).unwrap())
+fn test_seed(byte: &str) -> zeroize::Zeroizing<Vec<u8>> {
+    zeroize::Zeroizing::new(hex::decode(byte.repeat(32)).unwrap())
 }
 
 fn test_config() -> Config {
     Config {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: TEST_SECRET.into(),
-        master_seed: test_seed(),
+        master_seeds: [(1, test_seed("ab")), (2, test_seed("cd"))].into(),
+        active_key_version: 2,
         tls_cert_path: None,
         tls_key_path: None,
         metrics_bind_addr: "127.0.0.1:0".into(),
@@ -101,6 +102,7 @@ async fn get_address() {
     let address_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
             account_id: account_id.to_vec(),
+            key_version: 0,
         }))
         .await
         .unwrap()
@@ -131,6 +133,7 @@ async fn sign_transaction_invalid_tx_data() {
         .sign_transaction(authenticated(proto::SignTransactionRequest {
             account_id: b"test-account-2".to_vec(),
             tx_data: vec![1, 2, 3],
+            key_version: 0,
         }))
         .await
         .unwrap_err();
@@ -148,6 +151,7 @@ async fn sign_transaction_success() {
     let address_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
             account_id: account_id.to_vec(),
+            key_version: 0,
         }))
         .await
         .unwrap()
@@ -161,6 +165,7 @@ async fn sign_transaction_success() {
         .sign_transaction(authenticated(proto::SignTransactionRequest {
             account_id: account_id.to_vec(),
             tx_data: tx_data_bytes,
+            key_version: 0,
         }))
         .await
         .unwrap()
@@ -184,6 +189,7 @@ async fn auth_rejection_no_token() {
     let status = client
         .get_address(Request::new(proto::GetAddressRequest {
             account_id: b"test".to_vec(),
+            key_version: 0,
         }))
         .await
         .unwrap_err();
@@ -197,6 +203,7 @@ async fn auth_rejection_wrong_token() {
 
     let mut req = Request::new(proto::GetAddressRequest {
         account_id: b"test".to_vec(),
+        key_version: 0,
     });
     req.metadata_mut()
         .insert("authorization", "Bearer wrong-secret".parse().unwrap());
@@ -214,6 +221,7 @@ async fn get_address_deterministic() {
     let first_resp = client
         .get_address(authenticated(proto::GetAddressRequest {
             account_id: account_id.to_vec(),
+            key_version: 0,
         }))
         .await
         .unwrap()
@@ -224,6 +232,7 @@ async fn get_address_deterministic() {
         let resp = client
             .get_address(authenticated(proto::GetAddressRequest {
                 account_id: account_id.to_vec(),
+                key_version: 0,
             }))
             .await
             .unwrap()
@@ -246,6 +255,7 @@ async fn multiple_accounts_unique() {
         let resp = client
             .get_address(authenticated(proto::GetAddressRequest {
                 account_id: format!("unique-account-{i}").into_bytes(),
+                key_version: 0,
             }))
             .await
             .unwrap()
@@ -289,6 +299,69 @@ async fn health_check_without_auth() {
         resp.status(),
         tonic_health::pb::health_check_response::ServingStatus::Serving
     );
+}
+
+async fn address_for_version(client: &mut PearlClient<Channel>, key_version: u32) -> String {
+    client
+        .get_address(authenticated(proto::GetAddressRequest {
+            account_id: b"versioned-account".to_vec(),
+            key_version,
+        }))
+        .await
+        .unwrap()
+        .into_inner()
+        .address
+}
+
+#[tokio::test]
+async fn key_version_zero_is_version_one() {
+    let (mut client, _url) = start_server().await;
+    let legacy = address_for_version(&mut client, 0).await;
+    let v1 = address_for_version(&mut client, 1).await;
+    assert_eq!(legacy, v1, "key_version 0 must derive the version-1 key");
+}
+
+#[tokio::test]
+async fn key_versions_derive_distinct_addresses() {
+    let (mut client, _url) = start_server().await;
+    let v1 = address_for_version(&mut client, 1).await;
+    let v2 = address_for_version(&mut client, 2).await;
+    assert_ne!(v1, v2, "different seed versions must derive different keys");
+}
+
+#[tokio::test]
+async fn unknown_key_version_is_rejected() {
+    let (mut client, _url) = start_server().await;
+
+    let status = client
+        .get_address(authenticated(proto::GetAddressRequest {
+            account_id: b"versioned-account".to_vec(),
+            key_version: 9,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+
+    let status = client
+        .sign_transaction(authenticated(proto::SignTransactionRequest {
+            account_id: b"versioned-account".to_vec(),
+            tx_data: vec![1, 2, 3],
+            key_version: 9,
+        }))
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), tonic::Code::FailedPrecondition);
+}
+
+#[tokio::test]
+async fn get_active_key_version_reports_configured_version() {
+    let (mut client, _url) = start_server().await;
+    let resp = client
+        .get_active_key_version(authenticated(proto::GetActiveKeyVersionRequest {}))
+        .await
+        .unwrap()
+        .into_inner();
+    assert_eq!(resp.key_version, 2);
 }
 
 #[tokio::test]

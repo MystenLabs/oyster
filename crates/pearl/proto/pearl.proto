@@ -5,10 +5,14 @@ package pearl;
 service Pearl {
   rpc GetAddress(GetAddressRequest) returns (GetAddressResponse);
   rpc SignTransaction(SignTransactionRequest) returns (SignTransactionResponse);
+  rpc GetActiveKeyVersion(GetActiveKeyVersionRequest) returns (GetActiveKeyVersionResponse);
 }
 
 message GetAddressRequest {
   bytes account_id = 1;
+  // Master-seed version to derive from. 0 (the proto3 default, sent by
+  // clients that predate key versioning) is treated as version 1.
+  uint32 key_version = 2;
 }
 
 message GetAddressResponse {
@@ -18,8 +22,19 @@ message GetAddressResponse {
 message SignTransactionRequest {
   bytes tx_data = 1;
   bytes account_id = 2;
+  // Master-seed version to derive the signing key from. 0 (the proto3
+  // default, sent by clients that predate key versioning) is treated as
+  // version 1.
+  uint32 key_version = 3;
 }
 
 message SignTransactionResponse {
   bytes signed_transaction = 1;
+}
+
+message GetActiveKeyVersionRequest {}
+
+message GetActiveKeyVersionResponse {
+  // The seed version newly created accounts should be stamped with.
+  uint32 key_version = 1;
 }

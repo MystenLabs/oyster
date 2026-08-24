@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+### Added
+- Master-seed key versioning across Pearl and Oyster, laying the
+  groundwork for future seed rotation. Pearl can now hold multiple
+  master seeds — the existing `PEARL_MASTER_SEED` stays version 1
+  (no deployment changes needed), additional seeds are configured as
+  `PEARL_MASTER_SEED_V<N>` (or `--pearl-master-seed-version-file N:PATH`),
+  and `PEARL_ACTIVE_KEY_VERSION` (default 1) selects the version stamped
+  onto newly created accounts. Each account records its seed version in a
+  new `accounts.key_version` column (migration 024, default 1) and every
+  Pearl `GetAddress`/`SignTransaction` call now carries that version, so
+  existing accounts keep deriving their original wallet keys after a
+  rotation flips the active version. Requests without a version (older
+  Oyster binaries) resolve to version 1; requests for an unconfigured
+  version are refused (`FAILED_PRECONDITION`) rather than falling back.
+  Note: versioning alone does not shrink the blast radius of a leaked
+  seed — accounts stay on their original version until the (future)
+  on-chain migration tooling moves their assets to a new-version address.
+  Deploy order: Pearl before Oyster (Oyster queries the new
+  `GetActiveKeyVersion` RPC at startup).
+
 ### Fixed
 - The signup landing page's `Content-Security-Policy` no longer blocks the
   Cloudflare Turnstile widget. The 0.14.0 signup hardening applied a

@@ -18,9 +18,25 @@ struct Cli {
     #[arg(long, value_name = "PATH")]
     pearl_service_secret_file: Option<PathBuf>,
 
-    /// Read PEARL_MASTER_SEED from this file instead of the environment.
+    /// Read PEARL_MASTER_SEED (key version 1) from this file instead of the environment.
     #[arg(long, value_name = "PATH")]
     pearl_master_seed_file: Option<PathBuf>,
+
+    /// Read a master seed for key version N (>= 2) from a file, as
+    /// `N:PATH` (equivalent to setting PEARL_MASTER_SEED_V<N>). Repeatable.
+    #[arg(long, value_name = "VERSION:PATH")]
+    pearl_master_seed_version_file: Vec<String>,
+}
+
+/// Parse one `VERSION:PATH` value from `--pearl-master-seed-version-file`.
+fn parse_versioned_seed_arg(arg: &str) -> (u32, PathBuf) {
+    let (version, path) = arg.split_once(':').unwrap_or_else(|| {
+        panic!("--pearl-master-seed-version-file expects VERSION:PATH, got {arg}")
+    });
+    let version = version.parse().unwrap_or_else(|_| {
+        panic!("--pearl-master-seed-version-file expects a numeric version, got {arg}")
+    });
+    (version, PathBuf::from(path))
 }
 
 #[tokio::main]
@@ -40,9 +56,22 @@ async fn main() {
         master_seed_hex: cli
             .pearl_master_seed_file
             .map(|p| Zeroizing::new(read_secret_file(p))),
+        versioned_master_seeds_hex: cli
+            .pearl_master_seed_version_file
+            .iter()
+            .map(|arg| {
+                let (version, path) = parse_versioned_seed_arg(arg);
+                (version, Zeroizing::new(read_secret_file(path)))
+            })
+            .collect(),
     };
     let config = Config::new(overrides);
-    tracing::info!("pearl starting on {}", config.bind_addr);
+    tracing::info!(
+        "pearl starting on {} (seed versions {:?}, active {})",
+        config.bind_addr,
+        config.master_seeds.keys().collect::<Vec<_>>(),
+        config.active_key_version
+    );
 
     let metrics_handle = pearl::metrics::setup();
 

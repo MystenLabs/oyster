@@ -269,7 +269,7 @@ mod tests {
     #[tokio::test]
     async fn skips_when_encoded_size_is_none() {
         let pool = db::create_pool("sqlite::memory:").await.unwrap();
-        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None)
+        let account = db::accounts::create_account(&pool, &AppId::INTERNAL, None, None, None, None)
             .await
             .unwrap();
         let blob_store = Arc::new(RecordingBlobStore::new());
