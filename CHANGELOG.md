@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `OYSTER_SIGNUP_ALLOWED_EMAILS`: a comma-separated allowlist of
+  individual Google-verified emails that skip the waitlist queue,
+  complementing `OYSTER_SIGNUP_ALLOWED_DOMAINS`. Unlike `signup approve`
+  — which can only flip an existing request, and so requires the person
+  to have signed in once (approval is keyed on the Google `sub`) — this
+  admits a named person on their first sign-in with no prior request
+  row, because the gate matches the verified email directly.
+
 ## [0.14.1] - 2026-08-24
 
 ### Added

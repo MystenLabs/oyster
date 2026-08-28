@@ -622,6 +622,13 @@ fn email_domain_allowed(allowed_domains: &[String], email: &str) -> bool {
     allowed_domains.contains(&domain)
 }
 
+/// Whether the (verified) email is individually allowlisted. Comparison
+/// is case-insensitive, matching how the list is parsed and how Google
+/// normalizes addresses.
+fn email_allowed(allowed_emails: &[String], email: &str) -> bool {
+    allowed_emails.contains(&email.to_lowercase())
+}
+
 /// Outcome of gating a brand-new identity.
 enum Gate {
     /// Proceed with signup on this very sign-in.
@@ -645,7 +652,13 @@ async fn gate_new_identity(
             "New signups are not being accepted right now.",
         ))),
         SignupMode::Waitlist => {
-            if email_domain_allowed(&service.config.allowed_domains, &identity.email) {
+            // Pre-authorized by domain or by individual email → straight
+            // through, no request row needed. The email check admits a
+            // named person on their first sign-in without knowing their
+            // Google `sub` in advance.
+            if email_domain_allowed(&service.config.allowed_domains, &identity.email)
+                || email_allowed(&service.config.allowed_emails, &identity.email)
+            {
                 return Ok(Gate::Admit);
             }
             let existing = db::signup_requests::find_by_identity(
@@ -1068,6 +1081,7 @@ mod tests {
             config: SignupConfig {
                 mode,
                 allowed_domains: allowed_domains.iter().map(|d| d.to_string()).collect(),
+                allowed_emails: Vec::new(),
                 env_label: Some("Testnet".into()),
                 google_auth_url: None,
                 google_token_url: None,
@@ -1920,6 +1934,50 @@ mod tests {
         assert!(!email_domain_allowed(&domains, "a@sub.example.com"));
         assert!(!email_domain_allowed(&domains, "no-at-sign"));
         assert!(!email_domain_allowed(&[], "a@example.com"));
+    }
+
+    #[test]
+    fn email_matching_is_case_insensitive_and_exact() {
+        let emails = vec!["vip@outside.com".to_string()];
+        assert!(email_allowed(&emails, "vip@outside.com"));
+        assert!(email_allowed(&emails, "VIP@Outside.com"));
+        assert!(!email_allowed(&emails, "other@outside.com"));
+        assert!(!email_allowed(&emails, "vip@elsewhere.com"));
+        assert!(!email_allowed(&[], "vip@outside.com"));
+    }
+
+    /// An individually allowlisted email skips the waitlist on its first
+    /// sign-in — no prior request row and no domain match required.
+    #[tokio::test]
+    async fn allowed_email_bypasses_waitlist() {
+        let google = mock_google("sub-email-1", "vip@outside.com", true).await;
+        let turnstile = mock_turnstile().await;
+        let mut service = test_service(SignupMode::Waitlist, &google, &turnstile).await;
+        // Domain is NOT allowlisted; only the individual email is.
+        service.config.allowed_emails = vec!["vip@outside.com".into()];
+        let base = serve(service.clone()).await;
+
+        let callback = sign_in(&base).await;
+        assert_eq!(callback.status(), 200);
+        assert!(callback.text().await.unwrap().contains("Your app is ready"));
+
+        // Admitted directly: user created, no signup request filed.
+        assert!(
+            db::users::find_user_by_identity(&service.db, IdentityProvider::Google, "sub-email-1")
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            db::signup_requests::find_by_identity(
+                &service.db,
+                IdentityProvider::Google,
+                "sub-email-1"
+            )
+            .await
+            .unwrap()
+            .is_none()
+        );
     }
 
     #[test]

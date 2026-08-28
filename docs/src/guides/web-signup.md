@@ -44,6 +44,7 @@ Behavior knobs (optional):
 | --- | --- | --- |
 | `OYSTER_SIGNUP_MODE` | `closed` | `open` (anyone signs up), `waitlist` (operator approves), `closed` (no new signups; existing users still sign in) |
 | `OYSTER_SIGNUP_ALLOWED_DOMAINS` | — | Comma-separated email domains that skip the waitlist (Google-verified emails only) |
+| `OYSTER_SIGNUP_ALLOWED_EMAILS` | — | Comma-separated individual emails that skip the waitlist (Google-verified). Pre-authorizes named people without opening their whole domain, and works before they've ever signed in |
 | `OYSTER_MAX_ADMIN_KEYS_PER_APP` | `5` | Active-key cap on web issuance (the operator CLI bypasses it) |
 | `OYSTER_SIGNUP_ENV_LABEL` | — | Badge ("Testnet", "Mainnet", …) on the signup pages; set it when running multiple deployments so users can tell them apart |
 
@@ -73,6 +74,15 @@ oysterd signup reject <id-or-email>
 
 No email is sent on approval: the user simply signs in again, and that
 sign-in completes signup and shows their admin key.
+
+`oysterd signup approve` only flips an **existing** request — one filed
+when the person first signed in — because approval is matched on the
+Google `sub`, which you don't have until they authenticate. To
+pre-authorize someone who has *not* signed in yet, add their address to
+`OYSTER_SIGNUP_ALLOWED_EMAILS` (or their domain to
+`OYSTER_SIGNUP_ALLOWED_DOMAINS`): the gate matches the Google-verified
+email at sign-in time, so no prior request row or `sub` is needed. These
+lists are read from the environment, so changes take effect on restart.
 
 ## Local development
 

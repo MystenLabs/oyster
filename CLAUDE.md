@@ -47,7 +47,7 @@ Oyster uses SQLx with the `Any` driver, supporting SQLite (default for local dev
 
 Oyster and Pearl are configured via environment variables (see `crates/oyster/src/config.rs` and `crates/pearl/src/config.rs`). Key vars:
 - Oyster: `BIND_ADDR`, `DATABASE_URL`, `PEARL_GRPC_URL`, `PEARL_SERVICE_SECRET`, `SUI_RPC_URL`. Supported SQLite floor is ≥ 3.35 (for `ALTER TABLE … DROP COLUMN`).
-- Oyster web signup (all five required to enable; see `.env.example`): `OYSTER_PUBLIC_BASE_URL`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`; plus `OYSTER_SIGNUP_MODE` (`open`|`waitlist`|`closed`, default `closed`), `OYSTER_SIGNUP_ALLOWED_DOMAINS`, `OYSTER_MAX_ADMIN_KEYS_PER_APP` (default 5). Waitlist review via `oysterd signup list|approve|reject`.
+- Oyster web signup (all five required to enable; see `.env.example`): `OYSTER_PUBLIC_BASE_URL`, `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`; plus `OYSTER_SIGNUP_MODE` (`open`|`waitlist`|`closed`, default `closed`), `OYSTER_SIGNUP_ALLOWED_DOMAINS`, `OYSTER_SIGNUP_ALLOWED_EMAILS` (individual emails that skip the waitlist; pre-authorizes people before their first sign-in), `OYSTER_MAX_ADMIN_KEYS_PER_APP` (default 5). Waitlist review via `oysterd signup list|approve|reject`.
 - Pearl: `PEARL_BIND_ADDR`, `PEARL_SERVICE_SECRET`, `PEARL_MASTER_SEED` (key version 1), `PEARL_MASTER_SEED_V<N>` (additional seed versions for rotation), `PEARL_ACTIVE_KEY_VERSION` (version stamped on new accounts, default 1), `PEARL_METRICS_BIND_ADDR`, optional TLS via `PEARL_TLS_CERT_PATH`/`PEARL_TLS_KEY_PATH`
 
 ## OpenAPI Docs

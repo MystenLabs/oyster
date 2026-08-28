@@ -46,6 +46,13 @@ pub struct SignupConfig {
     /// Email domains (lowercase, no `@`) whose Google-verified users
     /// skip the waitlist queue.
     pub allowed_domains: Vec<String>,
+    /// Individual Google-verified emails (lowercase) that skip the
+    /// waitlist queue. Complements [`allowed_domains`](Self::allowed_domains)
+    /// for pre-authorizing named people without opening their whole
+    /// domain, and works before the person has ever signed in (the gate
+    /// matches the verified email, so it needs no prior request row or
+    /// Google `sub`).
+    pub allowed_emails: Vec<String>,
     /// Public base URL of this server (e.g. `https://oyster.example.com`),
     /// used to build the OAuth redirect URI. No trailing slash.
     pub public_base_url: String,
@@ -75,6 +82,7 @@ impl fmt::Debug for SignupConfig {
         f.debug_struct("SignupConfig")
             .field("mode", &self.mode)
             .field("allowed_domains", &self.allowed_domains)
+            .field("allowed_emails", &self.allowed_emails)
             .field("public_base_url", &self.public_base_url)
             .field("google_client_id", &self.google_client_id)
             .field("google_client_secret", &"[redacted]")
@@ -145,6 +153,9 @@ fn signup_config_from(get: impl Fn(&str) -> Option<String>) -> Option<SignupConf
         allowed_domains: parse_allowed_domains(
             &get("OYSTER_SIGNUP_ALLOWED_DOMAINS").unwrap_or_default(),
         ),
+        allowed_emails: parse_allowed_emails(
+            &get("OYSTER_SIGNUP_ALLOWED_EMAILS").unwrap_or_default(),
+        ),
         public_base_url: public_base_url.trim_end_matches('/').to_string(),
         google_client_id: values.next().expect("five values"),
         google_client_secret: values.next().expect("five values"),
@@ -164,6 +175,16 @@ fn parse_allowed_domains(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(|d| d.trim().trim_start_matches('@').to_lowercase())
         .filter(|d| !d.is_empty())
+        .collect()
+}
+
+/// Parse the comma-separated allowed-emails list: entries are trimmed
+/// and lowercased; empties are dropped. Lowercasing matches how Google
+/// normalizes addresses and how the gate compares them.
+fn parse_allowed_emails(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|e| e.trim().to_lowercase())
+        .filter(|e| !e.is_empty())
         .collect()
 }
 
@@ -378,11 +399,22 @@ mod tests {
             "OYSTER_SIGNUP_ALLOWED_DOMAINS",
             "MystenLabs.com, @example.org,,",
         ));
+        vars.push((
+            "OYSTER_SIGNUP_ALLOWED_EMAILS",
+            "VIP@Outside.com, other@x.org ,,",
+        ));
         vars.push(("OYSTER_SIGNUP_ENV_LABEL", "Testnet"));
         let cfg = signup_config_from(lookup(&vars)).unwrap();
         assert_eq!(cfg.mode, SignupMode::Waitlist);
         assert_eq!(cfg.allowed_domains, vec!["mystenlabs.com", "example.org"]);
+        assert_eq!(cfg.allowed_emails, vec!["vip@outside.com", "other@x.org"]);
         assert_eq!(cfg.env_label.as_deref(), Some("Testnet"));
+    }
+
+    #[test]
+    fn allowed_emails_default_empty() {
+        let cfg = signup_config_from(lookup(&ALL_SET)).unwrap();
+        assert!(cfg.allowed_emails.is_empty());
     }
 
     #[test]
