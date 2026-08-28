@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.2] - 2026-08-27
 
 ### Added
 - `OYSTER_SIGNUP_ALLOWED_EMAILS`: a comma-separated allowlist of
