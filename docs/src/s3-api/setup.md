@@ -1,11 +1,10 @@
 # S3 Setup
 
-This guide walks you through configuring the AWS CLI and SDKs to work with
-Oyster's S3-compatible API.
+Configure the AWS CLI and SDKs to work with Oyster's S3-compatible API using the steps below.
 
 ## Prerequisites
 
-- An Oyster API key (Bearer token) — see [Getting Started](../getting-started.md)
+- An Oyster API key (Bearer token); see [Getting Started](../getting-started.md)
 - [AWS CLI v2](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)
   (for CLI usage)
 
@@ -20,7 +19,7 @@ curl -s -X POST \
   "$OYSTER_URL/api/v1/accounts/$ACCOUNT_ID/access-keys" | jq
 ```
 
-Save the `access_key_id` and `secret_access_key` from the response — the
+Save the `access_key_id` and `secret_access_key` from the response, because the
 secret is only shown once.
 
 See [S3 Access Keys](../json-api/access-keys.md) for more on key format
@@ -37,8 +36,8 @@ aws configure set region "us-east-1" --profile oyster
 aws configure set endpoint_url "$OYSTER_URL" --profile oyster
 ```
 
-> **Note on region:** Oyster ignores the region value, but AWS SigV4
-> requires one. Use any valid region string (e.g., `us-east-1`).
+> **Region:** Oyster ignores the region value, but AWS SigV4
+> requires one. Use any valid region string, for example `us-east-1`.
 
 ## Step 3: Verify Connectivity
 

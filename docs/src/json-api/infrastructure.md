@@ -42,7 +42,7 @@ readiness probe to gate traffic until the server is fully operational.
 curl -s "$OYSTER_URL/ready" | jq
 ```
 
-**Response** (`200 OK` — all healthy):
+**Response** (`200 OK`, all healthy):
 
 ```json
 {
@@ -50,7 +50,7 @@ curl -s "$OYSTER_URL/ready" | jq
 }
 ```
 
-**Response** (`503 Service Unavailable` — degraded):
+**Response** (`503 Service Unavailable`, degraded):
 
 ```json
 {

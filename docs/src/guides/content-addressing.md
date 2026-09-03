@@ -1,10 +1,10 @@
 # Content Addressing
 
-Oyster uses **content addressing** to identify blobs. This means a blob's
-identity is derived from its contents, not from where it's stored. This
+Oyster uses **content addressing** to identify blobs. A blob's
+identity is derived from its contents, not from where it is stored. This
 enables deduplication, integrity verification, and content-based retrieval.
 
-## What is a Blob ID?
+## What is a blob ID?
 
 When you upload data to Oyster, the server computes a **BLAKE2s-256 hash**
 of the raw bytes. This produces a 64-character hex string called the
@@ -22,7 +22,7 @@ of which bucket or key it's stored under.
 
 If you upload the same file to two different keys or two different buckets,
 Oyster recognizes that the content is identical and stores the data **only
-once**:
+once**. For example:
 
 ```bash
 # Upload the same file to two different keys
@@ -38,7 +38,7 @@ curl -s -X PUT -H "Authorization: Bearer $API_KEY" \
 Both uploads return the **same `blob_id`** because the content is
 identical. The underlying storage holds only one copy.
 
-## Reference Counting
+## Reference counting
 
 Each key-to-blob mapping is a **reference**. Oyster tracks how many
 references point to each blob ID:
@@ -66,7 +66,7 @@ curl -s -X DELETE -H "Authorization: Bearer $API_KEY" \
 This means deleting a key in one bucket never affects the same content
 stored under a different key or bucket.
 
-## Reading by Blob ID
+## Reading by blob ID
 
 You can retrieve any blob by its content-addressed ID, without knowing
 which bucket or key it belongs to:
@@ -75,19 +75,19 @@ which bucket or key it belongs to:
 curl -s "$OYSTER_URL/api/v1/blobs/by-blob-id/2cf24dba5fb0a30e..."
 ```
 
-This is a **public endpoint** — no authentication required. It always
+This is a **public endpoint** with no authentication required. It always
 returns the content with `Content-Type: application/octet-stream`.
 
-This is useful when you've stored a blob ID externally (e.g., in a
-database or on-chain) and want to retrieve the data directly.
+This is useful when you have stored a blob ID externally (for example, in a
+database or onchain) and want to retrieve the data directly.
 
-## Practical Implications
+## Practical implications
 
-- **Storage efficiency** — identical files across buckets cost no extra
-  storage
-- **Safe deletion** — deleting a key never destroys data that other keys
-  depend on
-- **Integrity** — the blob ID serves as a checksum; if the data is
-  corrupted, the hash won't match
-- **Immutable content** — a given blob ID always maps to the same data;
-  overwriting a key creates a new blob with a new blob ID
+- **Storage efficiency**: identical files across buckets cost no extra
+  storage.
+- **Safe deletion**: deleting a key never destroys data that other keys
+  depend on.
+- **Integrity**: the blob ID serves as a checksum; if the data is
+  corrupted, the hash does not match.
+- **Immutable content**: a given blob ID always maps to the same data.
+  Overwriting a key creates a new blob with a new blob ID.

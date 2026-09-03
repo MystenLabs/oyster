@@ -10,8 +10,8 @@ The S3 API runs on the **same HTTP port** as the JSON API. Any request that
 doesn't match `/api/v1/`, `/health`, `/ready`, `/metrics`, or `/api/docs`
 is routed to the S3-compatible handler.
 
-This means you point your S3 client at the same `$OYSTER_URL` — no separate
-port or endpoint is needed.
+This means you point your S3 client at the same `$OYSTER_URL`, with no separate
+port or endpoint needed.
 
 ## Supported Operations
 
@@ -26,11 +26,11 @@ full AWS S3.
 
 ## Authentication
 
-S3 requests are authenticated using **S3 access keys** (created via the
+S3 requests are authenticated using **S3 access keys** (created through the
 [JSON API](../json-api/access-keys.md)). The AWS SDK and CLI handle SigV4
-signing automatically — you just provide your access key ID and secret.
+signing automatically, so you just provide your access key ID and secret.
 
-Both APIs share the same database, so buckets and objects created via S3
+Both APIs share the same database, so buckets and objects created through S3
 are visible in the JSON API and vice versa.
 
 ## Getting Started

@@ -5,14 +5,14 @@ user-chosen **key** (like a file path) and has a content-addressed **blob ID**
 computed from its contents.
 
 Key properties:
-- **Reads are public** — no authentication needed to download a blob
-- **Writes require auth** — uploading, updating, and deleting need a Bearer
+- **Reads are public**: no authentication needed to download a blob
+- **Writes require auth**: uploading, updating, and deleting need a Bearer
   token
-- **Overwrite semantics** — uploading to an existing key replaces the blob
-- **Content-addressed** — identical content is stored only once
-- **Reference-counted deletion** — underlying data is removed only when no
+- **Overwrite semantics**: uploading to an existing key replaces the blob
+- **Content-addressed**: identical content is stored only once
+- **Reference-counted deletion**: underlying data is removed only when no
   keys reference it
-- **Pool-scoped expiration** — blobs share their account's `StoragePool`
+- **Pool-scoped expiration**: blobs share their account's `StoragePool`
   lifetime; a background extension service renews each pool before it
   expires (see [Blob Lifecycle](../guides/blob-lifecycle.md))
 
@@ -30,7 +30,7 @@ exists at that key, it is replaced.
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `bucket_name` | string | Target bucket |
-| `key` | string | Object key (e.g., `images/photo.png`) |
+| `key` | string | Object key (for example, `images/photo.png`) |
 
 **Request headers:**
 
@@ -39,11 +39,11 @@ exists at that key, it is replaced.
 | `Content-Type` | `application/octet-stream` | MIME type stored with the blob |
 | `If-Match` | — | Only overwrite if the existing blob's ETag matches (412 otherwise) |
 | `If-None-Match` | — | Set to `*` to create only if the key doesn't exist (412 otherwise) |
-| `x-oyster-tag` | — | Attach a tag as `key=value` (percent-decoded). Repeatable — send the header once per tag. See [Blob Tags](#blob-tags) |
+| `x-oyster-tag` | — | Attach a tag as `key=value` (percent-decoded). Repeatable; send the header once per tag. See [Blob Tags](#blob-tags) |
 
 **Request body:** Raw binary data (max **1 GB**)
 
-**Example — upload a string:**
+**Example: upload a string:**
 
 ```bash
 curl -s -X PUT \
@@ -53,7 +53,7 @@ curl -s -X PUT \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
 ```
 
-**Example — upload a file:**
+**Example: upload a file:**
 
 ```bash
 curl -s -X PUT \
@@ -63,7 +63,7 @@ curl -s -X PUT \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/images/photo.png" | jq
 ```
 
-**Example — create only (fail if key exists):**
+**Example: create only (fail if key exists):**
 
 ```bash
 curl -s -X PUT \
@@ -74,7 +74,7 @@ curl -s -X PUT \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
 ```
 
-**Example — safe overwrite (only if ETag matches):**
+**Example: safe overwrite (only if ETag matches):**
 
 ```bash
 curl -s -X PUT \
@@ -85,7 +85,7 @@ curl -s -X PUT \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt" | jq
 ```
 
-**Example — upload with tags:**
+**Example: upload with tags:**
 
 ```bash
 curl -s -X PUT \
@@ -121,11 +121,11 @@ without any `x-oyster-tag` headers clears its tags. The same caps as the
 | `blob_id` | string | Content-addressed hash of the blob data |
 | `size` | integer | Size in bytes |
 | `md5` | string | Hex-encoded MD5 digest (used as S3 ETag) |
-| `sui_object_id` | string or null | On-chain Sui object ID (if stored on Walrus) |
+| `sui_object_id` | string or null | Onchain Sui object ID (if stored on Walrus) |
 | `created_at` | string | ISO 8601 timestamp |
 
 The response includes an `ETag` header containing the quoted MD5 digest
-(e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`).
+(for example, `"9a0364b9e99bb480dd25e1f0284c8555"`).
 
 **Errors:**
 
@@ -133,7 +133,7 @@ The response includes an `ETag` header containing the quoted MD5 digest
 |--------|-----------|
 | `400` | Upload would push the account past its per-account `max_unencoded_bytes` cap (body carries a `cap_exceeded` block) |
 | `401` | Missing or invalid API key |
-| `402` | Pearl-derived wallet lacks WAL/SUI to fund the upload (body carries a `funding_required` block — see [Cross-Cutting Error Contracts](README.md#cross-cutting-error-contracts)) |
+| `402` | Pearl-derived wallet lacks WAL/SUI to fund the upload (body carries a `funding_required` block; see [Cross-Cutting Error Contracts](README.md#cross-cutting-error-contracts)) |
 | `404` | Bucket not found |
 | `412` | `If-Match` or `If-None-Match` condition failed |
 | `413` | Payload exceeds 1 GB, or exceeds the Walrus encoder's per-blob ceiling for the network's `n_shards` (body carries a `payload_too_large` block) |
@@ -155,15 +155,15 @@ When the cap is exceeded the response body looks like:
 | Field | Type | Description |
 |-------|------|-------------|
 | `max_unencoded_bytes` | integer | Configured per-account cap, in *unencoded* bytes |
-| `used_encoded_bytes` | integer | On-chain encoded usage observed at check time |
+| `used_encoded_bytes` | integer | Onchain encoded usage observed at check time |
 | `new_unencoded_bytes` | integer | Unencoded size of the rejected upload |
 | `admin_endpoint` | string | Admin route that can raise the cap |
 
-The cap is enforced in unencoded bytes against on-chain encoded usage
-via the same `f = encoded_blob_length_for_n_shards` that the upload
-path uses to project the post-upload encoded total — so the
-short-circuit fires before any on-chain work. Raise (or lower) the
-cap via the admin
+The cap is enforced in unencoded bytes against onchain encoded usage
+through the same `f = encoded_blob_length_for_n_shards` that the upload
+path uses to project the post-upload encoded total, so the
+short-circuit fires before any onchain work. Raise (or lower) the
+cap through the admin
 [Update Storage Cap](admin.md#update-storage-cap) endpoint.
 
 ## Read Blob by Key
@@ -194,7 +194,7 @@ curl -s "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 | `If-Match: "<etag>"` | Return the blob only if its ETag matches; otherwise `412` |
 | `If-None-Match: "<etag>"` | Return the blob only if its ETag differs; otherwise `304` |
 
-**Example — cache validation:**
+**Example: cache validation:**
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" \
@@ -206,21 +206,21 @@ curl -s -o /dev/null -w "%{http_code}" \
 **Response** (`200 OK`):
 - **Body:** Raw binary blob data
 - **Content-Type:** The MIME type set during upload
-- **ETag:** Quoted MD5 digest (e.g., `"9a0364b9e99bb480dd25e1f0284c8555"`)
-- **Content-Disposition:** `attachment` — because reads are public and
+- **ETag:** Quoted MD5 digest (for example, `"9a0364b9e99bb480dd25e1f0284c8555"`)
+- **Content-Disposition:** `attachment`. Because reads are public and
   serve a caller-supplied Content-Type, blobs are returned as downloads
   so a `text/html`/SVG payload can't execute as a page on the Oyster
   origin. The response also carries `X-Content-Type-Options: nosniff`
   and `Content-Security-Policy: default-src 'none'; sandbox`. Embedding
   a blob as a subresource (`<img>`, `<video>`, `<script src>`, `fetch`)
-  is unaffected — only direct top-level navigation downloads instead of
+  is unaffected; only direct top-level navigation downloads instead of
   rendering.
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `304` | `If-None-Match` matched — blob has not changed |
+| `304` | `If-None-Match` matched: blob has not changed |
 | `404` | Blob not found |
 | `412` | `If-Match` condition failed |
 
@@ -314,7 +314,7 @@ curl -s -H "Authorization: Bearer $API_KEY" \
 | `content_type` | string | MIME type |
 | `size` | integer | Size in bytes |
 | `md5` | string | Hex-encoded MD5 digest |
-| `sui_object_id` | string or null | On-chain Sui object ID |
+| `sui_object_id` | string or null | Onchain Sui object ID |
 | `created_at` | string | ISO 8601 timestamp |
 
 ## Update Blob Metadata
@@ -397,7 +397,7 @@ curl -s -X DELETE \
   "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 ```
 
-**Example — delete only if ETag matches:**
+**Example: delete only if ETag matches:**
 
 ```bash
 curl -s -X DELETE \
@@ -413,7 +413,7 @@ curl -s -X DELETE \
 | Status | Condition |
 |--------|-----------|
 | `401` | Missing or invalid API key |
-| `402` | Insufficient on-chain balance to clear the `PooledBlob`; the DB row is left intact for retry |
+| `402` | Insufficient onchain balance to clear the `PooledBlob`; the DB row is left intact for retry |
 | `404` | Blob not found |
 | `412` | `If-Match` or `If-None-Match` condition failed |
 
@@ -430,19 +430,19 @@ A `402` carries the same `funding_required` block as the upload path:
 ```
 
 `wal_frost` and `sui_mist` are decimal strings (Pearl-derived
-wallet's owed top-up); inspect your wallet via
+wallet's owed top-up); inspect your wallet through
 [Get Wallet Address](wallet.md). When `delete_blob` returns `402`,
 the DB row is left intact on purpose so the client can fund the
-Pearl-derived wallet and retry the same `DELETE` — other on-chain
+Pearl-derived wallet and retry the same `DELETE`. Other onchain
 delete errors are still swallowed to preserve idempotent-delete
 semantics.
 
 ## Blob Tags
 
 Each blob can carry a small set of arbitrary `key=value` tags, stored in
-Oyster's database (independent of the underlying blob content). Tags set via
-this JSON API and tags set via the [S3 Object Tagging](../s3-api/objects.md#object-tagging)
-operations share the same backing store — a tag written through one API is
+Oyster's database (independent of the underlying blob content). Tags set through
+this JSON API and tags set through the [S3 Object Tagging](../s3-api/objects.md#object-tagging)
+operations share the same backing store. A tag written through one API is
 visible through the other.
 
 All tag endpoints live under a blob's `/tags` path, require Bearer auth, and
@@ -459,7 +459,7 @@ account.
 | Max total set size | 2048 bytes (sum of all keys + values) |
 
 Allowed characters in keys and values: ASCII alphanumerics plus space and
-`+ - = . _ : / @`. Keys must be non-empty; values may be empty. Duplicate keys
+`+ - = . _ : / @`. Keys must be non-empty; values might be empty. Duplicate keys
 are rejected. Any request whose resulting tag set violates these rules returns
 `400`.
 
@@ -551,7 +551,7 @@ curl -s -X PATCH \
 **Response:** `204 No Content`
 
 **Errors:** `400` if the **merged** set would violate [tag rules](#tag-rules)
-(e.g. exceed the 10-tag cap); `401` if unauthenticated; `404` if the blob is not
+(for example, exceed the 10-tag cap); `401` if unauthenticated; `404` if the blob is not
 found.
 
 ### Delete All Tags
@@ -603,7 +603,7 @@ the blob is not found.
 DELETE /api/v1/buckets/{bucket_name}/blobs/{key}/tags/{tag_key}
 ```
 
-Deletes a single tag by key. Idempotent — deleting a tag that doesn't exist
+Deletes a single tag by key. Idempotent: deleting a tag that doesn't exist
 still returns `204`.
 
 **Example:**

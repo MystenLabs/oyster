@@ -38,7 +38,7 @@ contexts:
 ```
 
 > **Important:** The URL must include the `/api/v1` path. The CLI appends
-> endpoint paths (like `/buckets`) directly to this URL.
+> endpoint paths (such as `/buckets`) directly to this URL.
 
 Precedence for the active-context name (highest first):
 
@@ -48,15 +48,15 @@ Precedence for the active-context name (highest first):
 
 If none of the three is set and the file has exactly one context, that
 context is used automatically. Ad-hoc `--url ... --api-key ...`
-invocations without any context still work for one-off commands.
+invocations without any context still work for one-time commands.
 
-You can also override individual fields via flags:
+You can also override individual fields with flags:
 
 ```bash
 oyster --url http://localhost:3000/api/v1 --api-key "your-key" list-buckets
 ```
 
-## Global Flags
+## Global flags
 
 | Flag | Description |
 |------|-------------|
@@ -66,15 +66,15 @@ oyster --url http://localhost:3000/api/v1 --api-key "your-key" list-buckets
 | `--api-key <KEY>` | API key (overrides the context's `api_key`) |
 | `--json` | Output JSON instead of human-readable format |
 
-## Bucket Management
+## Bucket management
 
-### Create a Bucket
+### Create a bucket
 
 ```bash
 oyster create-bucket my-bucket
 ```
 
-### List Buckets
+### List buckets
 
 ```bash
 oyster list-buckets
@@ -86,7 +86,7 @@ Limit results:
 oyster list-buckets --limit 10
 ```
 
-### Delete a Bucket
+### Delete a bucket
 
 ```bash
 oyster delete-bucket my-bucket
@@ -95,9 +95,9 @@ oyster delete-bucket my-bucket
 The bucket must be empty. Delete all blobs first, or the server returns
 an error.
 
-## Storing and Reading Blobs
+## Storing and reading blobs
 
-### Upload a File
+### Upload a file
 
 ```bash
 oyster store photo.png --bucket my-bucket
@@ -124,10 +124,10 @@ Attach tags at upload time with `--tag key=value` (repeatable):
 oyster store photo.png --bucket my-bucket --tag env=prod --tag team=platform
 ```
 
-Tags are replaced on every upload to a key. See [Blob Tags](#blob-tags) for the
+Tags are replaced on every upload to a key. See [Blob tags](#blob-tags) for the
 limits and for managing tags after upload.
 
-### Download a File
+### Download a file
 
 ```bash
 oyster read hello.txt --bucket my-bucket
@@ -139,9 +139,9 @@ This prints the blob contents to stdout. Save to a file with `-o`:
 oyster read hello.txt --bucket my-bucket -o downloaded.txt
 ```
 
-> **Note:** Reading blobs does not require an API key — reads are public.
+> Reading blobs does not require an API key. Reads are public.
 
-### List Blobs
+### List blobs
 
 ```bash
 oyster list-blobs --bucket my-bucket
@@ -155,13 +155,13 @@ hello.txt      text/plain      14      2025-01-15T10:31:00Z
 images/cat.png image/png       204800  2025-01-15T11:00:00Z
 ```
 
-### Delete a Blob
+### Delete a blob
 
 ```bash
 oyster delete hello.txt --bucket my-bucket
 ```
 
-## Blob Tags
+## Blob tags
 
 The `oyster tags` command group manages the `key=value` tags on a blob. Tags
 are stored in Oyster's database and shared with the
@@ -210,21 +210,21 @@ oyster tags replace --bucket my-bucket --key hello.txt \
 oyster tags merge --bucket my-bucket --key hello.txt --tag team=storage
 ```
 
-## API Key and Access Key Management
+## API key and access key management
 
 API keys and S3 access keys are managed by operators through the Admin API,
 not through the CLI. See the [Admin API docs](../json-api/admin.md) for
 details on creating, listing, and revoking keys.
 
-## Other Commands
+## Other commands
 
-### View Wallet Address
+### View wallet address
 
 ```bash
 oyster wallet
 ```
 
-### View Resolved Configuration
+### View resolved configuration
 
 ```bash
 oyster info
@@ -232,15 +232,15 @@ oyster info
 
 Shows which config file is loaded, the server URL, and the API key prefix.
 
-## App Admin-Key Management
+## App admin-key management
 
-Apps — first-class principals that authenticate admin app-management calls
-(creating accounts, issuing API keys / S3 access keys) independently of
-end-user API keys — need a way to store the per-app admin key without
+Apps are first-class principals that authenticate admin app-management calls
+(creating accounts, issuing API keys and S3 access keys) independently of
+end-user API keys. They need a way to store the per-app admin key without
 leaking it through shell history. The CLI persists admin keys under
 `contexts.<ctx>.apps.<app_name>.admin_key`.
 
-### Import an Admin Key
+### Import an admin key
 
 ```bash
 oyster app import my-app
@@ -253,7 +253,7 @@ the key is read as a line instead — useful for scripts. Requires that
 
 ### Rotation
 
-Admin keys do not expire. Rotation is operator-driven, AWS-style two-key
+Admin keys do not expire. Rotation is operator-driven with AWS-style two-key
 overlap:
 
 ```bash
@@ -273,10 +273,10 @@ oysterd app revoke-admin-key <OLD_KEY_ID>
 ```
 
 `oysterd app list-admin-keys <APP_ID>` shows all keys (active and
-revoked) so an operator can confirm what is live. Multiple admin keys per
+revoked), so an operator can confirm what is live. Multiple admin keys per
 app are supported with no cap.
 
-### Webhook Management
+### Webhook management
 
 `oyster app webhook` drives the self-service webhook endpoints
 ([Set Webhook URL](../json-api/admin.md#set-webhook-url)) using the active
@@ -297,23 +297,23 @@ oyster app webhook clear
 
 See [Webhooks](webhooks.md) for the delivery signature format.
 
-## Account Management
+## Account management
 
 Once a context has at least one app with an `admin_key`, the
 `oyster app account` subcommand tree manages the accounts that app
 owns. Use it to mint accounts, rotate which account the CLI's
-`api_key` points at, and inspect the api-keys an account has issued.
+`api_key` points at, and inspect the API keys an account has issued.
 
 ### `--app <name>` selector
 
 Every `oyster app account` subcommand resolves which app to act
 through using `crates/oyster-cli/src/config.rs::resolve_admin`:
 
-- If the active context defines exactly one app, it's auto-selected.
+- If the active context defines exactly one app, it is auto-selected.
 - If the active context defines multiple apps, you must pass
   `--app <name>` (or the command errors and lists the known apps).
-- If the active context defines zero apps, the command errors —
-  import an admin key first with `oyster app import`.
+- If the active context defines zero apps, the command errors.
+  Import an admin key first with `oyster app import`.
 
 ```bash
 oyster app account list                  # active context has 1 app
@@ -322,9 +322,11 @@ oyster --app my-app account list         # multiple apps; pick one
 
 ### Subcommands
 
+The following subcommands are available under `oyster app account`.
+
 #### `list`
 
-Tabular view of the accounts owned by the selected app — each row
+Tabular view of the accounts owned by the selected app. Each row
 is `id`, `name`, `created_at`, `active_api_key_count`.
 
 ```bash
@@ -333,12 +335,12 @@ oyster app account list
 
 #### `create [--name NAME] [--note NOTE] [--activate]`
 
-Mints a fresh account plus an initial api-key for it.
+Mints a fresh account plus an initial API key for it.
 
-- `--name NAME` — human-readable label stored on the account.
-- `--note NOTE` — note attached to the issued api-key (defaults to
+- `--name NAME`: human-readable label stored on the account.
+- `--note NOTE`: note attached to the issued API key (defaults to
   `"api"` server-side).
-- `--activate` — atomically saves the new bearer to
+- `--activate`: atomically saves the new bearer to
   `context.api_key` in `client.yaml`. Without this flag, the bearer
   is printed once and you can wire it up yourself.
 
@@ -349,15 +351,15 @@ oyster app account create --name alice --activate
 #### `use <id-or-name> [--revoke <key_id> | --revoke-oldest]`
 
 Pivots the active context's `api_key` onto a different account. It
-mints a fresh api-key on the target account (note `oyster-cli:
+mints a fresh API key on the target account (note `oyster-cli:
 activate <id-or-name>`), atomically writes it to `context.api_key`,
 and saves `client.yaml`.
 
-There's a server-side cap of **3 active api-keys per account**
+There is a server-side cap of **3 active API keys per account**
 (`MAX_API_KEYS_PER_ACCOUNT` in
 `crates/oyster/src/routes/admin.rs`). If `use` would exceed that
 cap, the server returns `409 Conflict` with `"limit"` in the
-message and the CLI's behavior depends on whether stdout is a TTY:
+message and the CLI behavior depends on whether stdout is a TTY:
 
 - **TTY**: the CLI uses `inquire::Select` (inline, never alt-screen)
   to show the account's existing keys and ask which to revoke,
@@ -379,8 +381,8 @@ oyster app account use alice --revoke 0123abcd...
 #### `select`
 
 TTY-only `inquire` picker over the app's accounts. Dispatches to
-`use` with the chosen account. Errors out in non-TTY contexts —
-scripts should use `use <id-or-name>` directly.
+`use` with the chosen account. Errors in non-TTY contexts.
+Scripts should use `use <id-or-name>` directly.
 
 ```bash
 oyster app account select
@@ -388,14 +390,14 @@ oyster app account select
 
 #### `keys <id-or-name>`
 
-Lists api-key metadata for the named account — id, note,
-`created_at`, `revoked_at`. Bearer secrets are never returned.
+Lists API key metadata for the named account: id, note,
+`created_at`, and `revoked_at`. Bearer secrets are never returned.
 
 ```bash
 oyster app account keys alice
 ```
 
-## JSON Output
+## JSON output
 
 Add `--json` to any command for machine-readable output:
 
@@ -418,7 +420,7 @@ oyster --json list-blobs --bucket my-bucket
 }
 ```
 
-## Content-Type Detection
+## Content-type detection
 
 When uploading without `--content-type`, the CLI guesses the MIME type from
 the file extension:

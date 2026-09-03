@@ -1,9 +1,9 @@
 # Admin API
 
 The Admin API lets app operators manage accounts, API keys, and S3 access
-keys. All admin endpoints require **admin-key** authentication —
-long-lived per-app Bearer tokens issued via `oysterd app issue-admin-key`
-(see [Authentication](authentication.md)).
+keys. All admin endpoints require **admin-key** authentication (long-lived
+per-app Bearer tokens issued through `oysterd app issue-admin-key`;
+see [Authentication](authentication.md)).
 
 An app can only manage accounts it created. Attempting to access another
 app's accounts returns **403 Forbidden**.
@@ -64,11 +64,11 @@ curl -s -X POST \
 | `account_id` | string | UUID of the new account |
 | `api_key.id` | string | Unique key identifier |
 | `api_key.prefix` | string | First 8 characters of the raw key (for identification) |
-| `api_key.bearer_token` | string | The full API key — **shown only once** |
+| `api_key.bearer_token` | string | The full API key, **shown only once** |
 | `api_key.created_at` | string | ISO 8601 timestamp |
 
-> **Note:** The `bearer_token` is returned only at creation time. A lost
-> key cannot be recovered — create a new one instead.
+> The `bearer_token` is returned only at creation time. A lost
+> key cannot be recovered; create a new one instead.
 
 **Errors:**
 
@@ -84,9 +84,9 @@ PUT /api/v1/accounts/{account_id}/max-storage
 ```
 
 Raises or lowers the per-account `max_unencoded_bytes` cap. Lowering
-the cap below the account's current on-chain encoded usage is
+the cap below the account's current onchain encoded usage is
 rejected; lowering between current usage and current pool capacity
-submits an on-chain shrink transaction to release the freed reserve
+submits an onchain shrink transaction to release the freed reserve
 back to the Pearl-derived wallet.
 
 **Path parameters:**
@@ -136,16 +136,16 @@ curl -s -X PUT \
 | `account_id` | string | The account whose cap was updated |
 | `max_unencoded_bytes` | integer | The new cap, in *unencoded* bytes |
 | `avg_blob_size` | integer | The effective assumed average blob size after the update. Echoes the request value when supplied, otherwise the account's retained value |
-| `pool` | object or null | On-chain `StoragePool` snapshot after the (optional) shrink. `null` when the account has never lazy-created a pool (DB-only fast path — no on-chain read was performed) |
-| `pool.reserved_encoded_bytes` | integer | `storage.storage_size` — encoded bytes reserved by the pool |
+| `pool` | object or null | Onchain `StoragePool` snapshot after the (optional) shrink. `null` when the account has never lazy-created a pool (DB-only fast path; no onchain read was performed) |
+| `pool.reserved_encoded_bytes` | integer | `storage.storage_size`: encoded bytes reserved by the pool |
 | `pool.used_encoded_bytes` | integer | Encoded bytes currently consumed by registered blobs |
 | `shrink_tx_digest` | string or null | Digest of the submitted `decrease_storage_pool_capacity_by_size` PTB, or `null` when no shrink was needed |
 
 When the account has no pool yet (no upload has lazy-created one),
-the cap is updated in the DB only — `pool` and `shrink_tx_digest`
-are both `null`. When the new cap covers the existing pool's reserved
+the cap is updated in the DB only (`pool` and `shrink_tx_digest`
+are both `null`). When the new cap covers the existing pool's reserved
 bytes, the same DB-only path runs (`shrink_tx_digest` is `null`,
-`pool` is populated from the on-chain read).
+`pool` is populated from the onchain read).
 
 ### Lower-bound semantics (`avg_blob_size`)
 
@@ -160,21 +160,21 @@ Setting `avg_blob_size = s` flips this into a **lower** bound *for blobs
 averaging `s`*: Oyster inflates the encoded admission ceiling by the
 per-blob expansion factor `f(s)/s`, guaranteeing that at least
 `max_unencoded_bytes` unencoded bytes are storable when the account's
-blobs average ≥ `s`. The expansion factor shrinks as blobs grow —
+blobs average ≥ `s`. The expansion factor shrinks as blobs grow:
 roughly `66034×` at 1 KB, `70×` at 1 MB, `11×` at 10 MB, `5.1×` at
-100 MB, asymptoting to ~`4.5×` — so a 10 MB `avg_blob_size` (the
+100 MB, asymptoting to ~`4.5×`. A 10 MB `avg_blob_size` (the
 default) sets the ceiling at about `11 ×` the cap's bare encoded value.
 Blobs smaller than `s` carry more overhead and so reach the ceiling
 before the unencoded total reaches `max_unencoded_bytes`.
 
 This only raises the *admission ceiling*; it does **not** pre-reserve or
-pre-pay capacity. On-chain pool capacity still grows incrementally per
+pre-pay capacity. Onchain pool capacity still grows incrementally per
 upload (pay-as-you-go for actual encoded usage), so a non-zero
 `avg_blob_size` costs nothing for normal workloads. Setting
 `avg_blob_size = 0` reproduces the historical upper-bound behavior
 byte-for-byte; accounts created before this feature default to `0`.
 
-**On-chain shrink semantics.** When the new cap is lower than the
+**Onchain shrink semantics.** When the new cap is lower than the
 pool's current reserved capacity and at least one encoded byte can
 be freed without orphaning data, Oyster submits a Pearl-signed
 `system::decrease_storage_pool_capacity_by_size` PTB. The contract
@@ -183,21 +183,21 @@ it back to the pool's owner (the Pearl-managed sender). Over time
 these extracted `Storage` objects accumulate in the wallet[^orphan].
 
 [^orphan]: Tooling for absorbing accumulated `Storage` objects back
-    into a pool is planned but not yet present — see the project's
+    into a pool is planned but not yet present. See the project's
     `PLAN.md` for the "Recycle orphaned Storage objects" item.
 
 **Errors:**
 
 | Status | Condition |
 |--------|-----------|
-| `400` | Body invalid (`max_unencoded_bytes` ≤ 0 or `avg_blob_size` < 0), `would_orphan` (the new cap is below the account's current on-chain encoded usage), or `shrink_aborted` (a concurrent upload re-consumed the freed capacity between the on-chain read and the PTB submission) |
+| `400` | Body invalid (`max_unencoded_bytes` ≤ 0 or `avg_blob_size` < 0), `would_orphan` (the new cap is below the account's current onchain encoded usage), or `shrink_aborted` (a concurrent upload re-consumed the freed capacity between the onchain read and the PTB submission) |
 | `401` | Missing or invalid admin key |
 | `403` | Account does not belong to the authenticated app |
 | `404` | Account not found |
-| `503` | Pearl or Sui RPC unavailable while performing the on-chain read or PTB submission |
+| `503` | Pearl or Sui RPC unavailable while performing the onchain read or PTB submission |
 
-**`would_orphan` body** — emitted when lowering would drop the cap
-below current on-chain usage:
+**`would_orphan` body**: emitted when lowering would drop the cap
+below current onchain usage:
 
 ```json
 {
@@ -210,7 +210,7 @@ below current on-chain usage:
 }
 ```
 
-**`shrink_aborted` body** — emitted when the shrink PTB aborted
+**`shrink_aborted` body**: emitted when the shrink PTB aborted
 because another replica's upload raced and re-consumed the
 capacity Oyster was about to extract:
 
@@ -226,7 +226,7 @@ capacity Oyster was about to extract:
 ```
 
 Both `would_orphan` and `shrink_aborted` are safe to retry after
-the underlying state has settled (e.g., delete some blobs to lower
+the underlying state has settled (for example, delete some blobs to lower
 `used_encoded_bytes`, or wait for the concurrent upload to finish).
 
 A successful cap change writes an `account.max_storage_updated`
@@ -271,7 +271,7 @@ curl -s -X POST \
 |-------|------|-------------|
 | `id` | string | Unique key identifier |
 | `prefix` | string | First 8 characters of the raw key |
-| `bearer_token` | string | The full API key — **shown only once** |
+| `bearer_token` | string | The full API key, **shown only once** |
 | `created_at` | string | ISO 8601 timestamp |
 
 **Errors:**
@@ -326,7 +326,7 @@ These endpoints manage S3-compatible access keys for accounts. See
 POST /api/v1/accounts/{account_id}/access-keys
 ```
 
-Creates a new S3 access key pair. The secret is returned **only once** —
+Creates a new S3 access key pair. The secret is returned **only once**, so
 save it immediately. Each account can have up to **3 active access keys**.
 
 **Path parameters:**
@@ -356,7 +356,7 @@ curl -s -X POST \
 | Field | Type | Description |
 |-------|------|-------------|
 | `access_key_id` | string | 20-character key ID (starts with `OYAK`) |
-| `secret_access_key` | string | 40-character hex secret — **shown only once** |
+| `secret_access_key` | string | 40-character hex secret, **shown only once** |
 | `created_at` | string | ISO 8601 timestamp |
 
 **Errors:**
@@ -428,8 +428,8 @@ curl -s \
 DELETE /api/v1/accounts/{account_id}/access-keys/{access_key_id}
 ```
 
-Revokes an S3 access key. Any S3 requests using this key will
-immediately stop working. Revoked keys no longer count toward the
+Revokes an S3 access key. Any S3 requests using this key stop
+working immediately. Revoked keys no longer count toward the
 3-key active limit.
 
 **Path parameters:**
@@ -466,8 +466,8 @@ GET /api/v1/admin/app
 ```
 
 Returns the authenticated app, including the current webhook URL and
-the base64-encoded Ed25519 public key paired with it. Useful when an
-admin lost the response from `PUT /admin/app/webhook`.
+the base64-encoded Ed25519 public key paired with it. Use this endpoint
+when you need to retrieve the response from `PUT /admin/app/webhook`.
 
 **Response** (`200 OK`):
 
@@ -502,7 +502,7 @@ PUT /api/v1/admin/app/webhook
 Registers or rotates the webhook URL for the authenticated app. Each
 call generates a fresh Ed25519 keypair; the response is the only
 opportunity to capture the public key for verification. Subsequent
-deliveries are signed with the corresponding private key — see
+deliveries are signed with the corresponding private key. See
 [Webhooks](../guides/webhooks.md) for the signature format.
 
 **Request body:**
@@ -531,7 +531,7 @@ DELETE /api/v1/admin/app/webhook
 ```
 
 Clears the webhook URL and discards the keypair. Subsequent
-extension failures will not deliver a webhook.
+extension failures do not deliver a webhook.
 
 **Response** (`200 OK`): the updated app row with all three webhook
 fields nulled.
@@ -554,17 +554,17 @@ oysterd serve     # run the HTTP + S3 server (default when no subcommand given)
 oysterd extend     # run the background blob-extension service only
 ```
 
-`oysterd serve` is the default — running `oysterd` with no subcommand is
+`oysterd serve` is the default; running `oysterd` with no subcommand is
 equivalent. `oysterd extend` runs only the background task that renews
 expiring storage pools (see [Blob Lifecycle](../guides/blob-lifecycle.md)),
 without serving the API.
 
 The global `--pearl-service-secret-file <PATH>` flag reads the Pearl service
-secret from a file instead of the `PEARL_SERVICE_SECRET` environment variable —
-useful for mounting the secret as a file (e.g. a Kubernetes secret). It applies
+secret from a file instead of the `PEARL_SERVICE_SECRET` environment variable,
+which is useful for mounting the secret as a file (for example, a Kubernetes secret). It applies
 to any `oysterd` invocation.
 
-Both services are otherwise configured via environment variables; see the
+Both services are otherwise configured through environment variables; see the
 [README](https://github.com/MystenLabs/oyster#configuration) for the full
 env-var reference.
 
@@ -602,14 +602,14 @@ oysterd app issue-admin-key <app_id>
 Generates a fresh admin key for the given app. Multiple admin keys per
 app are supported with no cap; use this for AWS-style two-key rotation.
 
-**stdout** carries the raw admin key as a single line — this is the only
+**stdout** carries the raw admin key as a single line; this is the only
 machine-readable output, suitable for capturing in a variable or piping. The
 key id and 8-char prefix are **not** printed to stdout; they appear in a
 `tracing::info!` structured log line (fields `app_id`, `key_id`, `prefix`,
 message `issued admin key`) written to **stderr**. That line is emitted at the
 `info` level, so it shows with the default log filter but is suppressed if
 `RUST_LOG` raises the threshold above `info`. It is a human-readable log line,
-not a stable machine-readable string — to recover a key id reliably, use
+not a stable machine-readable string. To recover a key id reliably, use
 [List Admin Keys](#list-admin-keys).
 
 **Example:**

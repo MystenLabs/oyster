@@ -2,7 +2,7 @@
 
 Each Oyster account has an associated **Sui wallet address**, derived from
 the account's identity by the Pearl custodial wallet service. This wallet
-is used for on-chain operations when blobs are stored on Walrus.
+is used for onchain operations when blobs are stored on Walrus.
 
 ## Get Wallet Address
 

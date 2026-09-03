@@ -12,8 +12,8 @@ All API endpoints are prefixed with `/api/v1`:
 $OYSTER_URL/api/v1/
 ```
 
-Throughout this reference, we assume `$OYSTER_URL` is set to your Oyster
-server address (e.g., `http://localhost:3000`).
+Throughout this reference, `$OYSTER_URL` is set to your Oyster
+server address (for example, `http://localhost:3000`).
 
 ## Authentication
 
@@ -45,21 +45,21 @@ All errors return a JSON body with a single `error` field:
 | `200` | Success (GET, PATCH) |
 | `201` | Created (POST, PUT) |
 | `204` | No Content (DELETE) |
-| `304` | Not Modified — `If-None-Match` matched on a GET request |
-| `400` | Bad Request — invalid input or validation failure |
-| `401` | Unauthorized — missing or invalid API key |
-| `404` | Not Found — resource doesn't exist or not owned by your account |
-| `409` | Conflict — resource already exists or limit reached |
-| `412` | Precondition Failed — `If-Match` or `If-None-Match` condition not met |
-| `413` | Payload Too Large — blob exceeds 1 GB |
+| `304` | Not Modified: `If-None-Match` matched on a GET request |
+| `400` | Bad Request: invalid input or validation failure |
+| `401` | Unauthorized: missing or invalid API key |
+| `404` | Not Found: resource doesn't exist or not owned by your account |
+| `409` | Conflict: resource already exists or limit reached |
+| `412` | Precondition Failed: `If-Match` or `If-None-Match` condition not met |
+| `413` | Payload Too Large: blob exceeds 1 GB |
 | `500` | Internal Server Error |
-| `501` | Not Implemented — endpoint exists but isn't functional yet |
-| `503` | Service Unavailable — a dependent service is unreachable |
+| `501` | Not Implemented: endpoint exists but isn't functional yet |
+| `503` | Service Unavailable: a dependent service is unreachable |
 
 `501` is currently produced only by three account stubs that are wired up but
 not yet implemented: `PUT /account/billing`, `GET /account/report`, and
 `POST /account/transfer`. These are intentionally omitted from the per-endpoint
-reference until they do something.
+reference until they are functional.
 
 ### Cross-Cutting Error Contracts
 
@@ -67,8 +67,8 @@ A few error bodies are shared across multiple routes and carry a
 structured block alongside the standard `error` string. Document
 once here; per-route docs link back.
 
-- **`InsufficientBalance` (402)** — the Pearl-derived wallet
-  doesn't hold enough WAL or SUI to fund the on-chain action.
+- **`InsufficientBalance` (402)**: the Pearl-derived wallet
+  doesn't hold enough WAL or SUI to fund the onchain action.
   Body carries a `funding_required: { wal_frost, sui_mist }`
   block (both decimal strings). Currently fires on
   `PUT /buckets/{bucket}/blobs/{key}` (see
@@ -76,7 +76,7 @@ once here; per-route docs link back.
   `DELETE /buckets/{bucket}/blobs/{key}` (see
   [Delete Blob](blobs.md#delete-blob)). When the lookup itself
   fails, `funding_required` is `null`.
-- **`CapExceeded` (400)** — the upload would push the account
+- **`CapExceeded` (400)**: the upload would push the account
   past its per-account `max_unencoded_bytes` cap. Body carries a
   `cap_exceeded` block pointing at the admin endpoint that can
   raise the cap. Currently fires on
@@ -87,7 +87,7 @@ once here; per-route docs link back.
   turns it into a *lower* bound on storable capacity for blobs of
   that size.
 
-The admin-side on-chain shrink endpoint
+The admin-side onchain shrink endpoint
 ([`PUT /accounts/{account_id}/max-storage`](admin.md#update-storage-cap))
 has its own 400 variants (`would_orphan`, `shrink_aborted`)
 documented in the admin reference.
@@ -97,8 +97,8 @@ documented in the admin reference.
 List endpoints use **cursor-based pagination**:
 
 **Query parameters:**
-- `cursor` (optional) — opaque string from a previous response's `next_cursor`
-- `limit` (optional) — number of items per page (default: 20, max: 100)
+- `cursor` (optional): opaque string from a previous response's `next_cursor`
+- `limit` (optional): number of items per page (default: 20, max: 100)
 
 **Response format:**
 
@@ -112,7 +112,7 @@ List endpoints use **cursor-based pagination**:
 When `next_cursor` is `null`, there are no more results. To fetch the next
 page, pass the `next_cursor` value as the `cursor` query parameter.
 
-**Example — paginating through buckets:**
+**Example: paginating through buckets:**
 
 ```bash
 # First page
@@ -132,4 +132,4 @@ Oyster serves an interactive OpenAPI UI at:
 $OYSTER_URL/api/docs
 ```
 
-You can explore and test all endpoints directly from your browser.
+Explore and test all endpoints directly from your browser.

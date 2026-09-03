@@ -3,8 +3,8 @@
 All S3 operations require authentication (SigV4), including reads. See
 [S3 Setup](setup.md) for configuration.
 
-> **Note:** This differs from the [JSON API](../json-api/blobs.md), where
-> blob reads are public and unauthenticated.
+> **Authenticated reads:** Unlike the [JSON API](../json-api/blobs.md), where
+> blob reads are public and unauthenticated, all S3 reads require authentication.
 
 ## PutObject
 
@@ -70,10 +70,10 @@ the same [tag rules](../json-api/blobs.md#tag-rules).
 
 PutObject supports `If-Match` and `If-None-Match` headers for safe writes:
 
-- **`If-None-Match: *`** — upload only if the key doesn't already exist
+- **`If-None-Match: *`**: upload only if the key doesn't already exist
   (create-only semantics). Returns `412 PreconditionFailed` if the key
   exists.
-- **`If-Match: "<etag>"`** — overwrite only if the current object's ETag
+- **`If-Match: "<etag>"`**: overwrite only if the current object's ETag
   matches. Returns `412 PreconditionFailed` on mismatch.
 
 ```bash
@@ -121,9 +121,9 @@ example).
 
 GetObject supports `If-Match` and `If-None-Match` for cache validation:
 
-- **`If-Match: "<etag>"`** — return the object only if its ETag matches.
+- **`If-Match: "<etag>"`**: return the object only if its ETag matches.
   Returns `412 PreconditionFailed` on mismatch.
-- **`If-None-Match: "<etag>"`** — return the object only if its ETag
+- **`If-None-Match: "<etag>"`**: return the object only if its ETag
   differs. Returns `304 NotModified` if the ETag matches (useful for
   cache validation).
 
@@ -143,7 +143,7 @@ aws --profile oyster s3api get-object \
 | `NoSuchBucket` | Bucket doesn't exist |
 | `NoSuchKey` | Object key doesn't exist |
 | `PreconditionFailed` | `If-Match` condition not met |
-| `NotModified` | `If-None-Match` matched — object unchanged (304) |
+| `NotModified` | `If-None-Match` matched; object unchanged (304) |
 
 ## HeadObject
 
@@ -178,7 +178,7 @@ headers as [GetObject](#getobject). Returns `412 PreconditionFailed` or
 | `NoSuchBucket` | Bucket doesn't exist |
 | `NoSuchKey` | Object key doesn't exist |
 | `PreconditionFailed` | `If-Match` condition not met |
-| `NotModified` | `If-None-Match` matched — object unchanged (304) |
+| `NotModified` | `If-None-Match` matched; object unchanged (304) |
 
 ## DeleteObject
 
@@ -192,7 +192,7 @@ aws --profile oyster s3api delete-object \
 
 Returns no output on success.
 
-This operation is **idempotent** — deleting a key that doesn't exist still
+This operation is **idempotent**: deleting a key that doesn't exist still
 returns success, matching standard S3 behavior.
 
 Deletion is **reference-counted**: the underlying blob data is only removed
@@ -202,7 +202,7 @@ from storage when no other keys reference the same content.
 
 DeleteObject supports `If-Match` for safe deletion:
 
-- **`If-Match: "<etag>"`** — delete only if the object's ETag matches.
+- **`If-Match: "<etag>"`**: delete only if the object's ETag matches.
   Returns `412 PreconditionFailed` on mismatch.
 
 **Errors:**
@@ -331,7 +331,7 @@ aws --profile oyster s3api list-objects-v2 \
 | Parameter | AWS CLI Flag | Description |
 |-----------|--------------|-------------|
 | Prefix | `--prefix` | Filter keys that start with this string |
-| Delimiter | `--delimiter` | Group keys by this separator (e.g., `/`) |
+| Delimiter | `--delimiter` | Group keys by this separator (for example, `/`) |
 | MaxKeys | `--max-keys` | Max objects to return (default: 1000) |
 | StartAfter | `--start-after` | Return keys after this value (lexicographic) |
 | ContinuationToken | `--starting-token` | Continue from a previous response |
@@ -346,7 +346,7 @@ aws --profile oyster s3api list-objects-v2 \
 
 Oyster implements the three S3 object-tagging operations. Tags are stored in
 Oyster's database in the same `blob_tags` table used by the
-[JSON API tag endpoints](../json-api/blobs.md#blob-tags) — a tag set through S3
+[JSON API tag endpoints](../json-api/blobs.md#blob-tags); a tag set through S3
 is visible through the JSON API and vice versa. The same
 [tag rules](../json-api/blobs.md#tag-rules) apply (max 10 tags; key ≤ 128 B;
 value ≤ 256 B; set ≤ 2048 B; restricted charset).

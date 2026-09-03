@@ -1,7 +1,7 @@
 # AWS SDK Examples
 
 These examples show complete workflows using AWS SDKs with Oyster's
-S3-compatible API. For initial SDK setup, see [S3 Setup](../s3-api/setup.md).
+S3-compatible API. For initial SDK setup, see [S3 setup](../s3-api/setup.md).
 
 ## Python (boto3)
 
@@ -19,13 +19,13 @@ s3 = boto3.client(
 )
 ```
 
-### Create a Bucket
+### Create a bucket
 
 ```python
 s3.create_bucket(Bucket="my-bucket")
 ```
 
-### Upload a File
+### Upload a file
 
 ```python
 # From a file on disk
@@ -40,7 +40,7 @@ s3.put_object(
 )
 ```
 
-### Download a File
+### Download a file
 
 ```python
 # To a file on disk
@@ -52,7 +52,7 @@ content = response["Body"].read()
 print(content.decode())  # "Hello, Oyster!"
 ```
 
-### List Objects
+### List objects
 
 ```python
 # List all objects
@@ -76,7 +76,7 @@ for prefix in response.get("CommonPrefixes", []):
     print(f"  Folder: {prefix['Prefix']}")
 ```
 
-### Paginate Through Large Listings
+### Paginate through large listings
 
 ```python
 paginator = s3.get_paginator("list_objects_v2")
@@ -85,19 +85,19 @@ for page in paginator.paginate(Bucket="my-bucket", MaxKeys=100):
         print(obj["Key"])
 ```
 
-### Delete an Object
+### Delete an object
 
 ```python
 s3.delete_object(Bucket="my-bucket", Key="hello.txt")
 ```
 
-### Delete a Bucket
+### Delete a bucket
 
 ```python
 s3.delete_bucket(Bucket="my-bucket")
 ```
 
-### Check if an Object Exists
+### Check if an object exists
 
 ```python
 try:
@@ -110,7 +110,7 @@ except s3.exceptions.ClientError as e:
         raise
 ```
 
-### Conditional Requests
+### Conditional requests
 
 Use `If-Match` and `If-None-Match` headers for safe writes and cache
 validation:
@@ -155,7 +155,7 @@ except s3.exceptions.ClientError as e:
         raise
 ```
 
-### Full Workflow
+### Full workflow
 
 ```python
 import boto3
@@ -221,13 +221,13 @@ const client = new S3Client({
 });
 ```
 
-### Create a Bucket
+### Create a bucket
 
 ```javascript
 await client.send(new CreateBucketCommand({ Bucket: "my-bucket" }));
 ```
 
-### Upload an Object
+### Upload an object
 
 ```javascript
 await client.send(
@@ -240,7 +240,7 @@ await client.send(
 );
 ```
 
-### Upload a File from Disk (Node.js)
+### Upload a file from disk (Node.js)
 
 ```javascript
 import { createReadStream } from "fs";
@@ -255,7 +255,7 @@ await client.send(
 );
 ```
 
-### Download an Object
+### Download an object
 
 ```javascript
 const response = await client.send(
@@ -269,7 +269,7 @@ const body = await response.Body.transformToString();
 console.log(body); // "Hello, Oyster!"
 ```
 
-### List Objects
+### List objects
 
 ```javascript
 const response = await client.send(
@@ -289,7 +289,7 @@ for (const prefix of response.CommonPrefixes ?? []) {
 }
 ```
 
-### Delete an Object
+### Delete an object
 
 ```javascript
 await client.send(
@@ -300,7 +300,7 @@ await client.send(
 );
 ```
 
-### Check if an Object Exists
+### Check if an object exists
 
 ```javascript
 try {
@@ -320,7 +320,7 @@ try {
 }
 ```
 
-### Conditional Requests
+### Conditional requests
 
 Use `IfMatch` and `IfNoneMatch` parameters for safe writes and cache
 validation:
@@ -359,7 +359,7 @@ await client.send(
 );
 ```
 
-### Full Workflow
+### Full workflow
 
 ```javascript
 import { S3Client, CreateBucketCommand, PutObjectCommand,
