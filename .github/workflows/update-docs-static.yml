@@ -1,0 +1,49 @@
+name: Update docs static files
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/src/**"
+      - "crates/oyster/src/routes/**"
+      - "crates/oyster/src/models.rs"
+  schedule:
+    # Re-fetch OpenAPI spec daily in case the live API changed
+    - cron: "30 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  update-static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate llms.txt from docs
+        run: |
+          cd docs
+          node ../scripts/generate-oyster-llms.js
+
+      - name: Fetch OpenAPI spec from live endpoint
+        run: |
+          node scripts/fetch-openapi.js
+
+      - name: Generate Scalar HTML page
+        run: |
+          node scripts/generate-scalar.js
+
+      - name: Check for changes
+        id: changes
+        run: |
+          git diff --quiet docs/static/ && echo "changed=false" >> "$GITHUB_OUTPUT" || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/static/
+          git commit -m "chore: update docs static files (auto-generated)"
+          git push
