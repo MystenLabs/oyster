@@ -1,11 +1,11 @@
 # Webhooks
 
-Oyster posts a single webhook event today: `account.funding_required`.
+Oyster posts a single webhook event: `account.funding_required`.
 It tells the owning app that an account's Pearl-derived wallet cannot
 cover the next `extend_storage_pool` PTB. Top up the wallet and the
-next extension cycle will succeed.
+next extension cycle succeeds.
 
-This guide covers the trigger condition, payload schema, retry
+This page covers the trigger condition, payload schema, retry
 behavior, circuit-breaker semantics, and how to write a receiver.
 
 ## Overview
@@ -16,8 +16,8 @@ Oyster POSTs a JSON event to the receiver URL configured for the
 owning app. The receiver is expected to credit the wallet (or alert a
 human to do so) and acknowledge with a `2xx` status.
 
-Only `account.funding_required` is emitted today. Future events will
-share the same envelope shape; receivers should switch on the `type`
+Only `account.funding_required` is emitted currently. Future events
+share the same envelope shape. Receivers should switch on the `type`
 field rather than assuming a single schema.
 
 ## Trigger condition
@@ -30,14 +30,16 @@ extension cycle:
 - The `extend_storage_pool` PTB submission fails with an error whose
   lowercased message contains `insufficientgas`,
   `insufficientcoinbalance`, or `insufficient` (case-insensitive
-  substring match — see `is_insufficient_funds_error` in
+  substring match; see `is_insufficient_funds_error` in
   `crates/oyster/src/webhook.rs`).
 - The owning app has a webhook receiver URL configured.
 
-Any other class of failure (Sui RPC down, network timeout, signing
+Any other class of failure (Sui RPC down, network timeout, or signing
 error) is logged and metered but does **not** fire a webhook.
 
 ## Payload schema
+
+The following JSON object is sent with every `account.funding_required` delivery.
 
 ```json
 {
@@ -58,14 +60,14 @@ error) is logged and metered but does **not** fire a webhook.
 | `event_id` | UUID v4 string | Stable id for this delivery; reused across all retry attempts. Receivers MUST dedupe by this. |
 | `type` | string | Event type discriminator. Always `"account.funding_required"` for this event. |
 | `account_id` | string | Oyster account whose pool needs extension funding. |
-| `pearl_address` | string | Sui wallet address derived by Pearl for this account — the address that needs funding. |
+| `pearl_address` | string | Sui wallet address derived by Pearl for this account (the address that needs funding). |
 | `amount.wal_frost` | decimal string | WAL required, in FROST units (1 WAL = 10⁹ FROST). |
 | `amount.sui_mist` | decimal string | SUI required, in MIST units (1 SUI = 10⁹ MIST). |
 | `timestamp` | ISO-8601 UTC string | When Oyster emitted the event. |
 
 `amount.*` are **decimal strings**, not numbers, to avoid `u64`
 precision loss in JSON. The SUI amount is currently a fixed
-`100_000_000` MIST (≈0.1 SUI) buffer — Oyster does not dry-run gas.
+`100_000_000` MIST (≈0.1 SUI) buffer. Oyster does not dry-run gas.
 The WAL amount is computed from the planned extension's encoded
 capacity × `POOL_EXTEND_EPOCHS` × the Walrus per-unit storage price.
 
@@ -91,12 +93,12 @@ configured public key.
 Oyster retries the same delivery up to `MAX_RETRIES = 3` times with
 exponential backoff:
 
-- Attempt 1 — immediate.
-- Attempt 2 — after 100 ms.
-- Attempt 3 — after 200 ms.
+- Attempt 1: immediate.
+- Attempt 2: after 100 ms.
+- Attempt 3: after 200 ms.
 
 (Backoff doubles each retry and is capped at 5 s, so the third sleep
-would be 400 ms — well under the cap.)
+would be 400 ms, well under the cap.)
 
 Retry semantics by response:
 
@@ -108,7 +110,7 @@ Retry semantics by response:
 | Connection / timeout error | Retried up to 3 attempts total. |
 | All 3 attempts exhausted | Logged, counted as a failure, delivery dropped. |
 
-The same delivery may re-emerge later — see [Idempotency](#idempotency).
+The same delivery might re-emerge later. See [Idempotency](#idempotency).
 
 ## Circuit breaker
 
@@ -128,10 +130,10 @@ breaker:
 
 Because dropped events are not queued, recovery from a long receiver
 outage relies on the next extension cycle re-claiming the account
-once its `EXTENSION_CLAIM_COOLDOWN_SECS` elapses. Practically this
-means: if your receiver is down, you will miss notifications for the
-duration of the outage, but a healthy receiver will start receiving
-events again on the next cycle after recovery.
+once its `EXTENSION_CLAIM_COOLDOWN_SECS` elapses. In practice, if
+your receiver is down, you miss notifications for the duration of the
+outage, but a healthy receiver starts receiving events again on the
+next cycle after recovery.
 
 ## Idempotency
 
@@ -140,10 +142,10 @@ events again on the next cycle after recovery.
 webhook client makes for that delivery. **Receivers MUST dedupe by
 `event_id`.**
 
-A separate delivery for the same account in a later cycle will have a
+A separate delivery for the same account in a later cycle has a
 **fresh** `event_id`, so dedup is per-delivery, not per-account. If
 you want to suppress repeated notifications for the same underfunded
-account, do so in your receiver based on `account_id` + your own
+account, do so in your receiver based on `account_id` and your own
 state.
 
 ## Setup
@@ -167,13 +169,13 @@ oyster app webhook clear
 is generated, so already-deployed receivers must be updated with the
 new key after each call. The corresponding HTTP endpoints are
 `PUT /api/v1/admin/app/webhook`, `DELETE /api/v1/admin/app/webhook`,
-and `GET /api/v1/admin/app` — see [Admin API](../json-api/admin.md).
+and `GET /api/v1/admin/app`. See [Admin API](../json-api/admin.md).
 
 ## Verifying signatures
 
-Receivers verify each delivery against the public key returned at
-registration. Compute the verification over the exact request body
-bytes — do not re-serialize the JSON.
+Verify each delivery against the public key returned at registration.
+Compute the verification over the exact request body bytes. Do not
+re-serialize the JSON.
 
 ### Node.js (tweetnacl)
 
@@ -349,8 +351,8 @@ def funding_required():
         return "", 503
 ```
 
-> In production, persist the dedup set (e.g. Redis with a TTL of a
-> few hours) so receiver restarts don't re-process events.
+> In production, persist the dedup set (for example, Redis with a TTL of a
+> few hours) so receiver restarts do not re-process events.
 
 ## Error semantics
 

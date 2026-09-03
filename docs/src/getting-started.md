@@ -1,19 +1,19 @@
 # Getting Started
 
-This guide walks you through your first interactions with Oyster. By the end
-you'll have created a bucket, uploaded a blob, and downloaded it back.
+Follow these steps to complete your first interactions with Oyster. By the end,
+you have created a bucket, uploaded a blob, and downloaded it back.
 
 ## Prerequisites
 
-- **curl** — for making HTTP requests to the JSON API
-- **AWS CLI** (optional) — for using the S3-compatible API
+- **curl**: for making HTTP requests to the JSON API
+- **AWS CLI** (optional): for using the S3-compatible API
   ([install guide](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html))
 
 ## Obtaining Credentials
 
 Oyster uses a two-tier auth model: **operators** manage accounts with
 long-lived per-app **admin keys**, and **end users** authenticate data
-operations with API keys. Both tiers use `Authorization: Bearer <hex>` —
+operations with API keys. Both tiers use `Authorization: Bearer <hex>`;
 the route prefix selects which credential table is consulted.
 
 ### For Operators
@@ -54,7 +54,7 @@ The response includes the account ID and an initial API key:
 }
 ```
 
-Save the `account_id` and `bearer_token` — the token is only shown once.
+Save the `account_id` and `bearer_token`. The token is only shown once.
 
 ```bash
 export ACCOUNT_ID="550e8400-e29b-41d4-a716-446655440000"
@@ -63,7 +63,7 @@ export API_KEY="a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
 
 ### For End Users
 
-Your operator will provide you with an API key. Store it in an
+Your operator provides you with an API key. Store it in an
 environment variable for the rest of this guide:
 
 ```bash
@@ -129,7 +129,7 @@ curl -s -X PUT \
 
 ## Download a Blob
 
-Blob reads are **public** — no authentication needed:
+Blob reads are **public** (no authentication needed):
 
 ```bash
 curl -s "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
@@ -179,7 +179,7 @@ Returns HTTP 204 (no content) on success.
 
 ## Create Additional API Keys (Operator)
 
-Additional API keys are created by the operator via the Admin API using
+Additional API keys are created by the operator through the Admin API using
 admin-key authentication. This requires the `$ADMIN_KEY` and `$ACCOUNT_ID`
 variables from the [Obtaining Credentials](#obtaining-credentials) section.
 
@@ -208,7 +208,7 @@ details including error handling and key revocation.
 ## Set Up S3 Access Keys (Operator)
 
 To use the AWS CLI or any S3-compatible SDK, the operator creates S3 access
-keys via the [Admin API](json-api/admin.md#create-access-key). This
+keys through the [Admin API](json-api/admin.md#create-access-key). This
 requires the `$ADMIN_KEY` and `$ACCOUNT_ID` variables from the
 [Obtaining Credentials](#obtaining-credentials) section.
 
@@ -259,9 +259,9 @@ For the full S3 API reference, see **[S3 API Reference](s3-api/README.md)**.
 
 ## What's Next
 
-- **[JSON API Reference](json-api/README.md)** — detailed documentation of
+- **[JSON API Reference](json-api/README.md)**: detailed documentation of
   every endpoint.
-- **[S3 API Reference](s3-api/README.md)** — complete S3-compatible
+- **[S3 API Reference](s3-api/README.md)**: complete S3-compatible
   operations and setup.
-- **[Guides](guides/README.md)** — CLI quick start, SDK examples, and
+- **[Guides](guides/README.md)**: CLI quick start, SDK examples, and
   advanced topics.

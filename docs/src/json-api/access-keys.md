@@ -24,7 +24,7 @@ keys for accounts they manage.
 | Field | Format | Description |
 |-------|--------|-------------|
 | `access_key_id` | 20 characters, `OYAK` prefix | Identifies the key in S3 requests |
-| `secret_access_key` | 40 hex characters | Signs S3 requests — **shown only once** at creation |
+| `secret_access_key` | 40 hex characters | Signs S3 requests, **shown only once** at creation |
 
 Each account can have at most **3 active** access keys. Revoked keys do
 not count toward this limit.

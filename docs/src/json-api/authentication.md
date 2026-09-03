@@ -42,11 +42,11 @@ curl -s \
 |---|---|
 | Size | 32 bytes, hex-encoded (64 characters) |
 | Hash algorithm | BLAKE2s-256 (only the hash is stored) |
-| Prefix | First 8 characters — used to identify keys without exposing the secret |
+| Prefix | First 8 characters, used to identify keys without exposing the secret |
 
 API keys are provisioned through the Admin API (see
 [Admin](admin.md)). The full secret is shown **only once** at
-creation time — a lost key cannot be recovered.
+creation time. A lost key cannot be recovered.
 
 ### Errors
 
@@ -74,7 +74,7 @@ rotation, no cap).
 |---|---|
 | Size | 32 bytes, hex-encoded (64 characters) |
 | Hash algorithm | BLAKE2s-256 (only the hash is stored) |
-| Prefix | First 8 characters — used to identify keys in listings without exposing the secret |
+| Prefix | First 8 characters, used to identify keys in listings without exposing the secret |
 | Lifetime | Long-lived; no expiry. Rotation is voluntary issue-then-revoke. |
 
 ### Account ownership enforcement
@@ -96,7 +96,7 @@ overlap:
 2. Callers swap to the new key.
 3. After confirming nothing still uses the old key, the operator revokes
    it (`oysterd app revoke-admin-key <OLD_KEY_ID>`). Revocation takes
-   effect immediately — there is no caching.
+   effect immediately, with no caching.
 
 `oysterd app list-admin-keys <APP_ID>` shows all keys (active and
 revoked) so an operator can audit before revoking.
@@ -112,9 +112,9 @@ revoked) so an operator can audit before revoking.
 
 The following routes require no authentication:
 
-- **Blob reads** — `GET /api/v1/buckets/{bucket_name}/blobs/{key}` and
+- **Blob reads**: `GET /api/v1/buckets/{bucket_name}/blobs/{key}` and
   `GET /api/v1/blobs/by-blob-id/{blob_id}`
-- **Infrastructure** — `/health`, `/ready`, `/metrics`, `/api/docs`
+- **Infrastructure**: `/health`, `/ready`, `/metrics`, `/api/docs`
 
 **Example:**
 
@@ -124,11 +124,11 @@ curl -s "$OYSTER_URL/api/v1/buckets/my-bucket/blobs/hello.txt"
 
 ## Security Notes
 
-- **API keys** and **admin keys** — Only the BLAKE2s-256 hash is stored.
+- **API keys and admin keys**: Only the BLAKE2s-256 hash is stored.
   A lost key cannot be recovered; issue a new one instead.
-- **Admin-key compromise** — A leaked admin key gives full app-admin
+- **Admin-key compromise**: A leaked admin key gives full app-admin
   access (account creation, key issuance, S3 access keys) until revoked.
-  Treat it like a long-lived service credential: rotate periodically and
-  on personnel changes via `oysterd app issue-admin-key` +
+  Treat it like a long-lived service credential and rotate it periodically and
+  on personnel changes through `oysterd app issue-admin-key` +
   `oysterd app revoke-admin-key`.
-- **TLS** — Always terminate TLS in front of Oyster in production.
+- **TLS**: Always terminate TLS in front of Oyster in production.

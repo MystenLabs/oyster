@@ -1,6 +1,6 @@
 # Limitations
 
-Oyster implements the most commonly used S3 operations. This page documents
+Oyster implements the most commonly used S3 operations. The sections below document
 what's different from a full AWS S3 deployment.
 
 ## Supported vs. Not Supported
@@ -40,7 +40,7 @@ what's different from a full AWS S3 deployment.
 ### Object Expiration
 
 All objects in a bucket share the owning account's `StoragePool`
-lifetime — there is no per-object expiration to set. Oyster runs a
+lifetime, with no per-object expiration to set. Oyster runs a
 background extension service that renews the pool before it expires,
 so objects persist indefinitely as long as the service is running and
 the account's wallet stays funded. See
@@ -75,14 +75,13 @@ supported. Always set `force_path_style: true` in your SDK configuration.
 ### No Region Semantics
 
 Oyster ignores the region in S3 requests. All data is stored in the same
-location. You still need to specify a region for SigV4 signing to work —
-use any valid region string (e.g., `us-east-1`).
+location. You still need to specify a region for SigV4 signing to work, so
+use any valid region string, for example `us-east-1`.
 
 ### ETag Format
 
 ETags are always the MD5 digest of the object content, even for large
-objects. There is no multipart ETag format (since multipart upload is not
-supported).
+objects. There is no multipart ETag format, because multipart upload is not supported.
 
 ### Conditional Request Headers
 

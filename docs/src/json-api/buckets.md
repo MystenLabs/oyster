@@ -1,7 +1,7 @@
 # Buckets
 
 Buckets are named containers that hold your blobs. Bucket names are
-**globally unique** — no two accounts can have a bucket with the same name.
+**globally unique**: no two accounts can have a bucket with the same name.
 
 ## Bucket Naming Rules
 
@@ -11,7 +11,7 @@ Bucket names must follow these rules:
 - Only **lowercase letters**, **digits**, and **hyphens** (`-`)
 - Must **start and end** with a letter or digit
 - No **consecutive hyphens** (`--`)
-- Cannot look like an **IP address** (e.g., `192.168.1.1`)
+- Cannot look like an **IP address** (for example, `192.168.1.1`)
 - Cannot use **reserved names**: `health`, `ready`, `metrics`, `api`
 
 **Valid examples:** `my-bucket`, `data-2025`, `images`
@@ -122,7 +122,7 @@ to fetch the next page.
 DELETE /api/v1/buckets/{bucket_name}
 ```
 
-Deletes a bucket. The bucket must be empty — delete all blobs first.
+Deletes a bucket. The bucket must be empty; delete all blobs first.
 
 **Path parameters:**
 
