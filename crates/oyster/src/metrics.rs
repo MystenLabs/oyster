@@ -37,6 +37,12 @@ pub const EXTENSION_CYCLE_POOLS_PROCESSED: &str = "oyster_extension_cycle_pools_
 /// Counter: pools whose stale DB `pool_end_epoch` was repaired from the
 /// on-chain value (an extension landed outside Oyster).
 pub const EXTENSION_POOLS_REPAIRED_TOTAL: &str = "oyster_extension_pools_repaired_total";
+/// Counter: claimed pools skipped because the on-chain `end_epoch` was
+/// already past the lookahead cutoff — an earlier extension landed but
+/// its DB update was lost (or it happened outside Oyster). Each one is a
+/// duplicate `extend_storage_pool` that was avoided.
+pub const EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL: &str =
+    "oyster_extension_pools_already_extended_total";
 /// Counter: pools confirmed expired on-chain and reset for lazy re-create.
 pub const EXTENSION_POOLS_EXPIRED_RESET_TOTAL: &str = "oyster_extension_pools_expired_reset_total";
 /// Counter: retry attempts skipped because the WAL balance pre-check showed

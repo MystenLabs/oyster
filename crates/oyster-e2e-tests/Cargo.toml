@@ -42,6 +42,7 @@ tempfile = { workspace = true }
 aws-sdk-s3 = { workspace = true }
 aws-credential-types = { workspace = true }
 walrus-core.workspace = true
+sqlx.workspace = true
 
 [dev-dependencies]
 oyster-cli = { path = "../oyster-cli" }

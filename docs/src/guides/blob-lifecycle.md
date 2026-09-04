@@ -41,6 +41,13 @@ While the worker is running:
 - Latency between an account becoming eligible and its pool being
   extended is bounded above by `EXTENSION_IDLE_SLEEP_SECS` plus the
   RPC time of one extension.
+- Before every extension the worker reads the pool's on-chain
+  `end_epoch` and only submits the PTB if the chain still shows the
+  pool inside the lookahead window. Walrus extensions are additive, so
+  this is what keeps a retry idempotent: if an earlier attempt landed
+  on-chain but Oyster's DB update was lost (write failure, timeout
+  after execution, crash), the retry repairs `pool_end_epoch` from the
+  chain instead of extending — and paying — a second time.
 
 ### Horizontal scaling
 

@@ -7,6 +7,7 @@ use http_body_util::BodyExt;
 use oyster_e2e_tests::{OysterTestHarness, run_e2e};
 use serde_json::Value;
 use tower::ServiceExt;
+use walrus_sui::client::ReadClient as _;
 
 /// Helper: send a request and return (status, body as JSON Value).
 async fn json_response(app: &Router, req: Request<Body>) -> (axum::http::StatusCode, Value) {
@@ -659,7 +660,9 @@ fn e2e_small_upload_reuses_reserved_capacity() {
     });
 }
 
-/// Test C — the extension task advances `pool_end_epoch` both on-chain and in DB.
+/// Test C — the extension task advances `pool_end_epoch` both on-chain and
+/// in DB, and a retry after a lost DB update does not extend the pool a
+/// second time.
 #[test]
 fn e2e_extension_task_extends_pool() {
     run_e2e(async {
@@ -690,7 +693,24 @@ fn e2e_extension_task_extends_pool() {
             .await
             .expect("storage_pool_status before");
 
-        let processed = harness.trigger_extension_cycle(7, 1).await;
+        // Pick the lookahead so the claim cutoff sits exactly one epoch past
+        // the pool's current end: the first cycle must extend (end < cutoff)
+        // and, once extended by one epoch, the pool must sit right at the
+        // cutoff so a second cycle has no legitimate reason to extend again.
+        let current_epoch = harness
+            .walrus_sui_client()
+            .read_client()
+            .current_epoch()
+            .await
+            .expect("current_epoch");
+        assert!(
+            before.end_epoch > current_epoch,
+            "fresh pool should end in the future (end={}, current={current_epoch})",
+            before.end_epoch,
+        );
+        let lookahead = before.end_epoch + 1 - current_epoch;
+
+        let processed = harness.trigger_extension_cycle(lookahead, 1).await;
         assert_eq!(processed, 1, "exactly one pool should have been processed");
 
         let after = harness
@@ -712,6 +732,42 @@ fn e2e_extension_task_extends_pool() {
         assert_eq!(
             state_after.end_epoch as u32, after.end_epoch,
             "DB end_epoch should match on-chain end_epoch after extension",
+        );
+
+        // Simulate the extension landing on-chain but the follow-up DB
+        // update being lost (write failure, checkpoint-wait timeout after
+        // execution, or a crash in between): roll the row back to its
+        // pre-extension state so the next cycle re-claims it.
+        sqlx::query(&oyster::db::sql(
+            "UPDATE accounts SET pool_end_epoch = ?, extend_attempt_after = NULL, \
+             extend_failure_count = 0 WHERE id = ?",
+        ))
+        .bind(before.end_epoch as i64)
+        .bind(&account_id)
+        .execute(&harness.db)
+        .await
+        .expect("roll back pool_end_epoch");
+
+        let processed = harness.trigger_extension_cycle(lookahead, 1).await;
+        assert_eq!(processed, 1, "the stale row should be re-claimed");
+
+        let after_retry = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after retry");
+        assert_eq!(
+            after_retry.end_epoch, after.end_epoch,
+            "retry after a lost DB update must not extend the pool again",
+        );
+
+        let state_after_retry = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        assert_eq!(
+            state_after_retry.end_epoch as u32, after.end_epoch,
+            "retry should repair the stale DB end_epoch from the on-chain value",
         );
     });
 }
