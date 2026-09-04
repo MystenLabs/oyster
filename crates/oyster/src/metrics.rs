@@ -35,8 +35,56 @@ pub const EXTENSION_POOLS_EXPIRING: &str = "oyster_extension_pools_expiring";
 /// Gauge: number of pools processed (extended + errored) in the current cycle.
 pub const EXTENSION_CYCLE_POOLS_PROCESSED: &str = "oyster_extension_cycle_pools_processed";
 /// Counter: pools whose stale DB `pool_end_epoch` was repaired from the
-/// on-chain value (an extension landed outside Oyster).
+/// on-chain value, labelled by `context` ∈ {`already_extended`,
+/// `pre_extend`}. `already_extended` means the chain was already past
+/// the lookahead cutoff (typically our own extension whose DB update was
+/// lost — see [`EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL`]); `pre_extend`
+/// means the chain was ahead of the DB but still inside the window, so
+/// the pool was extended in the same pass (an extension landed outside
+/// Oyster, or a partial replay).
 pub const EXTENSION_POOLS_REPAIRED_TOTAL: &str = "oyster_extension_pools_repaired_total";
+/// Counter: failed `extend_storage_pool` attempts, labelled by `reason` ∈
+/// {`insufficient_funds`, `on_chain_abort`, `ptb_build`,
+/// `sign_or_submit`, `invalid_object_id`}. `insufficient_funds` is an
+/// app-side condition (the wallet needs WAL or SUI gas); every other
+/// reason is an operator-side problem. Complements the coarser
+/// [`EXTENSION_ERRORS_TOTAL`]`{stage="extend_storage_pool"}`.
+pub const EXTENSION_FAILURES_TOTAL: &str = "oyster_extension_failures_total";
+/// Histogram: wall-clock seconds for one `extend_storage_pool` attempt
+/// (PTB build + Pearl sign + execute + checkpoint wait), labelled by
+/// `outcome` ∈ {`ok`, `failed`}.
+pub const EXTENSION_ATTEMPT_DURATION_SECONDS: &str = "oyster_extension_attempt_duration_seconds";
+/// Counter: total Walrus epochs added across all successful extensions
+/// (`POOL_EXTEND_EPOCHS` per success). Storage subsidy spend is
+/// proportional to this, so a slope above the expected pools × epochs
+/// rate is the signal for over-extension.
+pub const EXTENSION_EPOCHS_EXTENDED_TOTAL: &str = "oyster_extension_epochs_extended_total";
+/// Gauge: accounts with a pool whose most recent extension attempt
+/// failed (`extend_failure_count > 0`), i.e. pools currently sitting in
+/// exponential backoff. Sampled once per cycle from the DB.
+pub const EXTENSION_POOLS_IN_BACKOFF: &str = "oyster_extension_pools_in_backoff";
+/// Gauge: highest consecutive extension-failure count across all pools.
+/// Sampled once per cycle from the DB.
+pub const EXTENSION_MAX_FAILURE_COUNT: &str = "oyster_extension_max_failure_count";
+/// Gauge: epochs between the current Walrus epoch and the earliest
+/// `pool_end_epoch` in the DB (`min(pool_end_epoch) - current_epoch`).
+/// Drops to `<= 0` when a pool has expired without being extended.
+/// Sampled once per cycle; set to NaN when no pools exist so threshold
+/// comparisons in alert rules stay false rather than acting on a stale
+/// last value.
+pub const EXTENSION_MIN_POOL_EPOCHS_REMAINING: &str = "oyster_extension_min_pool_epochs_remaining";
+/// Gauge: Unix timestamp (seconds) of the last extension cycle that ran
+/// to completion, including empty cycles. A stale value means the worker
+/// is dead or stuck before the claim step (e.g. `current_epoch` RPC
+/// failing every cycle).
+pub const EXTENSION_LAST_CYCLE_COMPLETED_TIMESTAMP_SECONDS: &str =
+    "oyster_extension_last_cycle_completed_timestamp_seconds";
+/// Counter: claimed pools skipped because the on-chain `end_epoch` was
+/// already past the lookahead cutoff — an earlier extension landed but
+/// its DB update was lost (or it happened outside Oyster). Each one is a
+/// duplicate `extend_storage_pool` that was avoided.
+pub const EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL: &str =
+    "oyster_extension_pools_already_extended_total";
 /// Counter: pools confirmed expired on-chain and reset for lazy re-create.
 pub const EXTENSION_POOLS_EXPIRED_RESET_TOTAL: &str = "oyster_extension_pools_expired_reset_total";
 /// Counter: retry attempts skipped because the WAL balance pre-check showed
