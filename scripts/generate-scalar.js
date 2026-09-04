@@ -1,19 +1,11 @@
-// Generates a standalone Scalar HTML page from the OpenAPI spec.
-// Reads: docs/static/openapi.json
+// Generates a standalone Scalar HTML page that loads the OpenAPI spec
+// from the separate openapi.json file (not inlined).
 // Output: docs/static/scalar.html
 
 const fs = require("fs");
 const path = require("path");
 
 const STATIC_DIR = path.resolve(__dirname, "../docs/static");
-const specPath = path.join(STATIC_DIR, "openapi.json");
-
-if (!fs.existsSync(specPath)) {
-  console.error("❌ openapi.json not found. Run fetch-openapi.js first.");
-  process.exit(1);
-}
-
-const specJson = fs.readFileSync(specPath, "utf8");
 
 const html = `<!DOCTYPE html>
 <html>
@@ -29,9 +21,9 @@ const html = `<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <script id="api-reference" type="application/json">${specJson}</script>
+  <div id="api-reference"></div>
   <script>
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
       const prefersDark =
         window.matchMedia('(prefers-color-scheme: dark)').matches;
       const parentDark = window.parent !== window
@@ -39,7 +31,9 @@ const html = `<!DOCTYPE html>
             .getAttribute('data-theme') === 'dark'
         : prefersDark;
 
-      const config = {
+      const el = document.getElementById('api-reference');
+      el.dataset.url = './openapi.json';
+      el.dataset.configuration = JSON.stringify({
         theme: 'kepler',
         darkMode: parentDark,
         showSidebar: true,
@@ -47,15 +41,13 @@ const html = `<!DOCTYPE html>
         hideModels: false,
         defaultOpenAllTags: true,
         hideSearch: true,
-      };
-
-      const el = document.getElementById('api-reference');
-      el.dataset.configuration = JSON.stringify(config);
+      });
     });
   </script>
   <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
 </body>
 </html>`;
 
+fs.mkdirSync(STATIC_DIR, { recursive: true });
 fs.writeFileSync(path.join(STATIC_DIR, "scalar.html"), html);
 console.log("✅ Scalar standalone page generated");
