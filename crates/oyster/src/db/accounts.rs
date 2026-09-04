@@ -315,6 +315,41 @@ pub async fn claim_pools_for_extension(
         .collect())
 }
 
+/// Fleet-wide pool health snapshot, sampled once per extension cycle to
+/// feed the worker's gauges.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PoolHealthStats {
+    /// Accounts with a pool whose most recent extension attempt failed
+    /// (`extend_failure_count > 0`) — pools currently in backoff.
+    pub pools_in_backoff: i64,
+    /// Highest consecutive-failure count across all pools (0 when none).
+    pub max_failure_count: i64,
+    /// Lowest `pool_end_epoch` across accounts that have a pool; `None`
+    /// when no account has a pool yet.
+    pub min_pool_end_epoch: Option<i64>,
+}
+
+/// One aggregate query over accounts that own a `StoragePool`. Uses
+/// `COUNT(CASE …)` rather than `SUM` so the result is a plain integer on
+/// both backends (Postgres `SUM(bigint)` is `numeric`).
+pub async fn pool_health_stats(pool: &super::DbPool) -> Result<PoolHealthStats, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT \
+             COUNT(CASE WHEN extend_failure_count > 0 THEN 1 END) AS pools_in_backoff, \
+             MAX(extend_failure_count) AS max_failure_count, \
+             MIN(pool_end_epoch) AS min_pool_end_epoch \
+         FROM accounts \
+         WHERE storage_pool_object_id IS NOT NULL",
+    ))
+    .fetch_one(pool)
+    .await?;
+    Ok(PoolHealthStats {
+        pools_in_backoff: row.get("pools_in_backoff"),
+        max_failure_count: row.get::<Option<i64>, _>("max_failure_count").unwrap_or(0),
+        min_pool_end_epoch: row.get("min_pool_end_epoch"),
+    })
+}
+
 /// Per-app webhook configuration: URL plus the base64-encoded Ed25519
 /// keypair used to sign deliveries. All three fields are populated together
 /// or all NULL together — see migration 017.
@@ -1390,6 +1425,82 @@ mod tests {
             set_storage_pool(&pool, &a.id, "0xbbb", 99, 1_000, 0)
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn pool_health_stats_aggregates_backoff_and_min_end_epoch() {
+        let pool = test_pool().await;
+
+        // No pools at all: zeros and no min epoch.
+        let empty = pool_health_stats(&pool).await.unwrap();
+        assert_eq!(
+            empty,
+            PoolHealthStats {
+                pools_in_backoff: 0,
+                max_failure_count: 0,
+                min_pool_end_epoch: None,
+            }
+        );
+
+        let a = create_account(&pool, &AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
+        let b = create_account(&pool, &AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
+        // An account without a pool must not count, even if it somehow
+        // carries a failure count.
+        let _no_pool = create_account(&pool, &AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 40, 1_000, 0)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &b.id, "0xbbb", 25, 1_000, 0)
+            .await
+            .unwrap();
+
+        let healthy = pool_health_stats(&pool).await.unwrap();
+        assert_eq!(
+            healthy,
+            PoolHealthStats {
+                pools_in_backoff: 0,
+                max_failure_count: 0,
+                min_pool_end_epoch: Some(25),
+            }
+        );
+
+        record_extension_failure(&pool, &a.id, now_at(60))
+            .await
+            .unwrap();
+        record_extension_failure(&pool, &a.id, now_at(120))
+            .await
+            .unwrap();
+        record_extension_failure(&pool, &b.id, now_at(60))
+            .await
+            .unwrap();
+
+        let degraded = pool_health_stats(&pool).await.unwrap();
+        assert_eq!(
+            degraded,
+            PoolHealthStats {
+                pools_in_backoff: 2,
+                max_failure_count: 2,
+                min_pool_end_epoch: Some(25),
+            }
+        );
+
+        // A successful extension clears the failure count and moves the min.
+        bump_pool_end_epoch(&pool, &b.id, 60).await.unwrap();
+        let recovered = pool_health_stats(&pool).await.unwrap();
+        assert_eq!(
+            recovered,
+            PoolHealthStats {
+                pools_in_backoff: 1,
+                max_failure_count: 2,
+                min_pool_end_epoch: Some(40),
+            }
         );
     }
 

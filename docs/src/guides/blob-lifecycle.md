@@ -56,6 +56,29 @@ database. Each pool is claimed by exactly one replica per cycle, so
 two extenders never double-extend the same pool. The public Oyster
 Testnet runs 2 extender replicas behind a shared DB.
 
+### Metrics
+
+The worker exposes Prometheus metrics on `OYSTER_EXTENSION_METRICS_BIND_ADDR`.
+The ones worth alerting on:
+
+| Metric | Type | Meaning |
+|---|---|---|
+| `oyster_extension_last_cycle_completed_timestamp_seconds` | gauge | Unix time of the last completed cycle (empty cycles included). Stale ⇒ worker dead or stuck before the claim step. |
+| `oyster_extension_min_pool_epochs_remaining` | gauge | `min(pool_end_epoch) − current_epoch` across all pools. Should stay above `POOL_EXTEND_LOOKAHEAD_EPOCHS` minus one; `≤ 0` means a pool expired unextended. |
+| `oyster_extension_pools_in_backoff` | gauge | Pools whose last attempt failed and are waiting out exponential backoff — usually unfunded wallets. |
+| `oyster_extension_max_failure_count` | gauge | Worst consecutive-failure streak across pools. |
+| `oyster_extension_failures_total{reason}` | counter | Failed `extend_storage_pool` attempts. `insufficient_funds` is the app's problem; `ptb_build`, `sign_or_submit`, `on_chain_abort`, `invalid_object_id` are the operator's. |
+| `oyster_extension_errors_total{stage}` | counter | All worker errors by pipeline stage (`current_epoch`, `db_query`, `db_stats`, `chain_reconcile`, `resolve_address`, `extend_storage_pool`, `db_update`, `expired_reset`, `expiry_repair`). |
+| `oyster_extension_pools_extended_total` | counter | Successful extensions. |
+| `oyster_extension_epochs_extended_total` | counter | Epochs added across all successful extensions. Subsidy spend scales with this; a slope above pools × `POOL_EXTEND_EPOCHS` per lookahead window means over-extension. |
+| `oyster_extension_pools_already_extended_total` | counter | Claimed pools skipped because the chain was already past the cutoff — each one is a duplicate extension avoided. |
+| `oyster_extension_pools_repaired_total{context}` | counter | DB `pool_end_epoch` repaired from chain: `already_extended` (then skipped) or `pre_extend` (then extended). |
+| `oyster_extension_pools_expired_reset_total` | counter | Pools confirmed expired on-chain and reset for lazy re-create. |
+| `oyster_extension_balance_precheck_skips_total` | counter | Retries skipped by the cheap WAL-balance pre-check. |
+| `oyster_extension_attempt_duration_seconds{outcome}` | histogram | One PTB build + sign + execute + checkpoint wait. |
+| `oyster_extension_cycle_duration_seconds` | histogram | Whole-cycle wall clock. |
+| `oyster_extension_cycles_total`, `oyster_extension_pools_expiring`, `oyster_extension_cycle_pools_processed` | counter / gauge | Cycle throughput. |
+
 ### Configuration
 
 | Variable | Default | Description |
