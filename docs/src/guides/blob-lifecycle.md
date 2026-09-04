@@ -47,7 +47,10 @@ While the worker is running:
   this is what keeps a retry idempotent: if an earlier attempt landed
   on-chain but Oyster's DB update was lost (write failure, timeout
   after execution, crash), the retry repairs `pool_end_epoch` from the
-  chain instead of extending — and paying — a second time.
+  chain instead of extending — and paying — a second time. The one
+  remaining window is multi-replica: an attempt whose sign/submit
+  outlives `EXTENSION_CLAIM_COOLDOWN_SECS` can overlap another replica's
+  claim, so keep the cooldown well above the checkpoint-wait timeout.
 
 ### Horizontal scaling
 
@@ -64,11 +67,11 @@ The ones worth alerting on:
 | Metric | Type | Meaning |
 |---|---|---|
 | `oyster_extension_last_cycle_completed_timestamp_seconds` | gauge | Unix time of the last completed cycle (empty cycles included). Stale ⇒ worker dead or stuck before the claim step. |
-| `oyster_extension_min_pool_epochs_remaining` | gauge | `min(pool_end_epoch) − current_epoch` across all pools. Should stay above `POOL_EXTEND_LOOKAHEAD_EPOCHS` minus one; `≤ 0` means a pool expired unextended. |
+| `oyster_extension_min_pool_epochs_remaining` | gauge | `min(pool_end_epoch) − current_epoch` across all pools. Should stay above `POOL_EXTEND_LOOKAHEAD_EPOCHS` minus one; `≤ 0` means a pool expired unextended. NaN when no pools exist. |
 | `oyster_extension_pools_in_backoff` | gauge | Pools whose last attempt failed and are waiting out exponential backoff — usually unfunded wallets. |
 | `oyster_extension_max_failure_count` | gauge | Worst consecutive-failure streak across pools. |
 | `oyster_extension_failures_total{reason}` | counter | Failed `extend_storage_pool` attempts. `insufficient_funds` is the app's problem; `ptb_build`, `sign_or_submit`, `on_chain_abort`, `invalid_object_id` are the operator's. |
-| `oyster_extension_errors_total{stage}` | counter | All worker errors by pipeline stage (`current_epoch`, `db_query`, `db_stats`, `chain_reconcile`, `resolve_address`, `extend_storage_pool`, `db_update`, `expired_reset`, `expiry_repair`). |
+| `oyster_extension_errors_total{stage}` | counter | All worker errors by pipeline stage (`current_epoch`, `db_query`, `db_stats`, `invalid_object_id`, `chain_reconcile`, `resolve_address`, `extend_storage_pool`, `db_update`, `expired_reset`, `expiry_repair`). |
 | `oyster_extension_pools_extended_total` | counter | Successful extensions. |
 | `oyster_extension_epochs_extended_total` | counter | Epochs added across all successful extensions. Subsidy spend scales with this; a slope above pools × `POOL_EXTEND_EPOCHS` per lookahead window means over-extension. |
 | `oyster_extension_pools_already_extended_total` | counter | Claimed pools skipped because the chain was already past the cutoff — each one is a duplicate extension avoided. |

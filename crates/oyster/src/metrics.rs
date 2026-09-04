@@ -46,8 +46,8 @@ pub const EXTENSION_POOLS_REPAIRED_TOTAL: &str = "oyster_extension_pools_repaire
 /// Counter: failed `extend_storage_pool` attempts, labelled by `reason` ∈
 /// {`insufficient_funds`, `on_chain_abort`, `ptb_build`,
 /// `sign_or_submit`, `invalid_object_id`}. `insufficient_funds` is an
-/// app-side condition (the wallet needs WAL/SUI); every other reason is
-/// an operator-side problem. Complements the coarser
+/// app-side condition (the wallet needs WAL or SUI gas); every other
+/// reason is an operator-side problem. Complements the coarser
 /// [`EXTENSION_ERRORS_TOTAL`]`{stage="extend_storage_pool"}`.
 pub const EXTENSION_FAILURES_TOTAL: &str = "oyster_extension_failures_total";
 /// Histogram: wall-clock seconds for one `extend_storage_pool` attempt
@@ -69,7 +69,9 @@ pub const EXTENSION_MAX_FAILURE_COUNT: &str = "oyster_extension_max_failure_coun
 /// Gauge: epochs between the current Walrus epoch and the earliest
 /// `pool_end_epoch` in the DB (`min(pool_end_epoch) - current_epoch`).
 /// Drops to `<= 0` when a pool has expired without being extended.
-/// Sampled once per cycle; not published when no pools exist.
+/// Sampled once per cycle; set to NaN when no pools exist so threshold
+/// comparisons in alert rules stay false rather than acting on a stale
+/// last value.
 pub const EXTENSION_MIN_POOL_EPOCHS_REMAINING: &str = "oyster_extension_min_pool_epochs_remaining";
 /// Gauge: Unix timestamp (seconds) of the last extension cycle that ran
 /// to completion, including empty cycles. A stale value means the worker

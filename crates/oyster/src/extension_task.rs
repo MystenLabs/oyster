@@ -192,7 +192,27 @@ pub async fn run_extension_cycle_once(
     let mut address_cache: HashMap<AccountId, SuiAddress> = HashMap::new();
     let mut webhook_clients: HashMap<AppId, WebhookClient> = HashMap::new();
 
-    for pool in &pools {
+    for mut pool in pools {
+        let pool_object_id: ObjectID = match pool.storage_pool_object_id.parse() {
+            Ok(id) => id,
+            Err(e) => {
+                // Oyster writes these IDs itself, so this is data
+                // corruption. Back the row off like any other failed
+                // attempt so it is not re-read every claim cooldown.
+                tracing::error!(
+                    account_id = %pool.account_id,
+                    storage_pool_object_id = %pool.storage_pool_object_id,
+                    error = %e,
+                    "stored pool ObjectID unparsable, cannot extend pool"
+                );
+                counter!(EXTENSION_ERRORS_TOTAL, "stage" => "invalid_object_id").increment(1);
+                counter!(EXTENSION_FAILURES_TOTAL, "reason" => "invalid_object_id").increment(1);
+                record_failure_backoff(db, &pool, config).await;
+                errors += 1;
+                continue;
+            }
+        };
+
         // The DB `pool_end_epoch` is only a hint for *claiming* rows; the
         // on-chain value decides what to do. `extend_storage_pool` is
         // additive (each call pushes `end_epoch` out by `extend_epochs`),
@@ -201,7 +221,13 @@ pub async fn run_extension_cycle_once(
         // was lost (write failure, checkpoint-wait timeout after
         // execution, crash between submit and update). One read here
         // makes every retry idempotent.
-        let Some(on_chain) = read_pool_state(rpc_url, pool).await else {
+        //
+        // Residual window: with multiple replicas, an attempt whose
+        // sign/submit outlives `claim_cooldown` can overlap a second
+        // replica's claim, which then reads the pre-extension
+        // `end_epoch`. Keep `EXTENSION_CLAIM_COOLDOWN_SECS` comfortably
+        // above the checkpoint-wait timeout plus Pearl signing latency.
+        let Some(on_chain) = read_pool_state(rpc_url, &pool, pool_object_id).await else {
             errors += 1;
             continue;
         };
@@ -211,7 +237,7 @@ pub async fn run_extension_cycle_once(
         // Walrus (storage end epochs are exclusive) — attempting the PTB
         // would just burn RPCs and gas every cycle, forever.
         if on_chain_end <= current_epoch as i64 {
-            handle_expired_pool(db, pool, &on_chain, current_epoch).await;
+            handle_expired_pool(db, &pool, &on_chain, current_epoch).await;
             expired_handled += 1;
             continue;
         }
@@ -227,8 +253,17 @@ pub async fn run_extension_cycle_once(
             } else {
                 "pre_extend"
             };
-            db_repair_end_epoch(db, pool, on_chain.end_epoch, context).await;
+            if db_repair_end_epoch(db, &pool, on_chain.end_epoch, context).await {
+                // The repair reset the DB failure count; keep the
+                // in-memory copy in step so the backoff and the WAL
+                // pre-check below don't act on a streak that no longer
+                // exists.
+                pool.extend_failure_count = 0;
+            }
         }
+
+        // Read-only from here on.
+        let pool = &pool;
 
         if already_past_cutoff {
             // Already past the lookahead window on-chain: nothing to do.
@@ -306,10 +341,10 @@ pub async fn run_extension_cycle_once(
         let attempt = extend_single_pool(
             read_client,
             pearl,
-            &pool.account_id,
             rpc_url,
             sender_address,
             pool,
+            pool_object_id,
             config.extend_epochs,
         )
         .await;
@@ -320,15 +355,34 @@ pub async fn run_extension_cycle_once(
         match attempt {
             Ok(()) => {
                 let new_end = on_chain_end + config.extend_epochs as i64;
-                if let Err(e) =
-                    db::accounts::bump_pool_end_epoch(db, &pool.account_id, new_end).await
+                match db::accounts::bump_pool_end_epoch(
+                    db,
+                    &pool.account_id,
+                    &pool.storage_pool_object_id,
+                    new_end,
+                )
+                .await
                 {
-                    tracing::warn!(
-                        account_id = %pool.account_id,
-                        error = %e,
-                        "failed to bump pool_end_epoch in DB"
-                    );
-                    counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                    Ok(true) => {}
+                    Ok(false) => {
+                        // Pool object changed under the claim, or the DB
+                        // already moved past `new_end`. Either way the
+                        // next cycle's chain read sorts it out.
+                        tracing::info!(
+                            account_id = %pool.account_id,
+                            storage_pool_object_id = %pool.storage_pool_object_id,
+                            new_end,
+                            "pool_end_epoch bump skipped: row changed concurrently"
+                        );
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            account_id = %pool.account_id,
+                            error = %e,
+                            "failed to bump pool_end_epoch in DB"
+                        );
+                        counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+                    }
                 }
                 counter!(EXTENSION_POOLS_EXTENDED_TOTAL).increment(1);
                 counter!(EXTENSION_EPOCHS_EXTENDED_TOTAL).increment(config.extend_epochs as u64);
@@ -416,10 +470,14 @@ async fn publish_pool_health_gauges(db: &DbPool, current_epoch: u32) {
         Ok(stats) => {
             gauge!(EXTENSION_POOLS_IN_BACKOFF).set(stats.pools_in_backoff as f64);
             gauge!(EXTENSION_MAX_FAILURE_COUNT).set(stats.max_failure_count as f64);
-            if let Some(min_end) = stats.min_pool_end_epoch {
-                gauge!(EXTENSION_MIN_POOL_EPOCHS_REMAINING)
-                    .set((min_end - current_epoch as i64) as f64);
-            }
+            // Gauges retain their last value, so an empty fleet must
+            // overwrite rather than skip — otherwise the last pool's
+            // `<= 0` reading would keep an alert firing forever. NaN
+            // compares false against every threshold.
+            let remaining = stats
+                .min_pool_end_epoch
+                .map_or(f64::NAN, |min_end| (min_end - current_epoch as i64) as f64);
+            gauge!(EXTENSION_MIN_POOL_EPOCHS_REMAINING).set(remaining);
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to sample pool health stats");
@@ -523,25 +581,15 @@ async fn wal_shortfall(
 
 /// Read the authoritative on-chain `StoragePoolInnerV1` for a claimed
 /// pool. Returns `None` (after logging and counting the error) when the
-/// stored ObjectID is unparsable or the read fails; the row is left
-/// claimed so its cooldown stamp keeps it quiet until a later cycle
-/// re-examines it. Never extend blind — a failed read is exactly the
-/// situation in which a duplicate extension could slip through.
-async fn read_pool_state(rpc_url: &str, pool: &ExpiringPool) -> Option<OnChainStoragePoolState> {
-    let pool_object_id: ObjectID = match pool.storage_pool_object_id.parse() {
-        Ok(id) => id,
-        Err(e) => {
-            tracing::error!(
-                account_id = %pool.account_id,
-                storage_pool_object_id = %pool.storage_pool_object_id,
-                error = %e,
-                "stored pool ObjectID unparsable, cannot reconcile pool"
-            );
-            counter!(EXTENSION_ERRORS_TOTAL, "stage" => "chain_reconcile").increment(1);
-            return None;
-        }
-    };
-
+/// read fails; the row is left claimed so its cooldown stamp keeps it
+/// quiet until a later cycle re-examines it. Never extend blind — a
+/// failed read is exactly the situation in which a duplicate extension
+/// could slip through.
+async fn read_pool_state(
+    rpc_url: &str,
+    pool: &ExpiringPool,
+    pool_object_id: ObjectID,
+) -> Option<OnChainStoragePoolState> {
     match sui_object_reader::read_storage_pool_state(rpc_url, pool_object_id).await {
         Ok(state) => Some(state),
         Err(e) => {
@@ -621,14 +669,24 @@ async fn handle_expired_pool(
 /// `context` labels the repair counter: `already_extended` when the chain
 /// is already past the lookahead cutoff (the pool is skipped afterwards),
 /// `pre_extend` when it is still inside the window and will be extended.
+///
+/// Returns `true` when the row was actually updated (which also reset
+/// its `extend_failure_count`).
 async fn db_repair_end_epoch(
     db: &DbPool,
     pool: &ExpiringPool,
     on_chain_end_epoch: u64,
     context: &'static str,
-) {
-    match db::accounts::bump_pool_end_epoch(db, &pool.account_id, on_chain_end_epoch as i64).await {
-        Ok(()) => {
+) -> bool {
+    match db::accounts::bump_pool_end_epoch(
+        db,
+        &pool.account_id,
+        &pool.storage_pool_object_id,
+        on_chain_end_epoch as i64,
+    )
+    .await
+    {
+        Ok(true) => {
             counter!(EXTENSION_POOLS_REPAIRED_TOTAL, "context" => context).increment(1);
             tracing::info!(
                 account_id = %pool.account_id,
@@ -637,6 +695,16 @@ async fn db_repair_end_epoch(
                 context,
                 "repaired stale pool_end_epoch from on-chain value"
             );
+            true
+        }
+        Ok(false) => {
+            tracing::info!(
+                account_id = %pool.account_id,
+                storage_pool_object_id = %pool.storage_pool_object_id,
+                on_chain_end_epoch,
+                "pool_end_epoch repair skipped: row changed concurrently"
+            );
+            false
         }
         Err(e) => {
             tracing::warn!(
@@ -645,6 +713,7 @@ async fn db_repair_end_epoch(
                 "failed to repair pool_end_epoch from on-chain value"
             );
             counter!(EXTENSION_ERRORS_TOTAL, "stage" => "expiry_repair").increment(1);
+            false
         }
     }
 }
@@ -687,9 +756,6 @@ fn get_or_build_webhook_client<'a>(
 /// that produced the error so failures can be counted by cause.
 #[derive(Debug, thiserror::Error)]
 enum ExtendPoolError {
-    /// The stored `storage_pool_object_id` did not parse as an `ObjectID`.
-    #[error("invalid storage pool object id: {0}")]
-    InvalidObjectId(#[from] sui_types::base_types::ObjectIDParseError),
     /// PTB construction failed (coin selection, object reads, gas
     /// budgeting). Wallet shortfalls surface here as
     /// `NoCompatibleWalCoins` / gas-coin errors.
@@ -705,7 +771,9 @@ impl ExtendPoolError {
     /// should trigger the `account.funding_required` webhook.
     fn is_insufficient_funds(&self) -> bool {
         match self {
-            Self::PtbBuild(SuiClientError::NoCompatibleWalCoins) => true,
+            Self::PtbBuild(
+                SuiClientError::NoCompatibleWalCoins | SuiClientError::NoCompatibleGasCoins(_),
+            ) => true,
             other => webhook::is_insufficient_funds_error(other),
         }
     }
@@ -716,7 +784,6 @@ impl ExtendPoolError {
             return "insufficient_funds";
         }
         match self {
-            Self::InvalidObjectId(_) => "invalid_object_id",
             Self::PtbBuild(_) => "ptb_build",
             Self::SignAndSubmit(SignAndSubmitError::ExecutionFailure(_)) => "on_chain_abort",
             Self::SignAndSubmit(SignAndSubmitError::Other(_)) => "sign_or_submit",
@@ -727,14 +794,12 @@ impl ExtendPoolError {
 async fn extend_single_pool(
     read_client: &std::sync::Arc<walrus_sui::client::SuiReadClient>,
     pearl: &PearlConnection,
-    account_id: &AccountId,
     rpc_url: &str,
     sender_address: SuiAddress,
     pool: &ExpiringPool,
+    pool_object_id: ObjectID,
     extend_epochs: u32,
 ) -> Result<(), ExtendPoolError> {
-    let pool_object_id: ObjectID = pool.storage_pool_object_id.parse()?;
-
     let mut ptb = WalrusPtbBuilder::new(read_client.clone(), sender_address);
     ptb.extend_storage_pool(
         pool_object_id,
@@ -744,7 +809,8 @@ async fn extend_single_pool(
     .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, account_id, pool.key_version, rpc_url, tx_data).await?;
+    sui_transaction::sign_and_submit(pearl, &pool.account_id, pool.key_version, rpc_url, tx_data)
+        .await?;
 
     Ok(())
 }

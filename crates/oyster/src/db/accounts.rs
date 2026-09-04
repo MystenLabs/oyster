@@ -485,21 +485,31 @@ pub async fn set_max_unencoded_and_avg_blob_size(
 /// byte counters untouched. Also clears `extend_failure_count`: a forward
 /// move of the end epoch means the pool is healthy, so the retry backoff
 /// restarts from its base on the next shortfall.
+///
+/// Guarded on `storage_pool_object_id` so an epoch observed on one pool
+/// object is never stamped onto a replacement pool that swapped in while
+/// the row was claimed (e.g. an expired-pool reset followed by a lazy
+/// re-create). Returns whether a row was updated: `false` when the pool
+/// changed underneath us or the DB value was already at or past
+/// `new_end_epoch`.
 pub async fn bump_pool_end_epoch(
     pool: &super::DbPool,
     account_id: &AccountId,
+    storage_pool_object_id: &str,
     new_end_epoch: i64,
-) -> Result<(), sqlx::Error> {
-    sqlx::query(&super::sql(
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
         "UPDATE accounts SET pool_end_epoch = ?, extend_failure_count = 0 \
-         WHERE id = ? AND COALESCE(pool_end_epoch, 0) < ?",
+         WHERE id = ? AND storage_pool_object_id = ? \
+           AND COALESCE(pool_end_epoch, 0) < ?",
     ))
     .bind(new_end_epoch)
     .bind(account_id)
+    .bind(storage_pool_object_id)
     .bind(new_end_epoch)
     .execute(pool)
     .await?;
-    Ok(())
+    Ok(result.rows_affected() == 1)
 }
 
 /// Record a failed extension attempt: increment the consecutive-failure
@@ -1102,7 +1112,9 @@ mod tests {
         assert_eq!(first.len(), 1);
 
         // Simulate successful extend: pool_end_epoch jumps past the cutoff.
-        bump_pool_end_epoch(&pool, &a.id, 50).await.unwrap();
+        bump_pool_end_epoch(&pool, &a.id, "0xaaa", 50)
+            .await
+            .unwrap();
 
         // Even with a fully-expired claim TTL, the row no longer matches the cutoff.
         let second = claim_pools_for_extension(&pool, 20, 100, now_at(180), now_at(120))
@@ -1228,7 +1240,9 @@ mod tests {
             .await
             .unwrap();
 
-        bump_pool_end_epoch(&pool, &account.id, 99).await.unwrap();
+        bump_pool_end_epoch(&pool, &account.id, "0xabc", 99)
+            .await
+            .unwrap();
 
         let state = get_storage_pool(&pool, &account.id)
             .await
@@ -1237,6 +1251,39 @@ mod tests {
         assert_eq!(state.end_epoch, 99);
         assert_eq!(state.reserved_encoded_bytes, 1_000);
         assert_eq!(state.used_encoded_bytes, 400);
+    }
+
+    #[tokio::test]
+    async fn bump_pool_end_epoch_ignores_replaced_pool() {
+        let pool = test_pool().await;
+        let account = create_account(&pool, &AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &account.id, "0xnew", 42, 1_000, 0)
+            .await
+            .unwrap();
+
+        // An epoch observed on the old pool object must not land on the
+        // replacement that swapped in while the row was claimed.
+        let updated = bump_pool_end_epoch(&pool, &account.id, "0xold", 99)
+            .await
+            .unwrap();
+        assert!(!updated);
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 42);
+
+        let updated = bump_pool_end_epoch(&pool, &account.id, "0xnew", 99)
+            .await
+            .unwrap();
+        assert!(updated);
+        let state = get_storage_pool(&pool, &account.id)
+            .await
+            .unwrap()
+            .expect("pool state must be present");
+        assert_eq!(state.end_epoch, 99);
     }
 
     #[tokio::test]
@@ -1250,7 +1297,9 @@ mod tests {
             .unwrap();
 
         // Stale/smaller new_end_epoch must be a no-op.
-        bump_pool_end_epoch(&pool, &account.id, 50).await.unwrap();
+        bump_pool_end_epoch(&pool, &account.id, "0xabc", 50)
+            .await
+            .unwrap();
         let state = get_storage_pool(&pool, &account.id)
             .await
             .unwrap()
@@ -1258,7 +1307,9 @@ mod tests {
         assert_eq!(state.end_epoch, 100);
 
         // Equal new_end_epoch must also be a no-op (strict >).
-        bump_pool_end_epoch(&pool, &account.id, 100).await.unwrap();
+        bump_pool_end_epoch(&pool, &account.id, "0xabc", 100)
+            .await
+            .unwrap();
         let state = get_storage_pool(&pool, &account.id)
             .await
             .unwrap()
@@ -1266,7 +1317,9 @@ mod tests {
         assert_eq!(state.end_epoch, 100);
 
         // Strictly greater value still applies.
-        bump_pool_end_epoch(&pool, &account.id, 101).await.unwrap();
+        bump_pool_end_epoch(&pool, &account.id, "0xabc", 101)
+            .await
+            .unwrap();
         let state = get_storage_pool(&pool, &account.id)
             .await
             .unwrap()
@@ -1492,7 +1545,9 @@ mod tests {
         );
 
         // A successful extension clears the failure count and moves the min.
-        bump_pool_end_epoch(&pool, &b.id, 60).await.unwrap();
+        bump_pool_end_epoch(&pool, &b.id, "0xbbb", 60)
+            .await
+            .unwrap();
         let recovered = pool_health_stats(&pool).await.unwrap();
         assert_eq!(
             recovered,
@@ -1537,7 +1592,9 @@ mod tests {
         assert_eq!(after_backoff[0].extend_failure_count, 1);
 
         // A successful extension resets the counter.
-        bump_pool_end_epoch(&pool, &a.id, 12).await.unwrap();
+        bump_pool_end_epoch(&pool, &a.id, "0xaaa", 12)
+            .await
+            .unwrap();
         let after_success = claim_pools_for_extension(&pool, 100, 100, now_at(400), now_at(360))
             .await
             .unwrap();
