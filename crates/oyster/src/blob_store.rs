@@ -144,6 +144,12 @@ pub enum BlobStoreError {
     /// Error bookkeeping pool/blob state in the Oyster database. Maps to 500.
     #[error("database error: {0}")]
     Database(#[from] sqlx::Error),
+    /// The account's wallet is being moved to a new Pearl master-seed
+    /// version (`oysterd keys migrate`); on-chain writes must wait until
+    /// the assets sit at the new address and the row is re-stamped.
+    /// Maps to 503 with `Retry-After`.
+    #[error("account key migration in progress; retry shortly")]
+    KeyMigrationInProgress,
 }
 
 impl BlobStoreError {
@@ -184,6 +190,7 @@ impl BlobStoreError {
             BlobStoreError::CapExceeded { .. } => "CapExceeded",
             BlobStoreError::PayloadTooLarge { .. } => "PayloadTooLarge",
             BlobStoreError::Database(_) => "Database",
+            BlobStoreError::KeyMigrationInProgress => "KeyMigrationInProgress",
         }
     }
 }

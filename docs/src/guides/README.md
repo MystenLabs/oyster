@@ -10,3 +10,5 @@ Practical guides for working with Oyster beyond the API reference.
   deduplication, and reference-counted deletion work
 - **[Blob Lifecycle](blob-lifecycle.md)**: expiration, automatic renewal,
   and the extension service
+- **[Pearl Master-Seed Rotation](key-rotation.md)**: operator runbook for
+  moving accounts onto a new master seed (`oysterd keys`)

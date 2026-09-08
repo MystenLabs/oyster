@@ -5,8 +5,9 @@ use std::{path::PathBuf, sync::Arc};
 use axum::http::{HeaderName, HeaderValue};
 use clap::{Parser, Subcommand};
 use oyster::{
-    AppId, AppState, blob_store::LocalBlobStore, config::Config, db,
-    direct_walrus_store::DirectWalrusBlobStore, pearl_client::PearlConnection, routes,
+    AccountId, AppId, AppState, blob_store::LocalBlobStore, config::Config, db,
+    direct_walrus_store::DirectWalrusBlobStore, key_migration, pearl_client::PearlConnection,
+    routes,
 };
 use tower_http::{cors::CorsLayer, set_header::SetResponseHeaderLayer, trace::TraceLayer};
 
@@ -38,6 +39,53 @@ enum Command {
     Signup {
         #[command(subcommand)]
         command: SignupCommand,
+    },
+    /// Pearl master-seed rotation: move accounts' on-chain assets between
+    /// key versions. Needs PEARL_GRPC_URL, SUI_RPC_URL,
+    /// WALRUS_SYSTEM_OBJECT and WALRUS_STAKING_OBJECT like `serve`.
+    Keys {
+        #[command(subcommand)]
+        command: KeysCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum KeysCommand {
+    /// Per-version account counts and any rotation locks
+    /// (TSV: key_version, accounts, locked).
+    Status,
+    /// Move every account below --to-version onto it: transfer its
+    /// StoragePool and coins to the new-version address (signed with the
+    /// old version), verify, then re-stamp key_version. Idempotent; safe
+    /// to re-run. Exits 1 if any account needs attention.
+    Migrate {
+        /// Target key version (Pearl must have PEARL_MASTER_SEED_V<N>).
+        #[arg(long)]
+        to_version: u32,
+        /// Only this account (default: all accounts below --to-version).
+        #[arg(long)]
+        account: Option<AccountId>,
+        /// List what would move without locking or submitting anything.
+        #[arg(long)]
+        dry_run: bool,
+        /// Clear a rotation lock left by a crashed run before migrating.
+        /// Only when nothing else is operating on the account.
+        #[arg(long)]
+        break_lock: bool,
+    },
+    /// Move anything that landed on the --from-version address of an
+    /// already-migrated account (e.g. an integrator still funding the
+    /// old address) to its current address. No lock, no version change.
+    Sweep {
+        /// The retired key version whose addresses to drain.
+        #[arg(long)]
+        from_version: u32,
+        /// Only this account (default: every account above --from-version).
+        #[arg(long)]
+        account: Option<AccountId>,
+        /// List what would move without submitting anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -151,6 +199,9 @@ async fn main() {
 
     match cli.command.unwrap_or(Command::Serve) {
         Command::App { .. } | Command::Signup { .. } => unreachable!("handled above"),
+        Command::Keys { command } => {
+            handle_keys_command(command, &config, db, pearl).await;
+        }
         Command::Serve => {
             tracing::info!("starting oyster server on {}", config.bind_addr);
 
@@ -289,6 +340,108 @@ async fn main() {
             )
             .await;
         }
+    }
+}
+
+async fn handle_keys_command(
+    command: KeysCommand,
+    config: &Config,
+    db: db::DbPool,
+    pearl: Option<PearlConnection>,
+) {
+    if let KeysCommand::Status = command {
+        let rows = db::accounts::key_version_histogram(&db)
+            .await
+            .expect("failed to query key versions");
+        println!("KEY_VERSION\tACCOUNTS\tLOCKED");
+        for (version, total, locked) in rows {
+            println!("{version}\t{total}\t{locked}");
+        }
+        let locked: Vec<_> =
+            db::accounts::list_key_migration_candidates(&db, db::accounts::KeyVersionFilter::All)
+                .await
+                .expect("failed to list accounts")
+                .into_iter()
+                .filter(|c| c.key_migrating_since.is_some())
+                .collect();
+        if !locked.is_empty() {
+            println!();
+            println!("LOCKED_ACCOUNT\tKEY_VERSION\tSINCE");
+            for c in locked {
+                println!(
+                    "{}\t{}\t{}",
+                    c.account_id,
+                    c.key_version,
+                    c.key_migrating_since.unwrap_or_default()
+                );
+            }
+        }
+        return;
+    }
+
+    let pearl = pearl.expect("PEARL_GRPC_URL is required for `keys migrate|sweep`");
+    let rpc_url = config
+        .sui_rpc_url
+        .as_deref()
+        .expect("SUI_RPC_URL is required for `keys migrate|sweep`");
+    let system_object: sui_types::base_types::ObjectID = config
+        .walrus_system_object
+        .as_deref()
+        .expect("WALRUS_SYSTEM_OBJECT is required for `keys migrate|sweep`")
+        .parse()
+        .expect("invalid WALRUS_SYSTEM_OBJECT");
+    let staking_object: sui_types::base_types::ObjectID = config
+        .walrus_staking_object
+        .as_deref()
+        .expect("WALRUS_STAKING_OBJECT is required for `keys migrate|sweep`")
+        .parse()
+        .expect("invalid WALRUS_STAKING_OBJECT");
+    let ctx =
+        key_migration::MigrationContext::new(db, pearl, rpc_url, system_object, staking_object)
+            .await
+            .expect("failed to initialize key migration context");
+
+    let (report, dry_run) = match command {
+        KeysCommand::Status => unreachable!("handled above"),
+        KeysCommand::Migrate {
+            to_version,
+            account,
+            dry_run,
+            break_lock,
+        } => (
+            key_migration::migrate(&ctx, to_version, account.as_ref(), dry_run, break_lock)
+                .await
+                .expect("keys migrate failed"),
+            dry_run,
+        ),
+        KeysCommand::Sweep {
+            from_version,
+            account,
+            dry_run,
+        } => (
+            key_migration::sweep(&ctx, from_version, account.as_ref(), dry_run)
+                .await
+                .expect("keys sweep failed"),
+            dry_run,
+        ),
+    };
+
+    println!("ACCOUNT\tNAME\tKEY_VERSION\tOUTCOME");
+    for (cand, outcome) in &report.outcomes {
+        println!(
+            "{}\t{}\t{}\t{outcome}",
+            cand.account_id, cand.name, cand.key_version
+        );
+    }
+    eprintln!(
+        "{}: {} account(s) examined, {} moved, {} need attention",
+        if dry_run { "dry run" } else { "done" },
+        report.outcomes.len(),
+        report.moved(),
+        report.problems(),
+    );
+    if report.problems() > 0 {
+        std::process::exit(1);
     }
 }
 

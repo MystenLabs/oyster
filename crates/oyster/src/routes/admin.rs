@@ -622,9 +622,15 @@ pub async fn update_max_storage(
     let mut shrink_tx_digest: Option<String> = None;
     if reserved_encoded > threshold {
         let extract_size = reserved_encoded - threshold;
-        let key_version = db::accounts::get_key_version(&state.db, &account_id)
-            .await?
-            .ok_or_else(|| AppError::Internal("account has no row".into()))?;
+        let (key_version, migrating) =
+            db::accounts::get_key_version_and_migrating(&state.db, &account_id)
+                .await?
+                .ok_or_else(|| AppError::Internal("account has no row".into()))?;
+        if migrating {
+            return Err(AppError::ServiceUnavailable(
+                "account key migration in progress; retry shortly".into(),
+            ));
+        }
         match admin_storage_pool::decrease_storage_pool_capacity(
             read_client.as_ref(),
             pearl,
