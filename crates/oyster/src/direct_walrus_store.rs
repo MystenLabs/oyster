@@ -337,11 +337,19 @@ impl DirectWalrusBlobStore {
     /// in a flow must use it so the account signs with its own wallet key
     /// across seed rotations.
     async fn account_key_version(&self, account_id: &AccountId) -> Result<u32, BlobStoreError> {
-        db::accounts::get_key_version(&self.db, account_id)
-            .await?
-            .ok_or_else(|| {
-                BlobStoreError::Internal(format!("account {account_id} not found in database"))
-            })
+        let (key_version, migrating) =
+            db::accounts::get_key_version_and_migrating(&self.db, account_id)
+                .await?
+                .ok_or_else(|| {
+                    BlobStoreError::Internal(format!("account {account_id} not found in database"))
+                })?;
+        // `oysterd keys migrate` holds this while it moves the wallet's
+        // pool and coins to the next-version address; signing with either
+        // version would fail (or race) until it releases the row.
+        if migrating {
+            return Err(BlobStoreError::KeyMigrationInProgress);
+        }
+        Ok(key_version)
     }
 
     async fn create_pool_for_account(

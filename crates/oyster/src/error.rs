@@ -131,6 +131,7 @@ pub enum AppError {
 /// | `BlobStore(CapExceeded)`             | 400, body carries `cap_exceeded` block |
 /// | `BlobStore(PayloadTooLarge)`         | 413, body carries `payload_too_large` block |
 /// | `BlobStore(Database)`                | 500, suffixed `[BlobStoreError::Database]` |
+/// | `BlobStore(KeyMigrationInProgress)`  | 503 (wallet mid key-rotation; retry) |
 ///
 /// The `[BlobStoreError::<Variant>]` suffix on masked 5xx/500 messages
 /// distinguishes variants that otherwise collapse to the same generic text
@@ -336,6 +337,9 @@ impl IntoResponse for AppError {
                 ),
                 BlobStoreError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
                 BlobStoreError::InvalidBlobId(_) => (StatusCode::BAD_REQUEST, self.to_string()),
+                BlobStoreError::KeyMigrationInProgress => {
+                    (StatusCode::SERVICE_UNAVAILABLE, self.to_string())
+                }
                 BlobStoreError::PoolCreationFailed(msg) => {
                     tracing::error!(error = %msg, "pool creation failed");
                     (

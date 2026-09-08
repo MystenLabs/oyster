@@ -286,7 +286,9 @@ header.
 |----------|---------|-------------|
 | `PEARL_BIND_ADDR` | `0.0.0.0:50051` | gRPC listen address |
 | `PEARL_SERVICE_SECRET` | -- | Shared secret for service auth (**required**) |
-| `PEARL_MASTER_SEED` | -- | Hex-encoded master seed for key derivation (**required**, >= 32 bytes) |
+| `PEARL_MASTER_SEED` | -- | Hex-encoded master seed for key derivation, version 1 (**required**, >= 32 bytes) |
+| `PEARL_MASTER_SEED_V<N>` | -- | Additional seed versions for rotation (N >= 2); see [Pearl Master-Seed Rotation](docs/src/guides/key-rotation.md) |
+| `PEARL_ACTIVE_KEY_VERSION` | `1` | Seed version stamped onto newly created accounts |
 | `PEARL_METRICS_BIND_ADDR` | `0.0.0.0:50052` | Prometheus metrics endpoint |
 | `PEARL_TLS_CERT_PATH` | -- | TLS certificate path (optional; must pair with key) |
 | `PEARL_TLS_KEY_PATH` | -- | TLS private key path (optional; must pair with cert) |
@@ -295,6 +297,7 @@ header.
 |----------|-------------|
 | `--pearl-service-secret-file PATH` | Read `PEARL_SERVICE_SECRET` from a file |
 | `--pearl-master-seed-file PATH` | Read `PEARL_MASTER_SEED` from a file |
+| `--pearl-master-seed-version-file N:PATH` | Read `PEARL_MASTER_SEED_V<N>` from a file |
 
 ---
 
@@ -623,6 +626,9 @@ cargo test
 
 Production hardening:
 - Secure `PEARL_MASTER_SEED` via a secret manager (e.g. AWS Secrets Manager, HashiCorp Vault)
+- Rehearse seed rotation (`oysterd keys migrate`) on testnet so a leaked
+  seed can be retired quickly; see
+  [Pearl Master-Seed Rotation](docs/src/guides/key-rotation.md)
 - TLS for Pearl gRPC (supported via `PEARL_TLS_CERT_PATH` / `PEARL_TLS_KEY_PATH`)
 - mTLS or service mesh auth for additional Pearl isolation
 - Rate limiting and abuse prevention

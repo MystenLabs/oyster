@@ -1,5 +1,39 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Pearl master-seed rotation is now operable end to end (SEC-F3b).
+  `oysterd keys migrate --to-version N` moves each account's on-chain
+  assets — its `StoragePool` (with every `PooledBlob` inside), SUI and
+  WAL coins, and any stray Walrus `Storage`/`Blob` objects — from the
+  address derived under its current seed version to the address derived
+  under version N, signed with the old key, verifies the pool arrived,
+  and re-stamps `accounts.key_version`. The move is chunked, gas is
+  estimated by dry run, the gas coin itself goes last so nothing is left
+  behind, and objects of unknown type are skipped and reported rather
+  than risking an abort. Idempotent and resumable: re-running after a
+  crash finds nothing left to move, or a lock to break with
+  `--break-lock`. `--dry-run` prints the plan, `--account` scopes to one
+  account. `oysterd keys sweep --from-version V` drains anything that
+  later lands on a retired address (integrators still paying a cached
+  funding address) into the account's current address, without touching
+  versions. `oysterd keys status` shows accounts per version and any
+  rotation locks. Runbook: `docs/src/guides/key-rotation.md`; decision
+  record for Security: `docs/security/SEC-F3b-key-rotation-decision.md`.
+- New `accounts.key_migrating_since` column (migration 025) holds the
+  per-account rotation lock. While set, uploads, deletes and admin cap
+  shrinks return `503 Service Unavailable` (`SlowDown` on the S3 API)
+  and the extension worker skips the pool, so no transaction is signed
+  under either version mid-move. Reads are unaffected. The lock is held
+  for one or two Sui transactions per account.
+- E2E test `key_rotation_e2e` exercises the full procedure against an
+  account created under seed version 1: dry run, migration, reads and
+  uploads under version 2, an extension cycle, idempotent re-run, sweep,
+  the flip-only path for an account with nothing on-chain, refusal of an
+  unconfigured target version, and the lock. The e2e Pearl now carries
+  seeds for versions 1 (active) and 2.
+
 ## [0.14.2] - 2026-08-27
 
 ### Added

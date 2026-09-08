@@ -22,3 +22,4 @@
   - [Blob Lifecycle](guides/blob-lifecycle.md)
   - [Webhooks](guides/webhooks.md)
   - [Web Signup](guides/web-signup.md)
+  - [Pearl Master-Seed Rotation](guides/key-rotation.md)

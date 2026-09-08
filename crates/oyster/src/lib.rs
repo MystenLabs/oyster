@@ -26,6 +26,8 @@ pub mod extension_cost;
 pub mod extension_task;
 /// Shared WAL/SUI funding-amount type (sync 402 + webhook).
 pub mod funding;
+/// Pearl master-seed rotation: on-chain asset migration between key versions.
+pub mod key_migration;
 /// Prometheus metric constants and recorder setup.
 pub mod metrics;
 /// Axum middleware for recording HTTP request metrics.

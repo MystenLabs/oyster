@@ -83,6 +83,15 @@ fn blob_store_error(e: crate::blob_store::BlobStoreError) -> S3Error {
             err.set_status_code(hyper::StatusCode::PAYMENT_REQUIRED);
             err
         }
+        BlobStoreError::KeyMigrationInProgress => {
+            tracing::warn!("blob operation refused: account key migration in progress");
+            // S3 has no "try again later" code; `SlowDown` is the closest
+            // (503 with retry semantics in every SDK).
+            S3Error::with_message(
+                S3ErrorCode::SlowDown,
+                "account key migration in progress; retry shortly",
+            )
+        }
         BlobStoreError::Io(ref io_err) => {
             tracing::error!(error = %io_err, "blob store I/O error");
             S3Error::with_message(S3ErrorCode::InternalError, io_err.to_string())

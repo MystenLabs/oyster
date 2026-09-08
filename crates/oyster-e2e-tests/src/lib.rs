@@ -482,10 +482,21 @@ async fn start_pearl_in_process() -> PearlConnection {
     let config = pearl::config::Config {
         bind_addr: "127.0.0.1:0".into(),
         service_secret: PEARL_SECRET.into(),
-        master_seeds: [(
-            1,
-            zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
-        )]
+        // Version 1 is active (stamped on new accounts). Version 2 is
+        // configured but inactive so the key-rotation e2e can migrate a
+        // version-1 account onto it — the production shape after
+        // `PEARL_MASTER_SEED_V2` is deployed and before the active
+        // version is flipped.
+        master_seeds: [
+            (
+                1,
+                zeroize::Zeroizing::new(hex::decode("ab".repeat(32)).expect("valid hex seed")),
+            ),
+            (
+                2,
+                zeroize::Zeroizing::new(hex::decode("cd".repeat(32)).expect("valid hex seed")),
+            ),
+        ]
         .into(),
         active_key_version: 1,
         tls_cert_path: None,

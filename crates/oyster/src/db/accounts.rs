@@ -155,6 +155,195 @@ pub async fn get_key_version(
     Ok(value.map(|v| v as u32))
 }
 
+/// `(key_version, migrating)` for the upload/delete hot path: one
+/// round-trip for both the seed version and the rotation lock. Returns
+/// `None` if the account does not exist.
+pub async fn get_key_version_and_migrating(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<Option<(u32, bool)>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT key_version, key_migrating_since FROM accounts WHERE id = ?",
+    ))
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        (
+            r.get::<i64, _>("key_version") as u32,
+            r.get::<Option<String>, _>("key_migrating_since").is_some(),
+        )
+    }))
+}
+
+/// Account row as seen by the key-rotation tooling (`oysterd keys`).
+#[derive(Debug, Clone)]
+pub struct KeyMigrationCandidate {
+    /// Account ID.
+    pub account_id: AccountId,
+    /// Human-readable account name (for operator output).
+    pub name: String,
+    /// Pearl master-seed version the wallet currently derives from.
+    pub key_version: u32,
+    /// On-chain `StoragePool` the DB believes this account owns, if any.
+    pub storage_pool_object_id: Option<String>,
+    /// Rotation lock timestamp, when a migration is (or was left) in
+    /// progress.
+    pub key_migrating_since: Option<String>,
+}
+
+/// Which accounts the key-rotation tooling should look at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyVersionFilter {
+    /// Every account.
+    All,
+    /// Accounts whose `key_version` is strictly below the given version
+    /// (the `keys migrate --to-version N` set).
+    Below(u32),
+    /// Accounts whose `key_version` is strictly above the given version
+    /// (the `keys sweep --from-version V` set).
+    Above(u32),
+}
+
+const KEY_MIGRATION_COLUMNS: &str =
+    "id, name, key_version, storage_pool_object_id, key_migrating_since";
+
+fn key_migration_candidate(r: sqlx::any::AnyRow) -> KeyMigrationCandidate {
+    KeyMigrationCandidate {
+        account_id: r.get("id"),
+        name: r.get("name"),
+        key_version: r.get::<i64, _>("key_version") as u32,
+        storage_pool_object_id: r.get("storage_pool_object_id"),
+        key_migrating_since: r.get("key_migrating_since"),
+    }
+}
+
+/// List accounts matching `filter`, oldest first, for the key-rotation
+/// tooling.
+pub async fn list_key_migration_candidates(
+    pool: &super::DbPool,
+    filter: KeyVersionFilter,
+) -> Result<Vec<KeyMigrationCandidate>, sqlx::Error> {
+    let (where_clause, bound) = match filter {
+        KeyVersionFilter::All => ("", None),
+        KeyVersionFilter::Below(v) => ("WHERE key_version < ? ", Some(i64::from(v))),
+        KeyVersionFilter::Above(v) => ("WHERE key_version > ? ", Some(i64::from(v))),
+    };
+    let raw = format!(
+        "SELECT {KEY_MIGRATION_COLUMNS} FROM accounts {where_clause}ORDER BY created_at, id"
+    );
+    let query = super::sql(&raw);
+    let mut q = sqlx::query(&query);
+    if let Some(v) = bound {
+        q = q.bind(v);
+    }
+    let rows = q.fetch_all(pool).await?;
+    Ok(rows.into_iter().map(key_migration_candidate).collect())
+}
+
+/// Fetch one account for the key-rotation tooling. `None` if it does
+/// not exist.
+pub async fn get_key_migration_candidate(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<Option<KeyMigrationCandidate>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(&format!(
+        "SELECT {KEY_MIGRATION_COLUMNS} FROM accounts WHERE id = ?"
+    )))
+    .bind(account_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(key_migration_candidate))
+}
+
+/// Take the rotation lock on an account. Compare-and-set: succeeds only
+/// when the row is still on `expected_version` and not already locked,
+/// so two concurrent tool runs cannot both migrate the same account.
+/// Returns `true` when the lock was taken.
+pub async fn begin_key_migration(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    expected_version: u32,
+    now: DateTime<Utc>,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET key_migrating_since = ? \
+         WHERE id = ? AND key_version = ? AND key_migrating_since IS NULL",
+    ))
+    .bind(ts(now))
+    .bind(account_id)
+    .bind(i64::from(expected_version))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Re-stamp the account onto `new_version` and release the rotation
+/// lock, after its assets have been confirmed at the new address.
+/// Guarded on `expected_version` so a stale run cannot regress a row.
+/// Returns `true` when the row was updated.
+pub async fn finish_key_migration(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    expected_version: u32,
+    new_version: u32,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET key_version = ?, key_migrating_since = NULL, \
+                             updated_at = ? \
+         WHERE id = ? AND key_version = ?",
+    ))
+    .bind(i64::from(new_version))
+    .bind(ts(Utc::now()))
+    .bind(account_id)
+    .bind(i64::from(expected_version))
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Release the rotation lock without changing the version (failed run,
+/// or an operator breaking a lock left behind by a crash). Returns
+/// `true` when a lock was actually cleared.
+pub async fn clear_key_migration_lock(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+) -> Result<bool, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE accounts SET key_migrating_since = NULL \
+         WHERE id = ? AND key_migrating_since IS NOT NULL",
+    ))
+    .bind(account_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Per-version account counts for `oysterd keys status`:
+/// `(key_version, accounts, of which currently locked)`.
+pub async fn key_version_histogram(
+    pool: &super::DbPool,
+) -> Result<Vec<(u32, i64, i64)>, sqlx::Error> {
+    let rows = sqlx::query(&super::sql(
+        "SELECT key_version, \
+                CAST(COUNT(*) AS BIGINT) AS total, \
+                CAST(COALESCE(SUM(CASE WHEN key_migrating_since IS NULL THEN 0 ELSE 1 END), 0) AS BIGINT) AS migrating \
+         FROM accounts GROUP BY key_version ORDER BY key_version",
+    ))
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.get::<i64, _>("key_version") as u32,
+                r.get::<i64, _>("total"),
+                r.get::<i64, _>("migrating"),
+            )
+        })
+        .collect())
+}
+
 /// Count the total number of accounts.
 pub async fn count_accounts(pool: &super::DbPool) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(&super::sql("SELECT COUNT(*) FROM accounts"))
@@ -288,6 +477,7 @@ pub async fn claim_pools_for_extension(
                AND pool_end_epoch IS NOT NULL \
                AND pool_end_epoch < ? \
                AND (extend_attempt_after IS NULL OR extend_attempt_after <= ?) \
+               AND key_migrating_since IS NULL \
              ORDER BY pool_end_epoch \
              LIMIT ? \
          ) \

@@ -5055,3 +5055,168 @@ async fn s3_put_object_compensates_and_returns_no_such_bucket_on_fk_violation() 
     let (_blob_id, _pool_id, delete_account_id) = &delete_calls[0];
     assert_eq!(*delete_account_id, account_id);
 }
+
+// ---------------------------------------------------------------------------
+// Key rotation (SEC-F3b): rotation lock + candidate queries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn key_migration_lock_is_compare_and_set() {
+    use chrono::Utc;
+    use oyster::db::accounts::{self, KeyVersionFilter};
+
+    let (_app, _tmp, pool) = test_app().await;
+    let (account_id_str, _) = create_test_account(&pool).await;
+    let account_id = account_id_str.parse::<AccountId>().unwrap();
+
+    let cand = accounts::get_key_migration_candidate(&pool, &account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cand.key_version, 1);
+    assert!(cand.key_migrating_since.is_none());
+    assert!(cand.storage_pool_object_id.is_none());
+
+    // Wrong expected version: no lock.
+    assert!(
+        !accounts::begin_key_migration(&pool, &account_id, 2, Utc::now())
+            .await
+            .unwrap()
+    );
+    // Right version: locked; a second attempt (concurrent run) fails.
+    assert!(
+        accounts::begin_key_migration(&pool, &account_id, 1, Utc::now())
+            .await
+            .unwrap()
+    );
+    assert!(
+        !accounts::begin_key_migration(&pool, &account_id, 1, Utc::now())
+            .await
+            .unwrap()
+    );
+    let locked = accounts::get_key_migration_candidate(&pool, &account_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(locked.key_migrating_since.is_some());
+    assert_eq!(
+        accounts::get_key_version_and_migrating(&pool, &account_id)
+            .await
+            .unwrap(),
+        Some((1, true))
+    );
+
+    // Finish is guarded on the expected version too.
+    assert!(
+        !accounts::finish_key_migration(&pool, &account_id, 3, 2)
+            .await
+            .unwrap()
+    );
+    assert!(
+        accounts::finish_key_migration(&pool, &account_id, 1, 2)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        accounts::get_key_version_and_migrating(&pool, &account_id)
+            .await
+            .unwrap(),
+        Some((2, false))
+    );
+    // Nothing to clear once finished.
+    assert!(
+        !accounts::clear_key_migration_lock(&pool, &account_id)
+            .await
+            .unwrap()
+    );
+    // A stale lock can be cleared without touching the version.
+    assert!(
+        accounts::begin_key_migration(&pool, &account_id, 2, Utc::now())
+            .await
+            .unwrap()
+    );
+    assert!(
+        accounts::clear_key_migration_lock(&pool, &account_id)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        accounts::get_key_version_and_migrating(&pool, &account_id)
+            .await
+            .unwrap(),
+        Some((2, false))
+    );
+
+    // Candidate filters and the status histogram.
+    let (other_str, _) = create_test_account(&pool).await;
+    let other = other_str.parse::<AccountId>().unwrap();
+    let below2: Vec<_> = accounts::list_key_migration_candidates(&pool, KeyVersionFilter::Below(2))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.account_id)
+        .collect();
+    assert_eq!(below2, vec![other]);
+    let above1: Vec<_> = accounts::list_key_migration_candidates(&pool, KeyVersionFilter::Above(1))
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|c| c.account_id)
+        .collect();
+    assert_eq!(above1, vec![account_id]);
+    assert_eq!(
+        accounts::list_key_migration_candidates(&pool, KeyVersionFilter::All)
+            .await
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(
+        accounts::begin_key_migration(&pool, &other, 1, Utc::now())
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        accounts::key_version_histogram(&pool).await.unwrap(),
+        vec![(1, 1, 1), (2, 1, 0)]
+    );
+}
+
+#[tokio::test]
+async fn extension_claim_skips_accounts_under_key_migration() {
+    use chrono::{Duration as ChronoDuration, Utc};
+    use oyster::db::accounts;
+
+    let (_app, _tmp, pool) = test_app().await;
+    let (a_str, _) = create_test_account(&pool).await;
+    let (b_str, _) = create_test_account(&pool).await;
+    let a = a_str.parse::<AccountId>().unwrap();
+    let b = b_str.parse::<AccountId>().unwrap();
+    for (id, obj) in [(&a, "0xa"), (&b, "0xb")] {
+        accounts::set_storage_pool(&pool, id, obj, 5, 1_000, 0)
+            .await
+            .unwrap();
+    }
+    assert!(
+        accounts::begin_key_migration(&pool, &a, 1, Utc::now())
+            .await
+            .unwrap()
+    );
+
+    let now = Utc::now();
+    let claimed =
+        accounts::claim_pools_for_extension(&pool, 100, 10, now + ChronoDuration::seconds(60), now)
+            .await
+            .unwrap();
+    let ids: Vec<_> = claimed.iter().map(|p| p.account_id).collect();
+    assert_eq!(ids, vec![b], "locked account must not be claimed");
+
+    // Once the lock is released the pool is claimable again.
+    accounts::clear_key_migration_lock(&pool, &a).await.unwrap();
+    let claimed =
+        accounts::claim_pools_for_extension(&pool, 100, 10, now + ChronoDuration::seconds(60), now)
+            .await
+            .unwrap();
+    let ids: Vec<_> = claimed.iter().map(|p| p.account_id).collect();
+    assert_eq!(ids, vec![a]);
+}
