@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.3] - 2026-09-08
 
 ### Added
 - Pearl master-seed rotation is now operable end to end (SEC-F3b).
@@ -33,6 +33,48 @@
   the flip-only path for an account with nothing on-chain, refusal of an
   unconfigured target version, and the lock. The e2e Pearl now carries
   seeds for versions 1 (active) and 2.
+
+- Extension worker observability. Failed `extend_storage_pool` attempts
+  are now counted by `oyster_extension_failures_total{reason}`
+  (`insufficient_funds` / `on_chain_abort` / `ptb_build` /
+  `sign_or_submit` / `invalid_object_id`), so app-side wallet shortfalls
+  are separable from operator problems; `NoCompatibleWalCoins` and
+  `NoCompatibleGasCoins` are classified as `insufficient_funds`
+  explicitly, so a SUI-gas shortfall now triggers the
+  `account.funding_required` webhook. DB repairs are labelled by
+  `oyster_extension_pools_repaired_total{context}` (`already_extended` /
+  `pre_extend`), `oyster_extension_epochs_extended_total` tracks subsidy
+  spend, and `oyster_extension_attempt_duration_seconds{outcome}` records
+  per-PTB latency. Pool-health gauges sampled once per cycle:
+  `oyster_extension_pools_in_backoff`,
+  `oyster_extension_max_failure_count`,
+  `oyster_extension_min_pool_epochs_remaining` (NaN when no pools
+  exist). `oyster_extension_last_cycle_completed_timestamp_seconds` is a
+  liveness signal set on every completed cycle. The existing
+  `oyster_extension_errors_total{stage="extend_storage_pool"}` counter is
+  kept so current dashboards keep working. The automatic extension guide
+  gains a metrics table.
+
+### Fixed
+- The extension worker no longer double-extends a pool when the DB write
+  after a successful `extend_storage_pool` was lost (write failure,
+  checkpoint-wait timeout after the transaction executed, or a crash in
+  between). Previously the row kept its stale-low end epoch, was
+  re-claimed after the cooldown, and was extended again; Walrus
+  extensions are additive, so each replay pushed the pool out by another
+  `POOL_EXTEND_EPOCHS` and spent the subsidy again. Every claimed pool's
+  on-chain `end_epoch` is now read up front and decides the branch:
+  expired → reset; already past the lookahead cutoff → repair the DB and
+  skip (`oyster_extension_pools_already_extended_total`); otherwise
+  repair any stale DB value and extend, computing the new end epoch from
+  the chain. A failed read skips the pool for the cycle instead of
+  extending blind. A malformed pool object ID now takes the normal
+  failure backoff instead of being re-read every claim cooldown, and
+  `bump_pool_end_epoch` is guarded on the pool object ID so an epoch
+  observed on one pool cannot be stamped onto a replacement that swapped
+  in while the row was claimed. The residual multi-replica window
+  (an attempt whose sign/submit outlives `EXTENSION_CLAIM_COOLDOWN_SECS`)
+  is documented; keep the cooldown above the checkpoint-wait timeout.
 
 ## [0.14.2] - 2026-08-27
 
