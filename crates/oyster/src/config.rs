@@ -188,6 +188,13 @@ fn parse_allowed_emails(raw: &str) -> Vec<String> {
         .collect()
 }
 
+/// Default for `EXTENSION_FUNDED_SUI_MIN_MIST`: 0.02 SUI. Comfortably
+/// above the gas budget of one `extend_storage_pool` PTB at typical
+/// reference gas prices, and well below the 0.1 SUI Harbor tops up per
+/// `funding_required` notification, so a wallet that has been topped up
+/// once reads as funded for many extensions.
+pub const DEFAULT_EXTENSION_FUNDED_SUI_MIN_MIST: u64 = 20_000_000;
+
 /// Oyster server configuration, loaded from environment variables.
 #[derive(Clone, Debug)]
 pub struct Config {
@@ -236,6 +243,11 @@ pub struct Config {
     /// Bounds how long a user waits after funding their wallet before the
     /// worker retries, so keep it small relative to the epoch duration.
     pub extension_backoff_cap_secs: u64,
+    /// SUI balance (MIST) at or above which the extension worker treats a
+    /// wallet as funded for gas when classifying a failed attempt. WAL is
+    /// compared against the exact extension cost; SUI has no exact cost
+    /// without a dry run, so this floor stands in for one PTB's gas.
+    pub extension_funded_sui_min_mist: u64,
     /// Socket address to bind the extension worker metrics HTTP server to.
     pub extension_metrics_bind_addr: String,
     /// Default `avg_blob_size` (unencoded bytes) assigned to newly-created
@@ -316,6 +328,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(3600),
+            extension_funded_sui_min_mist: std::env::var("EXTENSION_FUNDED_SUI_MIN_MIST")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(DEFAULT_EXTENSION_FUNDED_SUI_MIN_MIST),
             extension_metrics_bind_addr: std::env::var("OYSTER_EXTENSION_METRICS_BIND_ADDR")
                 .unwrap_or_else(|_| "0.0.0.0:50053".into()),
             default_avg_blob_size: std::env::var("OYSTER_DEFAULT_AVG_BLOB_SIZE")

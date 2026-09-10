@@ -1,5 +1,36 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- Extension success guarantee. After every failed `extend_storage_pool`
+  attempt the worker now reads the wallet's WAL and SUI balances and
+  records whether the wallet could have paid (`funded` / `unfunded` /
+  `unknown`) together with the failure reason, in two new nullable
+  `accounts` columns (`extend_last_failure_reason`,
+  `extend_last_failure_wallet`, migration 026). Both are cleared with
+  the failure count on success, expired-pool reset and user-requested
+  retry. A failure with a verified-funded wallet is the one outcome the
+  worker must never leave silent: it logs at `error`, writes an
+  `account.extension_failed_funded` audit event with balances,
+  requirements, error text and epochs remaining, and increments
+  `oyster_extension_funded_failures_total{reason}`. New per-cycle gauges
+  keep the condition alertable until it clears:
+  `oyster_extension_pools_stuck_funded`,
+  `oyster_extension_stuck_funded_min_epochs_remaining` (NaN when none),
+  and `oyster_extension_pools_in_backoff_by_reason{reason}` (every
+  reason published each cycle, zero when absent). Wallet verdicts are
+  counted by `oyster_extension_failure_wallet_checks_total{result}`.
+  The SUI side of the check uses a configurable floor,
+  `EXTENSION_FUNDED_SUI_MIN_MIST` (default 0.02 SUI); WAL is compared
+  against the exact extension cost. Suggested alert rules are in
+  `docs/src/guides/blob-lifecycle.md`. The `funding_required` webhook
+  path is unchanged.
+- E2E test `e2e_extension_funded_failure_is_flagged` forces an on-chain
+  abort with a funded wallet (extending past `max_epochs_ahead`) and
+  checks the persisted verdict, the audit event, the health stats, and
+  that a retry plus a real extension clears them.
+
 ## [0.14.3] - 2026-09-08
 
 ### Added

@@ -93,6 +93,50 @@ pub const EXTENSION_POOLS_EXPIRED_RESET_TOTAL: &str = "oyster_extension_pools_ex
 pub const EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL: &str =
     "oyster_extension_balance_precheck_skips_total";
 
+// Extension success-guarantee metrics. Together these answer "is any
+// pool failing to extend for a reason that is NOT the app's wallet
+// being empty?" — the condition an operator must be paged for, since
+// a funded wallet is the app's entire obligation.
+
+/// Counter: failed extension attempts (real attempts and pre-check
+/// skips) whose wallet was checked afterwards, labelled by `result` ∈
+/// {`funded`, `unfunded`, `unknown`}. `funded` means WAL ≥ the exact
+/// extension cost and SUI ≥ `EXTENSION_FUNDED_SUI_MIN_MIST`; `unknown`
+/// means the balance read itself failed.
+pub const EXTENSION_FAILURE_WALLET_CHECKS_TOTAL: &str =
+    "oyster_extension_failure_wallet_checks_total";
+/// Counter: failed extension attempts where the wallet was verified
+/// funded, labelled by the attempt's `reason` (same values as
+/// [`EXTENSION_FAILURES_TOTAL`]). Every increment is an extension that
+/// should have succeeded and also produces an
+/// `account.extension_failed_funded` audit event. A non-zero rate for
+/// `reason="insufficient_funds"` means the funds classifier is wrong
+/// (the wallet is funded but the error was labelled a shortfall), which
+/// would otherwise loop the app through `funding_required` webhooks
+/// forever.
+pub const EXTENSION_FUNDED_FAILURES_TOTAL: &str = "oyster_extension_funded_failures_total";
+/// Gauge: pools currently in backoff whose most recent failure happened
+/// with a verified-funded wallet (`extend_last_failure_wallet =
+/// 'funded'`). Sampled once per cycle from the DB; the primary
+/// "extension is broken for a funded customer" alert. Clears when the
+/// pool extends, is reset, or the user requests a retry.
+pub const EXTENSION_POOLS_STUCK_FUNDED: &str = "oyster_extension_pools_stuck_funded";
+/// Gauge: epochs between the current Walrus epoch and the earliest
+/// `pool_end_epoch` among [`EXTENSION_POOLS_STUCK_FUNDED`] pools. NaN
+/// when none are stuck. Turns the stuck-funded condition into a
+/// severity: low values mean a funded customer's data is about to
+/// lapse.
+pub const EXTENSION_STUCK_FUNDED_MIN_EPOCHS_REMAINING: &str =
+    "oyster_extension_stuck_funded_min_epochs_remaining";
+/// Gauge: pools currently in backoff, labelled by the `reason` of their
+/// most recent failure (every value in
+/// `db::accounts::EXTEND_FAILURE_REASONS` is published each cycle, zero
+/// when absent). `sum(... {reason!="insufficient_funds"})` is the
+/// coarse operator-side alert that also covers wallets the funded check
+/// could not verify.
+pub const EXTENSION_POOLS_IN_BACKOFF_BY_REASON: &str =
+    "oyster_extension_pools_in_backoff_by_reason";
+
 // Webhook metrics
 
 /// Counter: total webhook delivery attempts.

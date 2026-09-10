@@ -78,6 +78,11 @@ The ones worth alerting on:
 | `oyster_extension_pools_repaired_total{context}` | counter | DB `pool_end_epoch` repaired from chain: `already_extended` (then skipped) or `pre_extend` (then extended). |
 | `oyster_extension_pools_expired_reset_total` | counter | Pools confirmed expired on-chain and reset for lazy re-create. |
 | `oyster_extension_balance_precheck_skips_total` | counter | Retries skipped by the cheap WAL-balance pre-check. |
+| `oyster_extension_pools_stuck_funded` | gauge | Pools in backoff whose last failure happened with a **verified-funded** wallet. Anything above 0 is an extension Oyster owes and is not delivering. Clears when the pool extends, is reset, or the user requests a retry. |
+| `oyster_extension_stuck_funded_min_epochs_remaining` | gauge | Epochs left before the earliest stuck-funded pool expires. NaN when none are stuck. Severity dial for the gauge above. |
+| `oyster_extension_pools_in_backoff_by_reason{reason}` | gauge | Pools in backoff split by their last failure `reason`. Every reason is published each cycle (0 when absent). `reason!="insufficient_funds"` is the coarse operator-side view, and also covers wallets the funded check could not verify. |
+| `oyster_extension_funded_failures_total{reason}` | counter | Failed attempts where the wallet was verified funded. Each one also writes an `account.extension_failed_funded` audit event. `reason="insufficient_funds"` here means the funds classifier disagrees with the balance — a classifier bug that would otherwise loop the app through `funding_required` webhooks. |
+| `oyster_extension_failure_wallet_checks_total{result}` | counter | Post-failure wallet verdicts: `funded`, `unfunded`, `unknown` (balance read failed). |
 | `oyster_extension_attempt_duration_seconds{outcome}` | histogram | One PTB build + sign + execute + checkpoint wait. |
 | `oyster_extension_cycle_duration_seconds` | histogram | Whole-cycle wall clock. |
 | `oyster_extension_cycles_total`, `oyster_extension_pools_expiring`, `oyster_extension_cycle_pools_processed` | counter / gauge | Cycle throughput. |
@@ -92,6 +97,61 @@ The ones worth alerting on:
 | `EXTENSION_BUSY_SLEEP_MS` | `250` | Sleep between cycles while there's still work to drain. Leave default. |
 | `EXTENSION_CLAIM_BATCH_SIZE` | `100` | Max pool rows claimed per cycle. Leave default unless DB round-trip latency dominates. |
 | `EXTENSION_CLAIM_COOLDOWN_SECS` | `60` | Per-row claim TTL; also the webhook re-notify backoff for the same account. Leave default. |
+| `EXTENSION_BACKOFF_CAP_SECS` | `3600` | Ceiling on the per-pool exponential retry backoff (`cooldown × 2^failures`). Also bounds how long a freshly funded wallet waits for its next attempt. |
+| `EXTENSION_FUNDED_SUI_MIN_MIST` | `20000000` (0.02 SUI) | SUI floor for the post-failure wallet check. WAL is compared against the exact extension cost; SUI has no exact cost without a dry run, so a wallet at or above this floor counts as funded for gas. Raise it if `extend_storage_pool` gas budgets on your network exceed it. |
+
+### The extension guarantee
+
+An app's only obligation is to keep its wallet funded. Once it has,
+Oyster owes it a successful extension, so the worker treats "failed
+with a funded wallet" as a first-class condition rather than one more
+error line. After **every** failed attempt — not only the ones the
+error classifier already blamed on funds — the worker reads the
+wallet's WAL and SUI balances and compares them with the exact WAL cost
+of the attempted extension and the `EXTENSION_FUNDED_SUI_MIN_MIST` gas
+floor. The verdict (`funded` / `unfunded` / `unknown`) and the failure
+reason are stored on the account row next to the failure count, and
+cleared with it.
+
+A `funded` verdict produces three things:
+
+1. an `error`-level log line, `extension failed although the wallet is
+   funded`, carrying the account, pool, Pearl address, reason, error
+   text, both balances and both requirements, the failure streak, and
+   the epochs remaining;
+2. an `account.extension_failed_funded` row in `audit_events` with the
+   same fields, so support can answer "why did my data lapse" after the
+   logs have rotated;
+3. an increment of `oyster_extension_funded_failures_total{reason}`.
+
+The per-cycle gauges then keep the condition visible until it clears.
+Suggested alert rules:
+
+```yaml
+# Page: a funded customer's pool is not being extended.
+- alert: OysterExtensionStuckFunded
+  expr: oyster_extension_pools_stuck_funded > 0
+  for: 15m
+# Page, urgently: ...and it is about to expire.
+- alert: OysterExtensionStuckFundedExpiring
+  expr: oyster_extension_stuck_funded_min_epochs_remaining <= 2
+  for: 5m
+# Ticket: pools failing for any non-wallet reason, including wallets the
+# check could not verify (RPC errors reading balances).
+- alert: OysterExtensionOperatorSideBackoff
+  expr: sum(oyster_extension_pools_in_backoff_by_reason{reason!="insufficient_funds"}) > 0
+  for: 30m
+# Ticket: the funds classifier and the balance disagree.
+- alert: OysterExtensionFundsClassifierMismatch
+  expr: increase(oyster_extension_funded_failures_total{reason="insufficient_funds"}[1h]) > 0
+```
+
+The `unfunded` path is unchanged: the `account.funding_required`
+webhook fires and the pool waits in backoff for the app. The webhook
+also still fires when the classifier reports a shortfall but the wallet
+checked out as funded, because the SUI floor is a heuristic — a wallet
+above the floor can still be short for an unusually expensive PTB. The
+funded-failure alert is what tells the operator to look.
 
 ### Insufficient funds
 
