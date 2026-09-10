@@ -772,6 +772,196 @@ fn e2e_extension_task_extends_pool() {
     });
 }
 
+/// Test C2 — the extension success guarantee. An `extend_storage_pool`
+/// that fails on-chain while the wallet holds plenty of WAL and SUI must
+/// be flagged as a *funded* failure: persisted on the account row,
+/// recorded as an `account.extension_failed_funded` audit event, and
+/// visible in the health stats behind `oyster_extension_pools_stuck_funded`.
+/// A user-requested retry followed by a real extension must clear all of
+/// it again.
+///
+/// The failure is forced by asking for more epochs than Walrus's
+/// `max_epochs_ahead` allows: the PTB builds and signs normally (the
+/// wallet can pay for it), then the Move call aborts with
+/// `EInvalidEpochsAhead`.
+#[test]
+fn e2e_extension_funded_failure_is_flagged() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (app_id_str, admin_key) = harness.create_app_admin_key("e2e-funded-fail-app").await;
+        let app_id = oyster::AppId::from_str(&app_id_str).expect("parse app id");
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "funded-fail-bucket").await;
+        put_blob(
+            app,
+            &api_key,
+            &bucket_id,
+            "stuck.txt",
+            b"funded failure test",
+        )
+        .await;
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+        let before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status before");
+        let current_epoch = harness
+            .walrus_sui_client()
+            .read_client()
+            .current_epoch()
+            .await
+            .expect("current_epoch");
+        let lookahead = before.end_epoch + 1 - current_epoch;
+
+        // One more epoch than the contract will ever accept in a single
+        // extension, regardless of where the pool's end currently sits.
+        let too_many_epochs = walrus_sui::test_utils::system_setup::DEFAULT_MAX_EPOCHS_AHEAD + 1;
+        let processed = harness
+            .trigger_extension_cycle(lookahead, too_many_epochs)
+            .await;
+        assert_eq!(
+            processed, 1,
+            "the pool should have been claimed and attempted"
+        );
+
+        let after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after");
+        assert_eq!(
+            after.end_epoch, before.end_epoch,
+            "the aborted extension must not have moved the on-chain end epoch",
+        );
+
+        // The row remembers the failure and the verified wallet state.
+        let row = sqlx::query(&oyster::db::sql(
+            "SELECT extend_failure_count, extend_last_failure_reason, \
+                    extend_last_failure_wallet FROM accounts WHERE id = ?",
+        ))
+        .bind(&account_id)
+        .fetch_one(&harness.db)
+        .await
+        .expect("read failure columns");
+        use sqlx::Row as _;
+        assert_eq!(row.get::<i64, _>("extend_failure_count"), 1);
+        assert_eq!(
+            row.get::<Option<String>, _>("extend_last_failure_reason")
+                .as_deref(),
+            Some("on_chain_abort"),
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("extend_last_failure_wallet")
+                .as_deref(),
+            Some("funded"),
+            "a wallet holding 500 WAL and freshly minted SUI must read as funded",
+        );
+
+        // The durable warning record.
+        let events = oyster::db::audit_events::list_audit_events_by_app(&harness.db, &app_id)
+            .await
+            .expect("list audit events");
+        let ev = events
+            .iter()
+            .find(|e| e.event_type == oyster::db::accounts::AUDIT_EVENT_EXTENSION_FAILED_FUNDED)
+            .expect("extension_failed_funded audit event");
+        let data: Value = serde_json::from_str(&ev.event_data).expect("event_data is JSON");
+        assert_eq!(data["account_id"], account_id_str);
+        assert_eq!(data["storage_pool_object_id"], state.object_id);
+        assert_eq!(data["reason"], "on_chain_abort");
+        assert_eq!(data["extend_failure_count"], 1);
+        assert_eq!(data["on_chain_end_epoch"], before.end_epoch);
+        let wal_balance: u64 = data["wal_balance_frost"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .expect("wal_balance_frost is a decimal string");
+        let wal_required: u64 = data["wal_required_frost"]
+            .as_str()
+            .and_then(|v| v.parse().ok())
+            .expect("wal_required_frost is a decimal string");
+        assert!(
+            wal_balance >= wal_required,
+            "funded record must show balance ({wal_balance}) >= requirement ({wal_required})",
+        );
+        assert!(
+            data["error"]
+                .as_str()
+                .is_some_and(|e| e.contains("extend_storage_pool")),
+            "error text should name the aborted call: {}",
+            data["error"],
+        );
+
+        // The alert-feeding aggregate sees exactly this pool.
+        let stats = oyster::db::accounts::pool_health_stats(&harness.db)
+            .await
+            .expect("pool_health_stats");
+        assert_eq!(stats.pools_in_backoff, 1);
+        assert_eq!(stats.pools_stuck_funded, 1);
+        assert_eq!(
+            stats.min_pool_end_epoch_stuck_funded,
+            Some(before.end_epoch as i64)
+        );
+        assert_eq!(stats.backoff_by_reason.get("on_chain_abort"), Some(&1));
+
+        // Recovery: the user asks for a retry (clearing the backoff), and
+        // a well-formed extension then succeeds and wipes the failure
+        // state, so the alert clears on its own.
+        assert!(
+            oyster::db::accounts::request_extension_retry(&harness.db, &account_id)
+                .await
+                .expect("request_extension_retry")
+        );
+        let processed = harness.trigger_extension_cycle(lookahead, 1).await;
+        assert_eq!(processed, 1, "the retried pool should be claimed again");
+        let recovered = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after recovery");
+        assert_eq!(recovered.end_epoch, before.end_epoch + 1);
+
+        let row = sqlx::query(&oyster::db::sql(
+            "SELECT extend_failure_count, extend_last_failure_reason, \
+                    extend_last_failure_wallet FROM accounts WHERE id = ?",
+        ))
+        .bind(&account_id)
+        .fetch_one(&harness.db)
+        .await
+        .expect("read failure columns after recovery");
+        assert_eq!(row.get::<i64, _>("extend_failure_count"), 0);
+        assert_eq!(
+            row.get::<Option<String>, _>("extend_last_failure_reason"),
+            None
+        );
+        assert_eq!(
+            row.get::<Option<String>, _>("extend_last_failure_wallet"),
+            None
+        );
+
+        let stats = oyster::db::accounts::pool_health_stats(&harness.db)
+            .await
+            .expect("pool_health_stats after recovery");
+        assert_eq!(stats.pools_in_backoff, 0);
+        assert_eq!(stats.pools_stuck_funded, 0);
+        assert_eq!(stats.min_pool_end_epoch_stuck_funded, None);
+        assert!(stats.backoff_by_reason.is_empty());
+    });
+}
+
 /// Test D — deleting one of two references to the same content does not free
 /// pool capacity; deleting the last reference calls `delete_pooled_blob` and
 /// brings `used_encoded_bytes` to zero on both chain and DB.

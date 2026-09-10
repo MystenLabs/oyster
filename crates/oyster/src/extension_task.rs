@@ -1,3 +1,6 @@
+/// Post-failure wallet verification: was the wallet able to pay?
+pub mod wallet_check;
+
 use std::{collections::HashMap, time::Instant};
 
 use chrono::Utc;
@@ -12,16 +15,25 @@ use walrus_sui::{
 
 use crate::{
     AccountId, AppId, FundingAmount,
-    db::{self, DbPool, accounts::ExpiringPool},
+    db::{
+        self, DbPool,
+        accounts::{
+            AUDIT_EVENT_EXTENSION_FAILED_FUNDED, EXTEND_FAILURE_REASONS, ExpiringPool,
+            ExtendWalletState,
+        },
+    },
     extension_cost,
     metrics::{
         EXTENSION_ATTEMPT_DURATION_SECONDS, EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL,
         EXTENSION_CYCLE_DURATION_SECONDS, EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL,
-        EXTENSION_EPOCHS_EXTENDED_TOTAL, EXTENSION_ERRORS_TOTAL, EXTENSION_FAILURES_TOTAL,
-        EXTENSION_LAST_CYCLE_COMPLETED_TIMESTAMP_SECONDS, EXTENSION_MAX_FAILURE_COUNT,
-        EXTENSION_MIN_POOL_EPOCHS_REMAINING, EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL,
-        EXTENSION_POOLS_EXPIRED_RESET_TOTAL, EXTENSION_POOLS_EXPIRING,
-        EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_IN_BACKOFF, EXTENSION_POOLS_REPAIRED_TOTAL,
+        EXTENSION_EPOCHS_EXTENDED_TOTAL, EXTENSION_ERRORS_TOTAL,
+        EXTENSION_FAILURE_WALLET_CHECKS_TOTAL, EXTENSION_FAILURES_TOTAL,
+        EXTENSION_FUNDED_FAILURES_TOTAL, EXTENSION_LAST_CYCLE_COMPLETED_TIMESTAMP_SECONDS,
+        EXTENSION_MAX_FAILURE_COUNT, EXTENSION_MIN_POOL_EPOCHS_REMAINING,
+        EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL, EXTENSION_POOLS_EXPIRED_RESET_TOTAL,
+        EXTENSION_POOLS_EXPIRING, EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_IN_BACKOFF,
+        EXTENSION_POOLS_IN_BACKOFF_BY_REASON, EXTENSION_POOLS_REPAIRED_TOTAL,
+        EXTENSION_POOLS_STUCK_FUNDED, EXTENSION_STUCK_FUNDED_MIN_EPOCHS_REMAINING,
         WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
     pearl_client::PearlConnection,
@@ -52,6 +64,10 @@ pub struct ExtensionConfig {
     /// (`claim_cooldown * 2^failures`, capped here). Also bounds how long
     /// a user waits after funding their wallet before the next attempt.
     pub failure_backoff_cap: std::time::Duration,
+    /// SUI balance (MIST) at or above which a wallet counts as funded for
+    /// gas when a failed attempt is classified (`EXTENSION_FUNDED_SUI_MIN_MIST`).
+    /// WAL is compared against the exact extension cost instead.
+    pub funded_sui_min_mist: u64,
 }
 
 /// Exponential backoff after `failures` consecutive failed attempts:
@@ -207,7 +223,18 @@ pub async fn run_extension_cycle_once(
                 );
                 counter!(EXTENSION_ERRORS_TOTAL, "stage" => "invalid_object_id").increment(1);
                 counter!(EXTENSION_FAILURES_TOTAL, "reason" => "invalid_object_id").increment(1);
-                record_failure_backoff(db, &pool, config).await;
+                // Funding is irrelevant to a corrupt row; leave the
+                // wallet verdict unknown so the row shows up under
+                // `pools_in_backoff_by_reason{reason="invalid_object_id"}`
+                // rather than pretending anything about the wallet.
+                record_failure_backoff(
+                    db,
+                    &pool,
+                    config,
+                    "invalid_object_id",
+                    ExtendWalletState::Unknown,
+                )
+                .await;
                 errors += 1;
                 continue;
             }
@@ -318,13 +345,24 @@ pub async fn run_extension_cycle_once(
                 wal_shortfall(read_client, pool, sender_address, config.extend_epochs).await
         {
             counter!(EXTENSION_BALANCE_PRECHECK_SKIPS_TOTAL).increment(1);
+            // The pre-check is itself an authoritative WAL shortfall
+            // (coin selection for the exact cost found nothing), so the
+            // wallet verdict is known without a second read.
+            counter!(EXTENSION_FAILURE_WALLET_CHECKS_TOTAL, "result" => "unfunded").increment(1);
             tracing::info!(
                 account_id = %pool.account_id,
                 wal_frost_needed = cost.wal_frost,
                 extend_failure_count = pool.extend_failure_count,
                 "wallet still cannot cover extension cost, skipping attempt"
             );
-            record_failure_backoff(db, pool, config).await;
+            record_failure_backoff(
+                db,
+                pool,
+                config,
+                "insufficient_funds",
+                ExtendWalletState::Unfunded,
+            )
+            .await;
             notify_funding_required(
                 &webhook_for_apps,
                 &mut webhook_clients,
@@ -401,29 +439,77 @@ pub async fn run_extension_cycle_once(
                 counter!(EXTENSION_FAILURES_TOTAL, "reason" => reason).increment(1);
                 errors += 1;
 
-                record_failure_backoff(db, pool, config).await;
+                // Could the wallet have paid? This decides whose problem
+                // the failure is, so it runs for every failure — not only
+                // the ones the error classifier already blamed on funds.
+                let cost = match extension_cost::compute_extension_cost(
+                    read_client,
+                    pool,
+                    config.extend_epochs,
+                )
+                .await
+                {
+                    Ok(c) => Some(c),
+                    Err(err) => {
+                        tracing::warn!(
+                            account_id = %pool.account_id,
+                            error = %err,
+                            "failed to compute extension cost after failed attempt"
+                        );
+                        None
+                    }
+                };
+                let check = match cost {
+                    Some(cost) => {
+                        wallet_check::check_wallet(
+                            read_client,
+                            sender_address,
+                            FundingAmount {
+                                wal_frost: cost.wal_frost,
+                                sui_mist: config.funded_sui_min_mist,
+                            },
+                        )
+                        .await
+                    }
+                    None => wallet_check::WalletCheck {
+                        state: ExtendWalletState::Unknown,
+                        wal_balance_frost: None,
+                        sui_balance_mist: None,
+                        required: FundingAmount {
+                            wal_frost: 0,
+                            sui_mist: config.funded_sui_min_mist,
+                        },
+                    },
+                };
+                counter!(EXTENSION_FAILURE_WALLET_CHECKS_TOTAL, "result" => check.state.as_str())
+                    .increment(1);
+                if check.state == ExtendWalletState::Funded {
+                    report_funded_failure(
+                        db,
+                        pool,
+                        sender_address,
+                        reason,
+                        &e,
+                        &check,
+                        current_epoch,
+                        on_chain.end_epoch,
+                    )
+                    .await;
+                }
+
+                record_failure_backoff(db, pool, config, reason, check.state).await;
 
                 if e.is_insufficient_funds() {
-                    let cost = match extension_cost::compute_extension_cost(
-                        read_client,
-                        pool,
-                        config.extend_epochs,
-                    )
-                    .await
-                    {
-                        Ok(c) => c,
-                        Err(err) => {
-                            tracing::warn!(
-                                account_id = %pool.account_id,
-                                error = %err,
-                                "failed to compute extension cost; falling back to zeros"
-                            );
-                            FundingAmount {
-                                wal_frost: 0,
-                                sui_mist: 0,
-                            }
-                        }
-                    };
+                    // Notify even when the wallet checked out as funded:
+                    // the check uses a fixed SUI floor, so a genuinely
+                    // gas-short wallet above the floor must still reach
+                    // the app. The funded-failure alert above is what
+                    // tells the operator the classifier and the balance
+                    // disagree.
+                    let cost = cost.unwrap_or(FundingAmount {
+                        wal_frost: 0,
+                        sui_mist: 0,
+                    });
                     notify_funding_required(
                         &webhook_for_apps,
                         &mut webhook_clients,
@@ -478,6 +564,28 @@ async fn publish_pool_health_gauges(db: &DbPool, current_epoch: u32) {
                 .min_pool_end_epoch
                 .map_or(f64::NAN, |min_end| (min_end - current_epoch as i64) as f64);
             gauge!(EXTENSION_MIN_POOL_EPOCHS_REMAINING).set(remaining);
+
+            gauge!(EXTENSION_POOLS_STUCK_FUNDED).set(stats.pools_stuck_funded as f64);
+            let stuck_remaining = stats
+                .min_pool_end_epoch_stuck_funded
+                .map_or(f64::NAN, |min_end| (min_end - current_epoch as i64) as f64);
+            gauge!(EXTENSION_STUCK_FUNDED_MIN_EPOCHS_REMAINING).set(stuck_remaining);
+            // Publish every known reason, zeroing the ones absent from
+            // this sample, so a reason that stops occurring drops to 0
+            // instead of holding its last non-zero reading.
+            for reason in EXTEND_FAILURE_REASONS {
+                let n = stats.backoff_by_reason.get(reason).copied().unwrap_or(0);
+                gauge!(EXTENSION_POOLS_IN_BACKOFF_BY_REASON, "reason" => reason).set(n as f64);
+            }
+            if let Some(unknown) = stats
+                .backoff_by_reason
+                .keys()
+                .find(|r| !EXTEND_FAILURE_REASONS.contains(&r.as_str()))
+            {
+                // Written by a newer (or older) binary: still counted in
+                // `pools_in_backoff`, just not attributable here.
+                tracing::warn!(reason = %unknown, "unrecognised extend_last_failure_reason in DB");
+            }
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to sample pool health stats");
@@ -492,7 +600,17 @@ async fn publish_pool_health_gauges(db: &DbPool, current_epoch: u32) {
 /// typically an unfunded wallet — stops burning the full PTB/sign/execute
 /// RPC chain every cooldown. The exponent is this failure's ordinal
 /// (prior count + 1); success resets the count via `bump_pool_end_epoch`.
-async fn record_failure_backoff(db: &DbPool, pool: &ExpiringPool, config: &ExtensionConfig) {
+///
+/// `reason` and `wallet` are persisted alongside the count so the
+/// per-cycle health gauges can attribute the backoff without re-reading
+/// the chain.
+async fn record_failure_backoff(
+    db: &DbPool,
+    pool: &ExpiringPool,
+    config: &ExtensionConfig,
+    reason: &'static str,
+    wallet: ExtendWalletState,
+) {
     let backoff = failure_backoff(
         config.claim_cooldown,
         config.failure_backoff_cap,
@@ -500,13 +618,95 @@ async fn record_failure_backoff(db: &DbPool, pool: &ExpiringPool, config: &Exten
     );
     let next_attempt_after = Utc::now()
         + chrono::Duration::from_std(backoff).unwrap_or_else(|_| chrono::Duration::seconds(3600));
-    if let Err(db_err) =
-        db::accounts::record_extension_failure(db, &pool.account_id, next_attempt_after).await
+    if let Err(db_err) = db::accounts::record_extension_failure(
+        db,
+        &pool.account_id,
+        next_attempt_after,
+        reason,
+        wallet,
+    )
+    .await
     {
         tracing::warn!(
             account_id = %pool.account_id,
             error = %db_err,
             "failed to record extension failure backoff"
+        );
+        counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
+    }
+}
+
+/// Surface an extension failure that happened despite a funded wallet:
+/// the one outcome the worker promises never to leave silent. Emits the
+/// error-level warning record, bumps the alertable counter, and writes
+/// an `account.extension_failed_funded` audit event carrying everything
+/// support needs to reconstruct the attempt (balances vs. requirement,
+/// failure reason and error text, failure streak, epochs left).
+#[allow(clippy::too_many_arguments)]
+async fn report_funded_failure(
+    db: &DbPool,
+    pool: &ExpiringPool,
+    sender_address: SuiAddress,
+    reason: &'static str,
+    error: &ExtendPoolError,
+    check: &wallet_check::WalletCheck,
+    current_epoch: u32,
+    on_chain_end_epoch: u64,
+) {
+    let epochs_remaining = on_chain_end_epoch as i64 - current_epoch as i64;
+    let wal_balance = check.wal_balance_frost.unwrap_or(0);
+    let sui_balance = check.sui_balance_mist.unwrap_or(0);
+    let error_text = error.to_string();
+
+    counter!(EXTENSION_FUNDED_FAILURES_TOTAL, "reason" => reason).increment(1);
+    tracing::error!(
+        account_id = %pool.account_id,
+        app_id = %pool.app_id,
+        storage_pool_object_id = %pool.storage_pool_object_id,
+        pearl_address = %sender_address,
+        reason,
+        error = %error_text,
+        wal_balance_frost = wal_balance,
+        wal_required_frost = check.required.wal_frost,
+        sui_balance_mist = sui_balance,
+        sui_required_mist = check.required.sui_mist,
+        extend_failure_count = pool.extend_failure_count + 1,
+        epochs_remaining,
+        "extension failed although the wallet is funded — this is not the app's problem"
+    );
+
+    // Keep the free-form error text bounded; Move abort descriptions
+    // and transport errors can be long.
+    const MAX_ERROR_CHARS: usize = 512;
+    let error_text: String = error_text.chars().take(MAX_ERROR_CHARS).collect();
+    let event_data = serde_json::json!({
+        "account_id": pool.account_id.to_string(),
+        "storage_pool_object_id": pool.storage_pool_object_id,
+        "pearl_address": sender_address.to_string(),
+        "reason": reason,
+        "error": error_text,
+        "wal_balance_frost": wal_balance.to_string(),
+        "wal_required_frost": check.required.wal_frost.to_string(),
+        "sui_balance_mist": sui_balance.to_string(),
+        "sui_required_mist": check.required.sui_mist.to_string(),
+        "extend_failure_count": pool.extend_failure_count + 1,
+        "current_epoch": current_epoch,
+        "on_chain_end_epoch": on_chain_end_epoch,
+        "epochs_remaining": epochs_remaining,
+    });
+    if let Err(e) = db::audit_events::record_audit_event(
+        db,
+        &pool.app_id,
+        None,
+        AUDIT_EVENT_EXTENSION_FAILED_FUNDED,
+        event_data,
+    )
+    .await
+    {
+        tracing::warn!(
+            account_id = %pool.account_id,
+            error = %e,
+            "failed to record extension_failed_funded audit event"
         );
         counter!(EXTENSION_ERRORS_TOTAL, "stage" => "db_update").increment(1);
     }

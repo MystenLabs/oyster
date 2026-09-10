@@ -204,6 +204,7 @@ impl OysterTestHarness {
             extension_claim_batch_size: 100,
             extension_claim_cooldown_secs: 60,
             extension_backoff_cap_secs: 3600,
+            extension_funded_sui_min_mist: 20_000_000,
             extension_metrics_bind_addr: "unused".into(),
             default_avg_blob_size: 0,
             allow_http_webhook_scheme: false,
@@ -262,6 +263,7 @@ impl OysterTestHarness {
             claim_batch_size: 100,
             claim_cooldown: std::time::Duration::from_secs(60),
             failure_backoff_cap: std::time::Duration::from_secs(3600),
+            funded_sui_min_mist: 20_000_000,
         };
         oyster::extension_task::run_extension_cycle_once(
             &self.db,

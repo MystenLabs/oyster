@@ -38,6 +38,45 @@ pub struct ExpiringPool {
     pub key_version: u32,
 }
 
+/// Verified funding state of an account's wallet at the moment an
+/// extension attempt failed. Persisted in
+/// `accounts.extend_last_failure_wallet` so the worker's "stuck despite
+/// funding" gauges come from one aggregate query rather than a balance
+/// read per pool per cycle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExtendWalletState {
+    /// WAL and SUI balances both covered the extension when it failed:
+    /// the failure is Oyster's (or the chain's) problem, not the app's.
+    Funded,
+    /// The wallet could not cover the WAL cost or the SUI gas floor.
+    Unfunded,
+    /// The balance read itself failed, so nothing can be said.
+    Unknown,
+}
+
+impl ExtendWalletState {
+    /// Column / metric-label value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Funded => "funded",
+            Self::Unfunded => "unfunded",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Every value the worker writes to `accounts.extend_last_failure_reason`
+/// (and uses as the `reason` label on its failure metrics). The gauge
+/// publisher zeroes each of these every cycle so a reason that stops
+/// occurring reads `0` instead of retaining its last value.
+pub const EXTEND_FAILURE_REASONS: [&str; 5] = [
+    "insufficient_funds",
+    "ptb_build",
+    "on_chain_abort",
+    "sign_or_submit",
+    "invalid_object_id",
+];
+
 /// Insert a new account belonging to the given app. When
 /// `max_unencoded_bytes` is `None`, the DB falls back to its
 /// `DEFAULT 5_000_000_000` for the column. When `avg_blob_size` is
@@ -517,6 +556,15 @@ pub struct PoolHealthStats {
     /// Lowest `pool_end_epoch` across accounts that have a pool; `None`
     /// when no account has a pool yet.
     pub min_pool_end_epoch: Option<i64>,
+    /// Pools in backoff whose most recent failure happened while the
+    /// wallet was verified funded — extensions that should have succeeded.
+    pub pools_stuck_funded: i64,
+    /// Lowest `pool_end_epoch` among [`Self::pools_stuck_funded`]; `None`
+    /// when there are none.
+    pub min_pool_end_epoch_stuck_funded: Option<i64>,
+    /// Pools in backoff grouped by `extend_last_failure_reason`. Only
+    /// reasons with at least one pool are present.
+    pub backoff_by_reason: HashMap<String, i64>,
 }
 
 /// One aggregate query over accounts that own a `StoragePool`. Uses
@@ -527,16 +575,40 @@ pub async fn pool_health_stats(pool: &super::DbPool) -> Result<PoolHealthStats, 
         "SELECT \
              COUNT(CASE WHEN extend_failure_count > 0 THEN 1 END) AS pools_in_backoff, \
              MAX(extend_failure_count) AS max_failure_count, \
-             MIN(pool_end_epoch) AS min_pool_end_epoch \
+             MIN(pool_end_epoch) AS min_pool_end_epoch, \
+             COUNT(CASE WHEN extend_failure_count > 0 \
+                         AND extend_last_failure_wallet = 'funded' THEN 1 END) \
+                 AS pools_stuck_funded, \
+             MIN(CASE WHEN extend_failure_count > 0 \
+                       AND extend_last_failure_wallet = 'funded' THEN pool_end_epoch END) \
+                 AS min_pool_end_epoch_stuck_funded \
          FROM accounts \
          WHERE storage_pool_object_id IS NOT NULL",
     ))
     .fetch_one(pool)
     .await?;
+
+    let by_reason = sqlx::query(&super::sql(
+        "SELECT extend_last_failure_reason AS reason, COUNT(*) AS n \
+         FROM accounts \
+         WHERE storage_pool_object_id IS NOT NULL \
+           AND extend_failure_count > 0 \
+           AND extend_last_failure_reason IS NOT NULL \
+         GROUP BY extend_last_failure_reason",
+    ))
+    .fetch_all(pool)
+    .await?;
+
     Ok(PoolHealthStats {
         pools_in_backoff: row.get("pools_in_backoff"),
         max_failure_count: row.get::<Option<i64>, _>("max_failure_count").unwrap_or(0),
         min_pool_end_epoch: row.get("min_pool_end_epoch"),
+        pools_stuck_funded: row.get("pools_stuck_funded"),
+        min_pool_end_epoch_stuck_funded: row.get("min_pool_end_epoch_stuck_funded"),
+        backoff_by_reason: by_reason
+            .into_iter()
+            .map(|r| (r.get::<String, _>("reason"), r.get::<i64, _>("n")))
+            .collect(),
     })
 }
 
@@ -689,7 +761,8 @@ pub async fn bump_pool_end_epoch(
     new_end_epoch: i64,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(&super::sql(
-        "UPDATE accounts SET pool_end_epoch = ?, extend_failure_count = 0 \
+        "UPDATE accounts SET pool_end_epoch = ?, extend_failure_count = 0, \
+             extend_last_failure_reason = NULL, extend_last_failure_wallet = NULL \
          WHERE id = ? AND storage_pool_object_id = ? \
            AND COALESCE(pool_end_epoch, 0) < ?",
     ))
@@ -703,22 +776,30 @@ pub async fn bump_pool_end_epoch(
 }
 
 /// Record a failed extension attempt: increment the consecutive-failure
-/// counter and push `extend_attempt_after` out to `next_attempt_after`
-/// (the exponential-backoff stamp computed by the extension task). The
-/// stamp only ever moves forward relative to the claim-time cooldown, so
-/// a concurrent claim cannot shorten the backoff.
+/// counter, push `extend_attempt_after` out to `next_attempt_after`
+/// (the exponential-backoff stamp computed by the extension task), and
+/// remember why it failed (`reason`, one of [`EXTEND_FAILURE_REASONS`])
+/// and whether the wallet was funded at the time. The stamp only ever
+/// moves forward relative to the claim-time cooldown, so a concurrent
+/// claim cannot shorten the backoff.
 pub async fn record_extension_failure(
     pool: &super::DbPool,
     account_id: &AccountId,
     next_attempt_after: DateTime<Utc>,
+    reason: &str,
+    wallet: ExtendWalletState,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(&super::sql(
         "UPDATE accounts SET \
              extend_failure_count = extend_failure_count + 1, \
-             extend_attempt_after = ? \
+             extend_attempt_after = ?, \
+             extend_last_failure_reason = ?, \
+             extend_last_failure_wallet = ? \
          WHERE id = ?",
     ))
     .bind(ts(next_attempt_after))
+    .bind(reason)
+    .bind(wallet.as_str())
     .bind(account_id)
     .execute(pool)
     .await?;
@@ -763,7 +844,8 @@ pub async fn request_extension_retry(
     account_id: &AccountId,
 ) -> Result<bool, sqlx::Error> {
     let result = sqlx::query(&super::sql(
-        "UPDATE accounts SET extend_attempt_after = NULL, extend_failure_count = 0 \
+        "UPDATE accounts SET extend_attempt_after = NULL, extend_failure_count = 0, \
+             extend_last_failure_reason = NULL, extend_last_failure_wallet = NULL \
          WHERE id = ? AND storage_pool_object_id IS NOT NULL",
     ))
     .bind(account_id)
@@ -774,6 +856,13 @@ pub async fn request_extension_retry(
 
 /// Audit event type recorded when an expired `StoragePool` is reset.
 pub const AUDIT_EVENT_POOL_EXPIRED: &str = "account.pool_expired";
+
+/// Audit event type recorded by the extension worker when an
+/// `extend_storage_pool` attempt fails even though the wallet was
+/// verified to hold enough WAL and SUI. The durable "this should not
+/// have happened" record behind
+/// `oyster_extension_funded_failures_total`.
+pub const AUDIT_EVENT_EXTENSION_FAILED_FUNDED: &str = "account.extension_failed_funded";
 
 /// Reset an account whose `StoragePool` has expired on-chain (Walrus
 /// storage cannot be extended past its end epoch). In one transaction:
@@ -807,7 +896,9 @@ pub async fn reset_expired_pool(
              pool_reserved_encoded_bytes = NULL, \
              pool_used_encoded_bytes = NULL, \
              extend_attempt_after = NULL, \
-             extend_failure_count = 0 \
+             extend_failure_count = 0, \
+             extend_last_failure_reason = NULL, \
+             extend_last_failure_wallet = NULL \
          WHERE id = ? AND storage_pool_object_id = ?",
     ))
     .bind(account_id)
@@ -1683,6 +1774,9 @@ mod tests {
                 pools_in_backoff: 0,
                 max_failure_count: 0,
                 min_pool_end_epoch: None,
+                pools_stuck_funded: 0,
+                min_pool_end_epoch_stuck_funded: None,
+                backoff_by_reason: HashMap::new(),
             }
         );
 
@@ -1711,18 +1805,42 @@ mod tests {
                 pools_in_backoff: 0,
                 max_failure_count: 0,
                 min_pool_end_epoch: Some(25),
+                pools_stuck_funded: 0,
+                min_pool_end_epoch_stuck_funded: None,
+                backoff_by_reason: HashMap::new(),
             }
         );
 
-        record_extension_failure(&pool, &a.id, now_at(60))
-            .await
-            .unwrap();
-        record_extension_failure(&pool, &a.id, now_at(120))
-            .await
-            .unwrap();
-        record_extension_failure(&pool, &b.id, now_at(60))
-            .await
-            .unwrap();
+        // `a` fails twice, first for a transient reason with the wallet
+        // unverified, then on-chain with a verified-funded wallet; `b`
+        // fails once for lack of funds.
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(60),
+            "sign_or_submit",
+            ExtendWalletState::Unknown,
+        )
+        .await
+        .unwrap();
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(120),
+            "on_chain_abort",
+            ExtendWalletState::Funded,
+        )
+        .await
+        .unwrap();
+        record_extension_failure(
+            &pool,
+            &b.id,
+            now_at(60),
+            "insufficient_funds",
+            ExtendWalletState::Unfunded,
+        )
+        .await
+        .unwrap();
 
         let degraded = pool_health_stats(&pool).await.unwrap();
         assert_eq!(
@@ -1731,6 +1849,16 @@ mod tests {
                 pools_in_backoff: 2,
                 max_failure_count: 2,
                 min_pool_end_epoch: Some(25),
+                // Only `a` (end epoch 40) is stuck with a funded wallet;
+                // `b`'s lower end epoch must not leak into the funded min.
+                pools_stuck_funded: 1,
+                min_pool_end_epoch_stuck_funded: Some(40),
+                // The latest failure wins: `a` reads `on_chain_abort`,
+                // not its earlier `sign_or_submit`.
+                backoff_by_reason: HashMap::from([
+                    ("on_chain_abort".to_string(), 1),
+                    ("insufficient_funds".to_string(), 1),
+                ]),
             }
         );
 
@@ -1745,8 +1873,106 @@ mod tests {
                 pools_in_backoff: 1,
                 max_failure_count: 2,
                 min_pool_end_epoch: Some(40),
+                pools_stuck_funded: 1,
+                min_pool_end_epoch_stuck_funded: Some(40),
+                backoff_by_reason: HashMap::from([("on_chain_abort".to_string(), 1)]),
             }
         );
+
+        // ... and for the funded-stuck pool too.
+        bump_pool_end_epoch(&pool, &a.id, "0xaaa", 70)
+            .await
+            .unwrap();
+        let all_clear = pool_health_stats(&pool).await.unwrap();
+        assert_eq!(all_clear.pools_stuck_funded, 0);
+        assert_eq!(all_clear.min_pool_end_epoch_stuck_funded, None);
+        assert!(all_clear.backoff_by_reason.is_empty());
+    }
+
+    /// The last-failure columns are cleared on every path that resets
+    /// `extend_failure_count`, so a pool can never read as "stuck funded"
+    /// after it has been extended, reset, or manually retried.
+    #[tokio::test]
+    async fn last_failure_columns_cleared_with_failure_count() {
+        async fn last_failure(
+            pool: &super::super::DbPool,
+            id: &AccountId,
+        ) -> (Option<String>, Option<String>) {
+            let row = sqlx::query(&db::sql(
+                "SELECT extend_last_failure_reason, extend_last_failure_wallet \
+                 FROM accounts WHERE id = ?",
+            ))
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            (
+                row.get("extend_last_failure_reason"),
+                row.get("extend_last_failure_wallet"),
+            )
+        }
+        let pool = test_pool().await;
+
+        // Success path.
+        let a = create_account(&pool, &AppId::INTERNAL, None, None, None, None)
+            .await
+            .unwrap();
+        set_storage_pool(&pool, &a.id, "0xaaa", 10, 1_000, 0)
+            .await
+            .unwrap();
+        assert_eq!(last_failure(&pool, &a.id).await, (None, None));
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(60),
+            "on_chain_abort",
+            ExtendWalletState::Funded,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            last_failure(&pool, &a.id).await,
+            (Some("on_chain_abort".into()), Some("funded".into()))
+        );
+        bump_pool_end_epoch(&pool, &a.id, "0xaaa", 20)
+            .await
+            .unwrap();
+        assert_eq!(last_failure(&pool, &a.id).await, (None, None));
+
+        // User-requested retry.
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(60),
+            "ptb_build",
+            ExtendWalletState::Unknown,
+        )
+        .await
+        .unwrap();
+        assert!(request_extension_retry(&pool, &a.id).await.unwrap());
+        assert_eq!(last_failure(&pool, &a.id).await, (None, None));
+
+        // Expired-pool reset.
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(60),
+            "insufficient_funds",
+            ExtendWalletState::Unfunded,
+        )
+        .await
+        .unwrap();
+        reset_expired_pool(
+            &pool,
+            &a.id,
+            &AppId::INTERNAL,
+            "0xaaa",
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap()
+        .expect("reset applies");
+        assert_eq!(last_failure(&pool, &a.id).await, (None, None));
     }
 
     #[tokio::test]
@@ -1768,9 +1994,15 @@ mod tests {
 
         // Failure pushes the stamp past the claim-time cooldown and bumps
         // the counter.
-        record_extension_failure(&pool, &a.id, now_at(240))
-            .await
-            .unwrap();
+        record_extension_failure(
+            &pool,
+            &a.id,
+            now_at(240),
+            "sign_or_submit",
+            ExtendWalletState::Funded,
+        )
+        .await
+        .unwrap();
         let during_backoff = claim_pools_for_extension(&pool, 100, 100, now_at(160), now_at(100))
             .await
             .unwrap();

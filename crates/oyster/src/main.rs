@@ -328,6 +328,7 @@ async fn main() {
                 failure_backoff_cap: std::time::Duration::from_secs(
                     config.extension_backoff_cap_secs,
                 ),
+                funded_sui_min_mist: config.extension_funded_sui_min_mist,
             };
 
             oyster::extension_task::run_extension_loop(
