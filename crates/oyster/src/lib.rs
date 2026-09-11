@@ -58,6 +58,8 @@ pub mod validation;
 pub mod webhook;
 /// Helpers for the per-app Ed25519 keypair that signs webhook deliveries.
 pub mod webhook_keys;
+/// Admin fund withdrawals: on-chain SUI/WAL transfer out of a Pearl wallet.
+pub mod withdrawal;
 
 use std::sync::Arc;
 

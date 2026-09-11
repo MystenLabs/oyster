@@ -1,9 +1,11 @@
 # Webhooks
 
-Oyster posts a single webhook event: `account.funding_required`.
-It tells the owning app that an account's Pearl-derived wallet cannot
+Oyster's primary webhook event is `account.funding_required`. It
+tells the owning app that an account's Pearl-derived wallet cannot
 cover the next `extend_storage_pool` PTB. Top up the wallet and the
-next extension cycle succeeds.
+next extension cycle succeeds. Deployments with admin withdrawals
+enabled also emit the `account.withdrawal_*` events described at the
+end of this page.
 
 This page covers the trigger condition, payload schema, retry
 behavior, circuit-breaker semantics, and how to write a receiver.
@@ -16,9 +18,9 @@ Oyster POSTs a JSON event to the receiver URL configured for the
 owning app. The receiver is expected to credit the wallet (or alert a
 human to do so) and acknowledge with a `2xx` status.
 
-Only `account.funding_required` is emitted currently. Future events
-share the same envelope shape. Receivers should switch on the `type`
-field rather than assuming a single schema.
+All events share the same envelope (`event_id`, `type`, `account_id`,
+`timestamp`) and the same signature headers. Receivers should switch on
+the `type` field rather than assuming a single schema.
 
 ## Trigger condition
 
@@ -381,3 +383,45 @@ Pair these with the extension worker counters
 (`oyster_extension_pools_extended_total`,
 `oyster_extension_errors_total{stage}`) to alert on chronic
 under-funding without alerting on transient receiver failures.
+
+## Withdrawal events
+
+Emitted only on deployments with `OYSTER_WITHDRAWALS_ENABLED=true`
+(see [Admin › Withdrawals](../json-api/admin.md#withdrawals)). They are
+a security signal as much as a notification: an
+`account.withdrawal_address_set` you did not initiate means an admin
+key is compromised, and the address cooldown exists so you have time to
+revoke it.
+
+| `type` | When |
+|--------|------|
+| `account.withdrawal_address_set` | An admin key registered or replaced the account's withdrawal address. `usable_at` is when it becomes usable. |
+| `account.withdrawal_requested` | A withdrawal was requested and is waiting for approval by a second admin key. |
+| `account.withdrawal_completed` | A withdrawal was approved and landed on-chain; `tx_digest` is set. |
+
+```json
+{
+  "event_id": "…uuid…",
+  "type": "account.withdrawal_completed",
+  "account_id": "acc_…",
+  "withdrawal_id": "6d0e…",
+  "destination": "0x9a1c…",
+  "sui_mist": 1000000000,
+  "wal_frost": 5000000000,
+  "all": false,
+  "usable_at": null,
+  "admin_key_id": "…",
+  "tx_digest": "9vX…",
+  "timestamp": "2026-09-10T14:31:00Z"
+}
+```
+
+`withdrawal_id`, `tx_digest` and `usable_at` are `null` when they do
+not apply to the event. `admin_key_id` is the id (not the secret) of
+the admin key that performed the action; compare it with
+`oysterd app list-admin-keys`. Amounts are JSON integers here (they fit
+comfortably in 53 bits for any realistic withdrawal).
+
+Delivery uses the same retry policy and circuit breaker as
+`account.funding_required`. The withdrawal ledger and audit log remain
+the source of truth; treat the webhook as a heads-up.

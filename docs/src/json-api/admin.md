@@ -542,6 +542,155 @@ fields nulled.
 |--------|-----------|
 | `401` | Missing or invalid admin key |
 
+## Withdrawals
+
+Move SUI/WAL out of an account's Pearl wallet to a user-controlled
+address, for example to refund a customer who is leaving. These are
+the only admin endpoints that move funds, so they carry controls that a
+single leaked admin key cannot satisfy on its own:
+
+1. **Off by default.** The endpoints answer `404` unless the operator
+   sets `OYSTER_WITHDRAWALS_ENABLED=true` on the deployment.
+2. **Pre-registered destination with a cooldown.** Funds can only go to
+   the one address registered for the account, and only once that
+   registration is older than `OYSTER_WITHDRAWAL_ADDRESS_COOLDOWN_SECS`
+   (default 24 h). Registering or replacing the address is audited and
+   pushed to the app webhook as `account.withdrawal_address_set`, so a
+   registration you did not make is your signal to revoke the key that
+   made it before the cooldown ends.
+3. **Two admin keys.** A withdrawal is *requested* by one admin key and
+   must be *approved* by a different active admin key of the same app.
+   Admin keys cannot be issued through the admin API (only by an
+   operator via `oysterd app issue-admin-key` or the signup dashboard),
+   so a thief holding one key cannot approve their own request. An app
+   that wants to withdraw needs at least two admin keys, ideally held by
+   two people.
+4. **Bounded and re-checked.** A pending request expires after
+   `OYSTER_WITHDRAWAL_REQUEST_TTL_SECS` (default 24 h). The registered
+   address and its cooldown are checked again at approval time.
+5. **Ledger.** Every request, approval, cancellation and outcome is
+   stored with the admin keys involved, mirrored to the audit log, and
+   completions are pushed to the webhook as `account.withdrawal_completed`.
+
+Withdrawals are refused with `503` while the account's wallet is mid
+key-rotation.
+
+### Register Withdrawal Address
+
+```
+PUT /api/v1/admin/accounts/{account_id}/withdrawal-address
+```
+
+**Request body:**
+
+```json
+{ "address": "0x9a1c…64 hex…" }
+```
+
+**Response** (`200 OK`):
+
+```json
+{
+  "account_id": "acc_…",
+  "address": "0x9a1c…",
+  "registered_at": "2026-09-10 14:02:11",
+  "usable_at": "2026-09-11 14:02:11",
+  "usable_now": false
+}
+```
+
+Replacing the address restarts the cooldown. Pending requests whose
+destination no longer matches can no longer be approved.
+
+**Errors:** `400` invalid Sui address · `401` · `403` account belongs to
+another app · `404` account unknown or withdrawals disabled.
+
+`GET` on the same path returns the registration (`404` if none);
+`DELETE` clears it (`204`).
+
+### Request Withdrawal
+
+```
+POST /api/v1/admin/accounts/{account_id}/withdrawals
+```
+
+**Request body:** either fixed amounts or `all`.
+
+```json
+{ "sui_mist": 1000000000, "wal_frost": 5000000000 }
+```
+
+```json
+{ "all": true }
+```
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `sui_mist` | integer | SUI to send, in MIST (1 SUI = 10⁹ MIST). Gas is paid on top from the wallet. |
+| `wal_frost` | integer | WAL to send, in FROST (1 WAL = 10⁹ FROST). |
+| `all` | boolean | Send every SUI and WAL coin, leaving the wallet empty (gas comes off the top). Cannot be combined with amounts. |
+
+**Response** (`202 Accepted`): the withdrawal record with
+`"status": "pending"`. Nothing has moved yet.
+
+```json
+{
+  "id": "6d0e…",
+  "account_id": "acc_…",
+  "destination": "0x9a1c…",
+  "sui_mist": 1000000000,
+  "wal_frost": 5000000000,
+  "all": false,
+  "status": "pending",
+  "requested_by_admin_key_id": "…",
+  "approved_by_admin_key_id": null,
+  "tx_digest": null,
+  "error": null,
+  "created_at": "2026-09-10 14:30:00",
+  "expires_at": "2026-09-11 14:30:00",
+  "updated_at": "2026-09-10 14:30:00"
+}
+```
+
+**Errors:** `400` invalid amounts · `401` · `403` · `404` · `409` no
+address registered, or another request is already pending for the
+account.
+
+### Approve Withdrawal
+
+```
+POST /api/v1/admin/withdrawals/{withdrawal_id}/approve
+```
+
+Must be called with a **different** admin key than the one that made
+the request. On success the transfer has landed on-chain and the
+response is the record with `"status": "completed"` and `tx_digest`
+set.
+
+**Errors:**
+
+| Status | Condition |
+|--------|-----------|
+| `403` | Approver is the requester, or the request belongs to another app |
+| `409` | Request is not pending, has expired, the address was changed or cleared since the request, the cooldown has not elapsed, or the wallet cannot cover the amount plus gas (request marked `failed`) |
+| `502` | On-chain submission failed (request marked `failed`; see `error`) |
+| `503` | Account mid key-rotation, or the deployment has no chain access |
+
+Approval is a compare-and-set on the request's state, so two concurrent
+approvals cannot both submit.
+
+### Cancel / Inspect Withdrawals
+
+```
+POST /api/v1/admin/withdrawals/{withdrawal_id}/cancel
+GET  /api/v1/admin/withdrawals/{withdrawal_id}
+GET  /api/v1/admin/accounts/{account_id}/withdrawals
+```
+
+Any admin key of the app may cancel a pending request (cancelling is
+the safe direction). The list endpoint returns every request for the
+account, newest first, including failed and cancelled ones.
+
 ## Server Commands
 
 `oysterd` is the server binary. Besides the `oysterd app` subcommands below

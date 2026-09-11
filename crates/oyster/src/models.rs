@@ -495,3 +495,78 @@ pub struct PaginationParams {
     /// Maximum number of items to return.
     pub limit: Option<i64>,
 }
+
+/// Request body for `PUT /admin/accounts/{account_id}/withdrawal-address`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct SetWithdrawalAddressRequest {
+    /// Sui address (`0x` + 64 hex) that withdrawals may be sent to.
+    pub address: String,
+}
+
+/// The registered withdrawal destination for an account.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WithdrawalAddressResponse {
+    /// The account.
+    pub account_id: AccountId,
+    /// Normalized Sui address.
+    pub address: String,
+    /// When it was registered (UTC, `YYYY-MM-DD HH:MM:SS`).
+    pub registered_at: String,
+    /// Earliest time a withdrawal to it can be approved (UTC).
+    pub usable_at: String,
+    /// Whether `usable_at` has already passed.
+    pub usable_now: bool,
+}
+
+/// Request body for `POST /admin/accounts/{account_id}/withdrawals`.
+/// Give `sui_mist` and/or `wal_frost`, or `all: true` to empty the
+/// wallet (amounts must then be omitted).
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CreateWithdrawalRequest {
+    /// SUI to withdraw, in MIST (1 SUI = 1_000_000_000 MIST).
+    pub sui_mist: Option<u64>,
+    /// WAL to withdraw, in FROST (1 WAL = 1_000_000_000 FROST).
+    pub wal_frost: Option<u64>,
+    /// Move every SUI and WAL coin, leaving the wallet empty.
+    pub all: Option<bool>,
+}
+
+/// A withdrawal request and its outcome.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WithdrawalResponse {
+    /// Request id.
+    pub id: String,
+    /// Account whose wallet is debited.
+    pub account_id: AccountId,
+    /// Destination address (the registered address at request time).
+    pub destination: String,
+    /// SUI amount in MIST, if any.
+    pub sui_mist: Option<i64>,
+    /// WAL amount in FROST, if any.
+    pub wal_frost: Option<i64>,
+    /// Whether the request empties the wallet.
+    pub all: bool,
+    /// `pending` | `executing` | `completed` | `failed` | `cancelled`.
+    pub status: String,
+    /// Admin key that created the request.
+    pub requested_by_admin_key_id: String,
+    /// Admin key that approved it, once approved.
+    pub approved_by_admin_key_id: Option<String>,
+    /// Sui transaction digest once completed.
+    pub tx_digest: Option<String>,
+    /// Failure reason once failed.
+    pub error: Option<String>,
+    /// Creation time (UTC).
+    pub created_at: String,
+    /// Deadline for approval (UTC).
+    pub expires_at: String,
+    /// Last state change (UTC).
+    pub updated_at: String,
+}
+
+/// Response body for `GET /admin/accounts/{account_id}/withdrawals`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WithdrawalListResponse {
+    /// Newest first.
+    pub withdrawals: Vec<WithdrawalResponse>,
+}

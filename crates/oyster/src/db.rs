@@ -29,6 +29,8 @@ pub mod signup_requests;
 pub mod users;
 /// Browser session database operations for the signup/dashboard pages.
 pub mod web_sessions;
+/// Admin fund-withdrawal ledger and registered destination addresses.
+pub mod withdrawals;
 
 use std::{borrow::Cow, fmt::Write, sync::OnceLock};
 

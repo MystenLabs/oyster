@@ -217,6 +217,9 @@ async fn test_app() -> (Router, TempDir, db::DbPool) {
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -265,6 +268,9 @@ async fn test_app_with_spy(blob_store: Arc<SpyBlobStore>) -> (Router, TempDir, d
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1241,6 +1247,9 @@ async fn test_app_with_pearl() -> (Router, TempDir, db::DbPool) {
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1688,6 +1697,9 @@ async fn metrics_endpoint_returns_prometheus_format() {
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -1766,6 +1778,9 @@ async fn test_s3_with_account() -> (OysterS3, String, TempDir) {
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -2059,6 +2074,9 @@ async fn test_s3_with_spy(
         allow_http_webhook_scheme: true,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -4448,6 +4466,9 @@ async fn test_app_https_only() -> (Router, TempDir, db::DbPool) {
         allow_http_webhook_scheme: false,
         max_admin_keys_per_app: 5,
         signup: None,
+        withdrawals_enabled: true,
+        withdrawal_address_cooldown_secs: 0,
+        withdrawal_request_ttl_secs: 3600,
     };
 
     let pool = db::create_pool(&config.database_url).await.unwrap();
@@ -4963,6 +4984,9 @@ fn insufficient_balance_route_increments_402_counter_with_store_blob_label() {
                 allow_http_webhook_scheme: true,
                 max_admin_keys_per_app: 5,
                 signup: None,
+                withdrawals_enabled: true,
+                withdrawal_address_cooldown_secs: 0,
+                withdrawal_request_ttl_secs: 3600,
             };
             let pool = db::create_pool(&config.database_url).await.unwrap();
             let state = AppState {
@@ -5219,4 +5243,630 @@ async fn extension_claim_skips_accounts_under_key_migration() {
             .unwrap();
     let ids: Vec<_> = claimed.iter().map(|p| p.account_id).collect();
     assert_eq!(ids, vec![a]);
+}
+
+// ---------------------------------------------------------------------------
+// Admin withdrawals: dual control, pre-registered destination, cooldown
+// ---------------------------------------------------------------------------
+
+/// `test_app()` with the withdrawal knobs set explicitly.
+async fn test_app_withdrawals(enabled: bool, cooldown_secs: u64) -> (Router, TempDir, db::DbPool) {
+    let tmp = TempDir::new().unwrap();
+    let blob_path = tmp.path().join("blobs");
+    let config = Config {
+        bind_addr: "unused".into(),
+        database_url: "sqlite::memory:".into(),
+        blob_store_path: blob_path.clone(),
+        pearl_grpc_url: None,
+        pearl_service_secret: "test-secret".into(),
+        sui_rpc_url: None,
+        walrus_system_object: None,
+        walrus_staking_object: None,
+        pool_initial_epochs_ahead: 5,
+        pool_initial_encoded_capacity_bytes: BYTES_PER_UNIT_SIZE,
+        pool_extend_epochs: 5,
+        pool_extend_lookahead_epochs: 7,
+        extension_idle_sleep_secs: 30,
+        extension_busy_sleep_ms: 250,
+        extension_claim_batch_size: 100,
+        extension_claim_cooldown_secs: 60,
+        extension_backoff_cap_secs: 3600,
+        extension_metrics_bind_addr: "unused".into(),
+        default_avg_blob_size: 0,
+        allow_http_webhook_scheme: true,
+        max_admin_keys_per_app: 5,
+        signup: None,
+        withdrawals_enabled: enabled,
+        withdrawal_address_cooldown_secs: cooldown_secs,
+        withdrawal_request_ttl_secs: 3600,
+    };
+    let pool = db::create_pool(&config.database_url).await.unwrap();
+    let blob_store = LocalBlobStore::new(blob_path).await.unwrap();
+    let state = AppState {
+        db: pool.clone(),
+        blob_store: Arc::new(blob_store),
+        pearl: None,
+        read_client: None,
+        config,
+        metrics_handle: None,
+    };
+    (routes::build_router(state), tmp, pool)
+}
+
+/// An unrelated app with its own admin key (app names are unique, so
+/// `create_test_app_admin_key` cannot be called twice per test).
+async fn other_app_admin_key(pool: &db::DbPool) -> String {
+    let app = db::apps::create_app(pool, "other-app", "other@example.com")
+        .await
+        .unwrap();
+    let raw = auth::generate_api_key();
+    let hash = auth::hash_api_key(&raw);
+    let prefix = auth::key_prefix(&raw);
+    db::app_admin_keys::create_admin_key(pool, &app.id, &hash, &prefix, &raw)
+        .await
+        .unwrap();
+    raw
+}
+
+/// A second admin key on an existing app (the admin API cannot mint
+/// these; the CLI/dashboard can).
+async fn issue_second_admin_key(pool: &db::DbPool, app_id: &str) -> String {
+    let app_id: oyster::AppId = app_id.parse().unwrap();
+    let raw = auth::generate_api_key();
+    let hash = auth::hash_api_key(&raw);
+    let prefix = auth::key_prefix(&raw);
+    db::app_admin_keys::create_admin_key(pool, &app_id, &hash, &prefix, &raw)
+        .await
+        .unwrap();
+    raw
+}
+
+async fn wd_create_account(app: &Router, admin_key: &str) -> String {
+    let (status, body) = json_response(
+        app,
+        Request::post("/api/v1/accounts")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"wd-account"}"#))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    body["account_id"].as_str().unwrap().to_string()
+}
+
+const DEST: &str = "0x00000000000000000000000000000000000000000000000000000000000000aa";
+const DEST2: &str = "0x00000000000000000000000000000000000000000000000000000000000000bb";
+
+async fn put_withdrawal_address(
+    app: &Router,
+    admin_key: &str,
+    account_id: &str,
+    address: &str,
+) -> (StatusCode, Value) {
+    json_response(
+        app,
+        Request::put(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .header("content-type", "application/json")
+        .body(Body::from(format!(r#"{{"address":"{address}"}}"#)))
+        .unwrap(),
+    )
+    .await
+}
+
+async fn post_withdrawal(
+    app: &Router,
+    admin_key: &str,
+    account_id: &str,
+    body: &str,
+) -> (StatusCode, Value) {
+    json_response(
+        app,
+        Request::post(format!("/api/v1/admin/accounts/{account_id}/withdrawals"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+}
+
+async fn withdrawal_action(
+    app: &Router,
+    admin_key: &str,
+    id: &str,
+    action: &str,
+) -> (StatusCode, Value) {
+    json_response(
+        app,
+        Request::post(format!("/api/v1/admin/withdrawals/{id}/{action}"))
+            .header("authorization", format!("Bearer {admin_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+}
+
+#[tokio::test]
+async fn withdrawals_disabled_by_default_answer_404() {
+    let (app, _tmp, pool) = test_app_withdrawals(false, 0).await;
+    let (_app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let account_id = wd_create_account(&app, &admin_key).await;
+
+    let (status, _) = put_withdrawal_address(&app, &admin_key, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = post_withdrawal(&app, &admin_key, &account_id, r#"{"all":true}"#).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = withdrawal_action(&app, &admin_key, "nope", "approve").await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    // Nothing was written.
+    assert!(
+        db::withdrawals::get_withdrawal_address(&pool, &account_id.parse().unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn withdrawal_address_lifecycle_is_audited_and_pushed_to_webhook() {
+    use std::sync::{Arc, Mutex};
+
+    use axum::{body::Bytes, extract::State as AxState, routing::post};
+
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, admin_key) = create_test_app_admin_key(&pool).await;
+    let account_id = wd_create_account(&app, &admin_key).await;
+    let account_typed: AccountId = account_id.parse().unwrap();
+
+    // A receiver so the address-set event can be observed.
+    let store: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
+    async fn handler(AxState(store): AxState<Arc<Mutex<Vec<Value>>>>, body: Bytes) -> StatusCode {
+        store
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&body).unwrap());
+        StatusCode::OK
+    }
+    let receiver = Router::new()
+        .route("/hook", post(handler))
+        .with_state(store.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, receiver).await.unwrap() });
+    let (status, _) = json_response(
+        &app,
+        Request::put("/api/v1/admin/app/webhook")
+            .header("authorization", format!("Bearer {admin_key}"))
+            .header("content-type", "application/json")
+            .body(Body::from(format!(
+                r#"{{"webhook_url":"http://{addr}/hook"}}"#
+            )))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Invalid address.
+    let (status, body) = put_withdrawal_address(&app, &admin_key, &account_id, "0x123").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let (status, _) = put_withdrawal_address(&app, &admin_key, &account_id, "not-an-address").await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    // Nothing registered yet.
+    let (status, _) = json_response(
+        &app,
+        Request::get(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Register (cooldown 0 in test_app → usable immediately).
+    let (status, body) = put_withdrawal_address(&app, &admin_key, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["address"], DEST);
+    assert_eq!(body["usable_now"], true);
+    assert_eq!(body["account_id"], account_id);
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["address"], DEST);
+
+    // Replace: audit records the previous address.
+    let (status, body) = put_withdrawal_address(&app, &admin_key, &account_id, DEST2).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let events = db::audit_events::list_audit_events_by_app(&pool, &app_id.parse().unwrap())
+        .await
+        .unwrap();
+    let set_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == "account.withdrawal_address_set")
+        .collect();
+    assert_eq!(set_events.len(), 2);
+    let last: Value = serde_json::from_str(&set_events.last().unwrap().event_data).unwrap();
+    assert_eq!(last["address"], DEST2);
+    assert_eq!(last["previous_address"], DEST);
+    assert_eq!(last["account_id"], account_id);
+
+    // Both registrations reached the webhook.
+    for _ in 0..100 {
+        if store.lock().unwrap().len() >= 2 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let delivered = store.lock().unwrap().clone();
+    assert_eq!(delivered.len(), 2, "{delivered:?}");
+    assert_eq!(delivered[0]["type"], "account.withdrawal_address_set");
+    assert_eq!(delivered[0]["destination"], DEST);
+    assert_eq!(delivered[1]["destination"], DEST2);
+    assert_eq!(delivered[1]["account_id"], account_id);
+    assert!(delivered[1]["usable_at"].is_string());
+
+    // Clear.
+    let (status, _, _) = full_response(
+        &app,
+        Request::delete(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert!(
+        db::withdrawals::get_withdrawal_address(&pool, &account_typed)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let (status, _, _) = full_response(
+        &app,
+        Request::delete(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {admin_key}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // Another app's key cannot touch this account.
+    let other_key = other_app_admin_key(&pool).await;
+    let (status, _) = put_withdrawal_address(&app, &other_key, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn withdrawal_request_validation_and_single_pending_rule() {
+    let (app, _tmp, pool) = test_app().await;
+    let (app_id, key_a) = create_test_app_admin_key(&pool).await;
+    let account_id = wd_create_account(&app, &key_a).await;
+
+    // No registered address → 409, nothing recorded.
+    let (status, body) = post_withdrawal(&app, &key_a, &account_id, r#"{"sui_mist":1}"#).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    let (status, _) = put_withdrawal_address(&app, &key_a, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::OK);
+
+    for bad in [
+        r#"{}"#,
+        r#"{"sui_mist":0}"#,
+        r#"{"wal_frost":0,"sui_mist":5}"#,
+        r#"{"all":true,"sui_mist":5}"#,
+        r#"{"all":false}"#,
+    ] {
+        let (status, body) = post_withdrawal(&app, &key_a, &account_id, bad).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+
+    let (status, body) = post_withdrawal(
+        &app,
+        &key_a,
+        &account_id,
+        r#"{"sui_mist":1000000,"wal_frost":2000000}"#,
+    )
+    .await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    assert_eq!(body["status"], "pending");
+    assert_eq!(body["destination"], DEST);
+    assert_eq!(body["sui_mist"], 1_000_000);
+    assert_eq!(body["wal_frost"], 2_000_000);
+    assert_eq!(body["all"], false);
+    assert!(body["approved_by_admin_key_id"].is_null());
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // One live pending request per account.
+    let (status, body) = post_withdrawal(&app, &key_a, &account_id, r#"{"all":true}"#).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains(&id));
+
+    // Read back, list, and app isolation.
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/admin/withdrawals/{id}"))
+            .header("authorization", format!("Bearer {key_a}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["id"], id);
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/admin/accounts/{account_id}/withdrawals"))
+            .header("authorization", format!("Bearer {key_a}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["withdrawals"].as_array().unwrap().len(), 1);
+    let other_key = other_app_admin_key(&pool).await;
+    for action in ["approve", "cancel"] {
+        let (status, _) = withdrawal_action(&app, &other_key, &id, action).await;
+        assert_eq!(status, StatusCode::FORBIDDEN, "{action}");
+    }
+    let (status, _) = json_response(
+        &app,
+        Request::get(format!("/api/v1/admin/withdrawals/{id}"))
+            .header("authorization", format!("Bearer {other_key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Audit trail names the requester.
+    let events = db::audit_events::list_audit_events_by_app(&pool, &app_id.parse().unwrap())
+        .await
+        .unwrap();
+    let req = events
+        .iter()
+        .find(|e| e.event_type == "account.withdrawal_requested")
+        .expect("request audited");
+    let data: Value = serde_json::from_str(&req.event_data).unwrap();
+    assert_eq!(data["withdrawal_id"], id);
+    assert_eq!(data["sui_mist"], 1_000_000);
+}
+
+#[tokio::test]
+async fn withdrawal_requires_a_second_admin_key_and_a_matured_address() {
+    // Long cooldown: registration succeeds but approval must wait.
+    let (app, _tmp, pool) = test_app_withdrawals(true, 3600).await;
+    let (app_id, key_a) = create_test_app_admin_key(&pool).await;
+    let key_b = issue_second_admin_key(&pool, &app_id).await;
+    let account_id = wd_create_account(&app, &key_a).await;
+
+    let (status, body) = put_withdrawal_address(&app, &key_a, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["usable_now"], false);
+
+    let (status, body) = post_withdrawal(&app, &key_a, &account_id, r#"{"all":true}"#).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // The requester cannot approve its own request.
+    let (status, body) = withdrawal_action(&app, &key_a, &id, "approve").await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+
+    // A second key can, but not before the cooldown has elapsed.
+    let (status, body) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("cooldown"));
+
+    // Still pending; the requester may cancel.
+    let (status, body) = withdrawal_action(&app, &key_a, &id, "cancel").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["status"], "cancelled");
+    let (status, _) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = withdrawal_action(&app, &key_a, &id, "cancel").await;
+    assert_eq!(status, StatusCode::CONFLICT);
+
+    // A cancelled request no longer blocks a new one.
+    let (status, _) = post_withdrawal(&app, &key_a, &account_id, r#"{"all":true}"#).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+}
+
+#[tokio::test]
+async fn withdrawal_approval_rechecks_policy_and_needs_chain_access() {
+    let (app, _tmp, pool) = test_app().await; // cooldown 0
+    let (app_id, key_a) = create_test_app_admin_key(&pool).await;
+    let key_b = issue_second_admin_key(&pool, &app_id).await;
+    let account_id = wd_create_account(&app, &key_a).await;
+    let account_typed: AccountId = account_id.parse().unwrap();
+
+    let (status, _) = put_withdrawal_address(&app, &key_a, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = post_withdrawal(&app, &key_a, &account_id, r#"{"sui_mist":1}"#).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    // Address replaced after the request: the request's destination is
+    // no longer the registered one.
+    let (status, _) = put_withdrawal_address(&app, &key_a, &account_id, DEST2).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, body) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("changed"));
+    let (status, _) = put_withdrawal_address(&app, &key_a, &account_id, DEST).await;
+    assert_eq!(status, StatusCode::OK);
+
+    // Mid key-rotation: refused with 503, request untouched.
+    sqlx::query(&db::sql(
+        "UPDATE accounts SET key_migrating_since = '2026-01-01 00:00:00' WHERE id = ?",
+    ))
+    .bind(&account_typed)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, body) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    db::accounts::clear_key_migration_lock(&pool, &account_typed)
+        .await
+        .unwrap();
+
+    // This test app has no Pearl/Sui: 503, and the request stays pending
+    // (the CAS to `executing` happens only after these checks).
+    let (status, body) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    let w = db::withdrawals::get_withdrawal(&pool, &id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(w.status, db::withdrawals::WithdrawalStatus::Pending);
+    assert!(w.approved_by_admin_key_id.is_none());
+
+    // Expired requests cannot be approved and do not block new ones.
+    sqlx::query(&db::sql(
+        "UPDATE withdrawals SET expires_at = '2020-01-01 00:00:00' WHERE id = ?",
+    ))
+    .bind(&id)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let (status, body) = withdrawal_action(&app, &key_b, &id, "approve").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("expired"));
+    let (status, body) = post_withdrawal(&app, &key_a, &account_id, r#"{"sui_mist":1}"#).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+
+    // Cleared address: nothing can be approved.
+    let (status, _, _) = full_response(
+        &app,
+        Request::delete(format!(
+            "/api/v1/admin/accounts/{account_id}/withdrawal-address"
+        ))
+        .header("authorization", format!("Bearer {key_a}"))
+        .body(Body::empty())
+        .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let id2 = body["id"].as_str().unwrap().to_string();
+    let (status, body) = withdrawal_action(&app, &key_b, &id2, "approve").await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert!(body["error"].as_str().unwrap().contains("cleared"));
+}
+
+#[tokio::test]
+async fn withdrawal_transition_is_compare_and_set() {
+    use chrono::Utc;
+    use db::withdrawals::{self as wd, WithdrawalStatus};
+
+    let (_app, _tmp, pool) = test_app().await;
+    let (app_id, _) = create_test_app_admin_key(&pool).await;
+    let app_typed: oyster::AppId = app_id.parse().unwrap();
+    let (account_id_str, _) = create_test_account(&pool).await;
+    let account_id: AccountId = account_id_str.parse().unwrap();
+    let now = Utc::now();
+    let w = wd::create_withdrawal(
+        &pool,
+        &account_id,
+        &app_typed,
+        DEST,
+        Some(5),
+        None,
+        false,
+        "key-a",
+        now,
+        now + chrono::Duration::hours(1),
+    )
+    .await
+    .unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Pending);
+    assert!(!w.is_expired(now));
+    assert!(w.is_expired(now + chrono::Duration::hours(2)));
+
+    // Two "approvers" race: exactly one wins the pending→executing CAS.
+    let first = wd::transition_withdrawal(
+        &pool,
+        &w.id,
+        WithdrawalStatus::Pending,
+        WithdrawalStatus::Executing,
+        Some("key-b"),
+        None,
+        None,
+        now,
+    )
+    .await
+    .unwrap();
+    let second = wd::transition_withdrawal(
+        &pool,
+        &w.id,
+        WithdrawalStatus::Pending,
+        WithdrawalStatus::Executing,
+        Some("key-c"),
+        None,
+        None,
+        now,
+    )
+    .await
+    .unwrap();
+    assert!(first);
+    assert!(!second);
+    let w = wd::get_withdrawal(&pool, &w.id).await.unwrap().unwrap();
+    assert_eq!(w.approved_by_admin_key_id.as_deref(), Some("key-b"));
+
+    // Completing keeps the approver and records the digest; a stale
+    // pending→cancelled cannot undo it.
+    assert!(
+        wd::transition_withdrawal(
+            &pool,
+            &w.id,
+            WithdrawalStatus::Executing,
+            WithdrawalStatus::Completed,
+            None,
+            Some("DIGEST"),
+            None,
+            now
+        )
+        .await
+        .unwrap()
+    );
+    assert!(
+        !wd::transition_withdrawal(
+            &pool,
+            &w.id,
+            WithdrawalStatus::Pending,
+            WithdrawalStatus::Cancelled,
+            None,
+            None,
+            None,
+            now
+        )
+        .await
+        .unwrap()
+    );
+    let w = wd::get_withdrawal(&pool, &w.id).await.unwrap().unwrap();
+    assert_eq!(w.status, WithdrawalStatus::Completed);
+    assert_eq!(w.tx_digest.as_deref(), Some("DIGEST"));
+    assert_eq!(w.approved_by_admin_key_id.as_deref(), Some("key-b"));
+    assert!(
+        wd::get_live_pending_withdrawal(&pool, &account_id, now)
+            .await
+            .unwrap()
+            .is_none()
+    );
 }
