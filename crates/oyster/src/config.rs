@@ -256,6 +256,19 @@ pub struct Config {
     /// Self-serve web signup, or `None` when its credentials are not
     /// configured (the signup routes are then not mounted).
     pub signup: Option<SignupConfig>,
+    /// Whether the admin withdrawal endpoints are served at all
+    /// (`OYSTER_WITHDRAWALS_ENABLED`, default `false`). Off, they answer
+    /// 404. A kill switch for fund egress.
+    pub withdrawals_enabled: bool,
+    /// Seconds a newly registered withdrawal address must age before a
+    /// withdrawal to it can be approved
+    /// (`OYSTER_WITHDRAWAL_ADDRESS_COOLDOWN_SECS`, default 86400). The
+    /// window in which a hostile registration can be noticed (audit +
+    /// webhook) and the compromised admin key revoked.
+    pub withdrawal_address_cooldown_secs: u64,
+    /// Seconds a pending withdrawal request stays approvable
+    /// (`OYSTER_WITHDRAWAL_REQUEST_TTL_SECS`, default 86400).
+    pub withdrawal_request_ttl_secs: u64,
 }
 
 impl Config {
@@ -328,6 +341,19 @@ impl Config {
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(5),
             signup: signup_config_from_env(),
+            withdrawals_enabled: std::env::var("OYSTER_WITHDRAWALS_ENABLED")
+                .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
+                .unwrap_or(false),
+            withdrawal_address_cooldown_secs: std::env::var(
+                "OYSTER_WITHDRAWAL_ADDRESS_COOLDOWN_SECS",
+            )
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(86_400),
+            withdrawal_request_ttl_secs: std::env::var("OYSTER_WITHDRAWAL_REQUEST_TTL_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(86_400),
         }
     }
 

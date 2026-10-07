@@ -730,8 +730,10 @@ impl s3s::S3 for OysterS3 {
         };
 
         // Reference-counted deletion: do the on-chain delete BEFORE the
-        // DB delete. A 402 from `InsufficientBalance` therefore leaves
-        // the DB row intact so the caller can retry after funding.
+        // DB delete. Any failure leaves the DB row intact and is returned
+        // (402 for `InsufficientBalance`, 502/503/500 otherwise) so a
+        // successful response always means the on-chain `PooledBlob` is
+        // really gone. See `routes::blobs::delete_blob` for the rationale.
         let count = db::blobs::count_references(&self.state.db, &metadata.blob_id)
             .await
             .map_err(internal_error)?;
@@ -740,8 +742,7 @@ impl s3s::S3 for OysterS3 {
                 .await
                 .map_err(internal_error)?
                 .map(|s| s.object_id);
-            match self
-                .state
+            self.state
                 .blob_store
                 .delete(
                     &BlobId(metadata.blob_id.clone()),
@@ -750,18 +751,13 @@ impl s3s::S3 for OysterS3 {
                     &account_id,
                 )
                 .await
-            {
-                Ok(()) => {}
-                Err(e @ crate::blob_store::BlobStoreError::InsufficientBalance { .. }) => {
-                    return Err(blob_store_error(e.with_operation("delete_object")));
-                }
-                Err(e) => {
+                .map_err(|e| {
                     tracing::warn!(
                         error = %e,
-                        "blob store delete failed; proceeding with DB delete to preserve S3 idempotent semantics",
+                        "blob store delete failed; keeping DB row and returning the error",
                     );
-                }
-            }
+                    blob_store_error(e.with_operation("delete_object"))
+                })?;
         }
 
         let _ = db::blobs::delete_blob(&self.state.db, bucket_name, key, &account_id)

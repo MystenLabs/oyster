@@ -59,7 +59,7 @@ enum KeysCommand {
     /// old version), verify, then re-stamp key_version. Idempotent; safe
     /// to re-run. Exits 1 if any account needs attention.
     Migrate {
-        /// Target key version (Pearl must have PEARL_MASTER_SEED_V<N>).
+        /// Target key version (Pearl must have `PEARL_MASTER_SEED_V<N>`).
         #[arg(long)]
         to_version: u32,
         /// Only this account (default: all accounts below --to-version).

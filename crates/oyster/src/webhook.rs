@@ -32,6 +32,133 @@ const COOLDOWN_SECS: u64 = 60;
 /// next storage-pool extension.
 pub const EVENT_TYPE_FUNDING_REQUIRED: &str = "account.funding_required";
 
+/// Webhook event: an admin registered or replaced the account's
+/// withdrawal address. Emitted immediately so the app operator can spot
+/// a hostile registration during the cooldown and revoke the key.
+pub const EVENT_TYPE_WITHDRAWAL_ADDRESS_SET: &str = "account.withdrawal_address_set";
+/// Webhook event: a withdrawal was requested and awaits a second key.
+pub const EVENT_TYPE_WITHDRAWAL_REQUESTED: &str = "account.withdrawal_requested";
+/// Webhook event: a withdrawal was approved and landed on-chain.
+pub const EVENT_TYPE_WITHDRAWAL_COMPLETED: &str = "account.withdrawal_completed";
+
+/// Payload for the `account.withdrawal_*` events.
+#[derive(Debug, Serialize)]
+pub struct WithdrawalEventPayload {
+    /// Stable id for this delivery.
+    pub event_id: Uuid,
+    /// One of the `EVENT_TYPE_WITHDRAWAL_*` constants.
+    #[serde(rename = "type")]
+    pub event_type: &'static str,
+    /// The account.
+    pub account_id: AccountId,
+    /// Withdrawal request id (absent for `withdrawal_address_set`).
+    pub withdrawal_id: Option<String>,
+    /// Destination address.
+    pub destination: String,
+    /// SUI in MIST, when a fixed amount was requested.
+    pub sui_mist: Option<i64>,
+    /// WAL in FROST, when a fixed amount was requested.
+    pub wal_frost: Option<i64>,
+    /// Whether the request empties the wallet.
+    pub all: bool,
+    /// For `withdrawal_address_set`: when the address becomes usable.
+    pub usable_at: Option<String>,
+    /// Admin key id that performed the action.
+    pub admin_key_id: String,
+    /// Sui transaction digest for `withdrawal_completed`.
+    pub tx_digest: Option<String>,
+    /// ISO-8601 UTC timestamp when the event was emitted.
+    pub timestamp: DateTime<Utc>,
+}
+
+impl WithdrawalEventPayload {
+    /// Event for a (re)registered withdrawal address.
+    pub fn address_set(
+        account_id: AccountId,
+        destination: String,
+        usable_at: String,
+        admin_key_id: String,
+    ) -> Self {
+        Self {
+            event_id: Uuid::new_v4(),
+            event_type: EVENT_TYPE_WITHDRAWAL_ADDRESS_SET,
+            account_id,
+            withdrawal_id: None,
+            destination,
+            sui_mist: None,
+            wal_frost: None,
+            all: false,
+            usable_at: Some(usable_at),
+            admin_key_id,
+            tx_digest: None,
+            timestamp: Utc::now(),
+        }
+    }
+
+    /// Event describing a withdrawal request (requested / completed).
+    pub fn from_withdrawal(
+        event_type: &'static str,
+        w: &crate::db::withdrawals::Withdrawal,
+        admin_key_id: &str,
+    ) -> Self {
+        Self {
+            event_id: Uuid::new_v4(),
+            event_type,
+            account_id: w.account_id,
+            withdrawal_id: Some(w.id.clone()),
+            destination: w.destination.clone(),
+            sui_mist: w.sui_mist,
+            wal_frost: w.wal_frost,
+            all: w.drain,
+            usable_at: None,
+            admin_key_id: admin_key_id.to_string(),
+            tx_digest: w.tx_digest.clone(),
+            timestamp: Utc::now(),
+        }
+    }
+}
+
+/// Deliver a withdrawal event to `app_id`'s webhook, if one is
+/// configured. Builds a one-off client (these events are rare) and
+/// swallows every failure after logging: the ledger and audit log are
+/// the source of truth, the webhook is a heads-up.
+pub async fn notify_app_withdrawal_event(
+    db: &crate::db::DbPool,
+    app_id: &crate::AppId,
+    payload: &WithdrawalEventPayload,
+) {
+    let cfg = match crate::db::accounts::fetch_webhook_for_apps(db, &[*app_id]).await {
+        Ok(mut map) => map.remove(app_id).flatten(),
+        Err(e) => {
+            tracing::warn!(%app_id, error = %e, "could not load webhook config for withdrawal event");
+            return;
+        }
+    };
+    let Some(cfg) = cfg else {
+        tracing::debug!(%app_id, event = payload.event_type, "no webhook configured; withdrawal event not delivered");
+        return;
+    };
+    let (private_bytes, public_bytes) = match (
+        webhook_keys::decode_key(&cfg.private_key_b64),
+        webhook_keys::decode_key(&cfg.public_key_b64),
+    ) {
+        (Ok(p), Ok(q)) => (p, q),
+        _ => {
+            tracing::warn!(%app_id, "skipping withdrawal event: invalid webhook keys");
+            return;
+        }
+    };
+    let client = WebhookClient::new(
+        cfg.url,
+        SigningKey::from_bytes(&private_bytes),
+        public_bytes,
+    );
+    let body = serde_json::to_vec(payload).expect("serialize WithdrawalEventPayload");
+    client
+        .deliver(&payload.account_id, payload.event_type, body)
+        .await;
+}
+
 /// Payload posted when a blob extension cannot be performed because Pearl's
 /// wallet for the account is short on either WAL or SUI.
 ///
@@ -95,18 +222,26 @@ impl WebhookClient {
     ///
     /// Returns `Ok(())` even if skipped due to open circuit (fire-and-forget).
     pub async fn notify_funding_required(&self, payload: &FundingRequiredPayload) {
+        // Serialize once; sign exactly the bytes that go on the wire.
+        let body_bytes = serde_json::to_vec(payload).expect("serialize FundingRequiredPayload");
+        let delivered = self
+            .deliver(&payload.account_id, payload.event_type, body_bytes)
+            .await;
+        let outcome = if delivered { "success" } else { "failure" };
+        counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => outcome).increment(1);
+    }
+
+    /// Sign and POST `body_bytes`, retrying transient failures, subject
+    /// to the circuit breaker. Returns whether the receiver accepted it
+    /// (an open circuit counts as not delivered).
+    pub async fn deliver(&self, account_id: &AccountId, event: &str, body_bytes: Vec<u8>) -> bool {
         if !self.should_attempt() {
-            tracing::warn!(
-                account_id = %payload.account_id,
-                "webhook circuit open, skipping notification"
-            );
-            return;
+            tracing::warn!(%account_id, event, "webhook circuit open, skipping notification");
+            return false;
         }
 
         counter!(WEBHOOK_ATTEMPTS_TOTAL).increment(1);
 
-        // Serialize once; sign exactly the bytes that go on the wire.
-        let body_bytes = serde_json::to_vec(payload).expect("serialize FundingRequiredPayload");
         let signature = webhook_keys::sign(&self.signing_key, &body_bytes);
         let sig_header = format!(
             "ed25519={}",
@@ -134,24 +269,20 @@ impl WebhookClient {
                 Ok(resp) if resp.status().is_success() => {
                     self.record_success();
                     counter!(WEBHOOK_SUCCESSES_TOTAL).increment(1);
-                    counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "success").increment(1);
-                    tracing::info!(
-                        account_id = %payload.account_id,
-                        "webhook delivered successfully"
-                    );
-                    return;
+                    tracing::info!(%account_id, event, "webhook delivered successfully");
+                    return true;
                 }
                 Ok(resp) if resp.status().is_client_error() => {
                     // 4xx — not retryable.
                     tracing::warn!(
-                        account_id = %payload.account_id,
+                        %account_id,
+                        event,
                         status = %resp.status(),
                         "webhook returned client error, not retrying"
                     );
                     self.record_failure();
                     counter!(WEBHOOK_FAILURES_TOTAL).increment(1);
-                    counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "failure").increment(1);
-                    return;
+                    return false;
                 }
                 Ok(resp) => {
                     last_err = Some(format!("HTTP {}", resp.status()));
@@ -173,13 +304,14 @@ impl WebhookClient {
         }
 
         tracing::warn!(
-            account_id = %payload.account_id,
+            %account_id,
+            event,
             error = last_err.as_deref().unwrap_or("unknown"),
             "webhook failed after {MAX_RETRIES} attempts"
         );
         self.record_failure();
         counter!(WEBHOOK_FAILURES_TOTAL).increment(1);
-        counter!(FUNDING_REQUIRED_WEBHOOKS_TOTAL, "outcome" => "failure").increment(1);
+        false
     }
 
     /// Check whether a request should be attempted based on circuit state.

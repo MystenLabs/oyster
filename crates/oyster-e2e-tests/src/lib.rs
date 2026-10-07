@@ -209,6 +209,9 @@ impl OysterTestHarness {
             allow_http_webhook_scheme: false,
             max_admin_keys_per_app: 5,
             signup: None,
+            withdrawals_enabled: true,
+            withdrawal_address_cooldown_secs: 0,
+            withdrawal_request_ttl_secs: 3600,
         };
 
         let state = AppState {

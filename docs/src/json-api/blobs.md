@@ -375,6 +375,13 @@ DELETE /api/v1/buckets/{bucket_name}/blobs/{key}
 Deletes a blob by key. The underlying data is only removed from storage
 when no other keys reference the same content (reference-counted deletion).
 
+A `204` means the delete fully succeeded: when this key was the last
+reference, the onchain `PooledBlob` has been removed as well. If the
+onchain delete fails for any reason, the blob record is **kept** and the
+failure is returned (see the error table below), so the delete can be
+retried and the blob keeps showing up in listings until it is really
+gone.
+
 **Path parameters:**
 
 | Parameter | Type | Description |
@@ -413,9 +420,11 @@ curl -s -X DELETE \
 | Status | Condition |
 |--------|-----------|
 | `401` | Missing or invalid API key |
-| `402` | Insufficient onchain balance to clear the `PooledBlob`; the DB row is left intact for retry |
+| `402` | The wallet cannot pay gas for the onchain delete; the blob record is kept for retry |
 | `404` | Blob not found |
 | `412` | `If-Match` or `If-None-Match` condition failed |
+| `502` | The onchain delete failed upstream (Sui/Walrus); the blob record is kept for retry |
+| `503` | The account wallet is mid key-rotation; the blob record is kept, retry later |
 
 A `402` carries the same `funding_required` block as the upload path:
 
@@ -432,10 +441,11 @@ A `402` carries the same `funding_required` block as the upload path:
 `wal_frost` and `sui_mist` are decimal strings (Pearl-derived
 wallet's owed top-up); inspect your wallet through
 [Get Wallet Address](wallet.md). When `delete_blob` returns `402`,
-the DB row is left intact on purpose so the client can fund the
-Pearl-derived wallet and retry the same `DELETE`. Other onchain
-delete errors are still swallowed to preserve idempotent-delete
-semantics.
+fund the Pearl-derived wallet and retry the same `DELETE`.
+
+Retries are safe: if an earlier delete transaction landed onchain but
+its response was lost, the retry finds the `PooledBlob` already absent,
+answers `204`, and drops the record.
 
 ## Blob Tags
 

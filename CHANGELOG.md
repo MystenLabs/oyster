@@ -1,5 +1,59 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Blob deletes no longer report success when the onchain delete
+  failed. `DELETE /buckets/{bucket}/blobs/{key}` and S3 `DeleteObject`
+  used to drop the blob record and answer `204` even when the
+  `delete_pooled_blob` transaction failed, so a client could not tell a
+  real delete from a failed one and the encrypted blob stayed live on
+  Walrus until its storage expired. Now the record is kept and the
+  failure is returned (`402` when the wallet cannot pay gas, including
+  when gas-coin selection fails at transaction-build time, `502` for
+  upstream Sui/Walrus errors, `503` mid key-rotation); `204` means the
+  onchain `PooledBlob` is really gone. Retries are safe: if an earlier
+  delete transaction landed but its response was lost, the retry finds
+  the `PooledBlob` already absent, answers `204`, and reconciles the DB
+  pool counters from chain (new counter
+  `oyster_delete_already_gone_total`). The
+  `oyster_delete_db_only_total` counter is gone with the behavior it
+  measured.
+
+### Added
+- Admin fund withdrawals: `PUT/GET/DELETE
+  /admin/accounts/{id}/withdrawal-address`, `POST
+  /admin/accounts/{id}/withdrawals`, `POST /admin/withdrawals/{id}/approve|cancel`,
+  `GET /admin/withdrawals/{id}` and `GET /admin/accounts/{id}/withdrawals`
+  move SUI/WAL out of an account's Pearl wallet to a user address (fixed
+  amounts, or `all` to empty the wallet). Because a single leaked admin
+  key must not be able to drain wallets, egress is gated by controls
+  that key alone cannot satisfy: the endpoints are off unless
+  `OYSTER_WITHDRAWALS_ENABLED=true`; funds can only go to the one
+  address registered for the account, and only after that registration
+  has aged past `OYSTER_WITHDRAWAL_ADDRESS_COOLDOWN_SECS` (default 24 h),
+  with every registration audited and pushed to the app webhook so a
+  hostile one is visible in time to revoke the key; and a withdrawal
+  must be requested by one admin key and approved by a *different*
+  active admin key of the app (admin keys cannot be minted through the
+  admin API, so one stolen key cannot self-approve). Pending requests
+  expire after `OYSTER_WITHDRAWAL_REQUEST_TTL_SECS`, the address and
+  cooldown are re-checked at approval, approval is a compare-and-set so
+  concurrent approvals cannot double-send, and withdrawals are refused
+  while the account is mid key-rotation. Every step lands in the new
+  `withdrawals` ledger (migration 027) and the audit log with the admin
+  keys involved. New webhook events `account.withdrawal_address_set`,
+  `account.withdrawal_requested`, `account.withdrawal_completed`.
+- E2E `withdrawal_e2e` funds a wallet, registers a destination, and
+  verifies a fixed-amount withdrawal (request by key A, approve by key
+  B) and a full drain land at the destination on the in-process Sui
+  cluster, that the wallet keeps working in between, and that a drained
+  wallet's next request is recorded as `failed`.
+
+### Changed
+- `WebhookClient` gained a generic `deliver` used by the withdrawal
+  events; `notify_funding_required` is unchanged in behaviour.
+
 ## [0.14.3] - 2026-09-08
 
 ### Added

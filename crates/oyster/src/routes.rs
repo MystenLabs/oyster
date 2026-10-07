@@ -10,6 +10,8 @@ pub mod buckets;
 pub mod health;
 /// Prometheus metrics endpoint.
 pub mod metrics;
+/// Admin fund-withdrawal endpoints (dual-control, pre-registered destination).
+pub mod withdrawals;
 
 use axum::{Router, extract::DefaultBodyLimit};
 use utoipa::{
@@ -116,6 +118,19 @@ pub fn build_router(state: AppState) -> Router {
         .routes(routes!(admin::get_app))
         .routes(routes!(admin::set_webhook_url, admin::clear_webhook_url))
         .routes(routes!(admin::update_max_storage))
+        // Withdrawals (admin-key authenticated; 404 unless enabled)
+        .routes(routes!(
+            withdrawals::set_withdrawal_address,
+            withdrawals::get_withdrawal_address,
+            withdrawals::clear_withdrawal_address
+        ))
+        .routes(routes!(
+            withdrawals::create_withdrawal,
+            withdrawals::list_withdrawals
+        ))
+        .routes(routes!(withdrawals::approve_withdrawal))
+        .routes(routes!(withdrawals::cancel_withdrawal))
+        .routes(routes!(withdrawals::get_withdrawal))
         // Account
         .routes(routes!(account::get_wallet))
         .routes(routes!(account::request_extend))

@@ -261,6 +261,9 @@ mod tests {
             allow_http_webhook_scheme: true,
             max_admin_keys_per_app: 5,
             signup: None,
+            withdrawals_enabled: false,
+            withdrawal_address_cooldown_secs: 86_400,
+            withdrawal_request_ttl_secs: 86_400,
         }
     }
 
