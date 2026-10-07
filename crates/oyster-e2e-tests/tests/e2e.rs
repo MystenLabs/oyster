@@ -879,6 +879,126 @@ fn e2e_refcounted_delete_frees_pool_capacity() {
     });
 }
 
+/// A blob row whose on-chain `PooledBlob` is already gone (a prior
+/// delete tx landed but its response was lost, or the row outlived an
+/// earlier on-chain delete) must still be deletable: the delete PTB
+/// aborts, Oyster confirms on-chain that the blob is absent, returns
+/// 204, drops the row, and reconciles the DB pool counters from chain.
+/// Without this, refusing to drop the row on delete failure would leave
+/// such rows stuck forever.
+#[test]
+fn e2e_delete_tolerates_pooled_blob_already_gone() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+
+        let (_app_id, admin_key) = harness.create_app_admin_key("e2e-already-gone-app").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        let account_id = oyster::AccountId::from_str(&account_id_str).expect("parse account id");
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "already-gone-bucket").await;
+
+        let data = b"content whose on-chain blob disappears";
+        put_blob(app, &api_key, &bucket_id, "stale", data).await;
+        let row = oyster::db::blobs::get_blob_by_key(&harness.db, &bucket_id, "stale")
+            .await
+            .expect("query blob row")
+            .expect("row should exist");
+        assert!(
+            row.pooled_blob_object_id.is_some(),
+            "blob should be on-chain"
+        );
+
+        let state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            state.object_id.parse().expect("parse pool ObjectID");
+
+        // Real delete: on-chain PooledBlob removed, row dropped.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete(format!("/api/v1/buckets/{bucket_id}/blobs/stale"))
+                    .header("authorization", format!("Bearer {api_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), axum::http::StatusCode::NO_CONTENT);
+        let status = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after real delete");
+        assert_eq!(status.blob_count, 0);
+
+        // Re-create the row exactly as it was, simulating a delete whose
+        // on-chain half landed but whose DB half never ran. Also skew the
+        // DB pool counter so we can see the reconcile-from-chain happen.
+        oyster::db::blobs::insert_blob(
+            &harness.db,
+            "stale",
+            &row.blob_id,
+            &bucket_id,
+            &account_id,
+            &row.content_type,
+            row.size,
+            &row.md5,
+            row.pooled_blob_object_id.as_deref(),
+            row.encoded_size,
+        )
+        .await
+        .expect("re-insert stale row");
+        oyster::db::accounts::reconcile_pool_after_drift(
+            &harness.db,
+            &account_id,
+            state.reserved_encoded_bytes,
+            row.encoded_size.expect("encoded_size"),
+        )
+        .await
+        .expect("skew pool counter");
+
+        // Deleting the stale row: the delete PTB aborts because the
+        // PooledBlob is not in the pool, Oyster confirms on-chain and
+        // still answers 204.
+        let (status, body) = raw_response(
+            app,
+            Request::delete(format!("/api/v1/buckets/{bucket_id}/blobs/stale"))
+                .header("authorization", format!("Bearer {api_key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::NO_CONTENT,
+            "body: {}",
+            String::from_utf8_lossy(&body),
+        );
+        assert!(
+            oyster::db::blobs::get_blob_by_key(&harness.db, &bucket_id, "stale")
+                .await
+                .expect("query blob row")
+                .is_none(),
+            "stale row should be dropped",
+        );
+        let state_after = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query storage pool")
+            .expect("pool should exist");
+        assert_eq!(
+            state_after.used_encoded_bytes, 0,
+            "pool counters should be reconciled from chain",
+        );
+    });
+}
+
 /// Phase 2 regression: when DB-side pool accounting drifts above the
 /// on-chain reservation (e.g. cross-replica race), the first
 /// register_pooled_blobs PTB aborts with EInsufficientCapacity; Oyster

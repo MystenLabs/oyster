@@ -198,6 +198,11 @@ returns success, matching standard S3 behavior.
 Deletion is **reference-counted**: the underlying blob data is only removed
 from storage when no other keys reference the same content.
 
+Success means the delete fully happened: when the key was the last
+reference, the onchain `PooledBlob` has been removed too. If the onchain
+delete fails, the object is **kept** and an error is returned so the
+delete can be retried.
+
 ### Conditional Headers
 
 DeleteObject supports `If-Match` for safe deletion:
@@ -211,6 +216,9 @@ DeleteObject supports `If-Match` for safe deletion:
 |---------------|-----------|
 | `NoSuchBucket` | Bucket doesn't exist |
 | `PreconditionFailed` | `If-Match` condition not met |
+| `InsufficientBalance` (HTTP `402`) | The wallet cannot pay gas for the onchain delete; the object is kept for retry |
+| `InternalError` (HTTP `502`) | The onchain delete failed upstream; the object is kept for retry |
+| `SlowDown` (HTTP `503`) | The account wallet is mid key-rotation; the object is kept, retry later |
 
 ## ListObjectsV2
 

@@ -935,6 +935,75 @@ impl DirectWalrusBlobStore {
     }
 }
 
+impl DirectWalrusBlobStore {
+    /// Called when the delete tx did not visibly succeed with a
+    /// non-balance error. The caller's DB row is about to be kept and
+    /// the error returned, so a `PooledBlob` that is in fact already
+    /// gone from the pool (a prior delete tx landed but its response
+    /// was lost, or the DB row outlived an earlier on-chain delete)
+    /// would leave a row that can never be deleted. Look the blob up
+    /// on-chain: if it is absent, treat the delete as done and
+    /// reconcile the DB pool counters from the on-chain truth (the
+    /// earlier delete may never have run `update_pool_after_delete`).
+    /// If it is still present, or the lookup itself fails, return
+    /// `err` unchanged so the caller surfaces the failure.
+    async fn reconcile_if_already_deleted(
+        &self,
+        err: BlobStoreError,
+        account_id: &AccountId,
+        pool_object_id: ObjectID,
+        walrus_blob_id: &walrus_core::BlobId,
+    ) -> Result<(), BlobStoreError> {
+        match sui_object_reader::lookup_pooled_blob_object_id(
+            &self.rpc_url,
+            pool_object_id,
+            walrus_blob_id,
+        )
+        .await
+        {
+            Ok(Some(_)) => Err(err),
+            Ok(None) => {
+                tracing::warn!(
+                    account_id = %account_id,
+                    pool_object_id = %pool_object_id,
+                    walrus_blob_id = %walrus_blob_id,
+                    error = %err,
+                    "delete tx failed but PooledBlob is already absent from the pool; \
+                     treating as deleted and reconciling pool counters from chain",
+                );
+                metrics::counter!(crate::metrics::DELETE_ALREADY_GONE_TOTAL).increment(1);
+                let on_chain =
+                    sui_object_reader::read_storage_pool_state(&self.rpc_url, pool_object_id)
+                        .await
+                        .map_err(|e| {
+                            BlobStoreError::Upstream(format!(
+                                "on-chain pool refresh after already-deleted blob failed: {e}"
+                            ))
+                        })?;
+                db::accounts::reconcile_pool_after_drift(
+                    &self.db,
+                    account_id,
+                    on_chain.reserved_encoded_bytes as i64,
+                    on_chain.used_encoded_bytes as i64,
+                )
+                .await?;
+                Ok(())
+            }
+            Err(lookup_err) => {
+                tracing::warn!(
+                    account_id = %account_id,
+                    pool_object_id = %pool_object_id,
+                    walrus_blob_id = %walrus_blob_id,
+                    error = %lookup_err,
+                    "on-chain PooledBlob lookup after failed delete tx also failed; \
+                     surfacing the original delete error",
+                );
+                Err(err)
+            }
+        }
+    }
+}
+
 impl BlobStore for DirectWalrusBlobStore {
     fn store(
         &self,
@@ -1008,30 +1077,50 @@ impl BlobStore for DirectWalrusBlobStore {
             ptb.delete_pooled_blob(pool_object_id, walrus_blob_id)
                 .await
                 .map_err(|e| BlobStoreError::Upstream(format!("delete_pooled_blob PTB: {e}")))?;
-            let tx_data = ptb
-                .build_transaction_data(None)
-                .await
-                .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data: {e}")))?;
-            sui_transaction::sign_and_submit(
+            // Gas-coin selection happens at build time, so a wallet with no
+            // SUI at all fails here rather than at submit. Classify so the
+            // caller sees `InsufficientBalance` (402) instead of a 502. The
+            // delete path only needs SUI gas; the FE can already infer the
+            // SUI buffer from `/account/wallet`, so we intentionally don't
+            // attach a WAL funding estimate.
+            let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
+                classify_upstream_error(format!("build_transaction_data: {e}"), None)
+            })?;
+            let submit = sui_transaction::sign_and_submit(
                 &self.pearl,
                 &account_id,
                 key_version,
                 &self.rpc_url,
                 tx_data,
             )
-            .await
-            .map_err(|e| {
-                // The delete path only needs SUI gas; the FE can already
-                // infer the SUI buffer from `/account/wallet`, so we
-                // intentionally don't attach a WAL funding estimate here.
-                classify_upstream_error(format!("delete tx: {e}"), None)
-            })?;
+            .await;
 
-            if encoded_size > 0 {
-                db::accounts::update_pool_after_delete(&self.db, &account_id, encoded_size as i64)
-                    .await?;
+            match submit {
+                Ok(_) => {
+                    if encoded_size > 0 {
+                        db::accounts::update_pool_after_delete(
+                            &self.db,
+                            &account_id,
+                            encoded_size as i64,
+                        )
+                        .await?;
+                    }
+                    Ok(())
+                }
+                Err(e) => {
+                    let err = classify_upstream_error(format!("delete tx: {e}"), None);
+                    if matches!(err, BlobStoreError::InsufficientBalance { .. }) {
+                        return Err(err);
+                    }
+                    self.reconcile_if_already_deleted(
+                        err,
+                        &account_id,
+                        pool_object_id,
+                        &walrus_blob_id,
+                    )
+                    .await
+                }
             }
-            Ok(())
         })
     }
 

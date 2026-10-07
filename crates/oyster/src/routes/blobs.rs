@@ -515,18 +515,38 @@ pub async fn update_blob_metadata(
         ("key" = String, Path, description = "Object key"),
     ),
     responses(
-        (status = 204, description = "Blob deleted"),
+        (
+            status = 204,
+            description = "Blob deleted. When this key was the last reference to \
+                its content, the on-chain PooledBlob has been removed as well.",
+        ),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (
             status = 402,
-            description = "Insufficient on-chain balance to clear the \
-                PooledBlob. Body carries a `funding_required` block.",
+            description = "Insufficient on-chain balance to pay gas for clearing \
+                the PooledBlob. Body carries a `funding_required` block. The blob \
+                record is kept; fund the wallet and retry.",
             body = InsufficientBalanceErrorResponse,
         ),
         (status = 404, description = "Blob not found", body = ErrorResponse),
+        (
+            status = 502,
+            description = "The on-chain delete failed upstream (Sui/Walrus). The \
+                blob record is kept so the request can be retried.",
+            body = ErrorResponse,
+        ),
+        (
+            status = 503,
+            description = "Account wallet is mid key-rotation; retry later. The \
+                blob record is kept.",
+            body = ErrorResponse,
+        ),
     ),
 )]
-/// Delete a blob by its bucket name and key. The underlying data is only removed when no other objects reference it.
+/// Delete a blob by its bucket name and key. The underlying data is only
+/// removed when no other objects reference it. A `204` means the delete
+/// fully succeeded: if the on-chain delete fails for any reason the record
+/// is kept and the failure is returned, so the caller can retry.
 pub async fn delete_blob(
     State(state): State<AppState>,
     auth: AuthenticatedAccount,
@@ -542,8 +562,15 @@ pub async fn delete_blob(
     }
 
     // Reference-counted deletion: do the on-chain delete BEFORE removing
-    // the DB row. A 402 from `InsufficientBalance` then leaves the DB
-    // row intact so the caller can retry after funding the wallet.
+    // the DB row. Any failure leaves the DB row intact and is returned
+    // to the caller (402 for `InsufficientBalance`, 502/503/500
+    // otherwise) so a 204 always means the on-chain `PooledBlob` is
+    // really gone. Dropping the row on failure used to be done "to
+    // preserve idempotent semantics", but it hid the failure from the
+    // caller and left the encrypted blob live on Walrus. The backend
+    // itself tolerates a `PooledBlob` that is already absent (see
+    // `DirectWalrusBlobStore::reconcile_if_already_deleted`), so a
+    // retry after a lost tx response still converges to 204.
     // `count == 1` here means "this row is the last reference" — the
     // count is the pre-delete reference count.
     let count = db::blobs::count_references(&state.db, &metadata.blob_id).await?;
@@ -567,40 +594,23 @@ pub async fn delete_blob(
                 )
                 .increment(1);
             }
-            Err(e @ crate::blob_store::BlobStoreError::InsufficientBalance { .. }) => {
-                metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
-                    "operation" => "delete", "result" => "error"
-                )
-                .increment(1);
-                return Err(e.with_operation("delete_blob").into());
-            }
             Err(e) => {
                 metrics::counter!(crate::metrics::BLOB_STORE_OPS_TOTAL,
                     "operation" => "delete", "result" => "error"
                 )
                 .increment(1);
-                let reason = match &e {
-                    crate::blob_store::BlobStoreError::Upstream(_) => "upstream_error",
-                    crate::blob_store::BlobStoreError::Internal(_) => "internal_error",
-                    _ => "other",
-                };
-                metrics::counter!(
-                    crate::metrics::DELETE_DB_ONLY_TOTAL,
-                    "reason" => reason,
-                )
-                .increment(1);
                 tracing::warn!(
                     error = %e,
-                    "blob store delete failed; proceeding with DB delete to preserve idempotent semantics",
+                    "blob store delete failed; keeping DB row and returning the error",
                 );
+                return Err(e.with_operation("delete_blob").into());
             }
         }
     }
 
-    // After the on-chain side has succeeded (or been intentionally
-    // swallowed), drop the DB row. A `None` here means a concurrent
-    // delete already cleaned up the row — treat as 204, since DELETE
-    // is idempotent.
+    // Only after the on-chain side has succeeded, drop the DB row. A
+    // `None` here means a concurrent delete already cleaned up the row
+    // — treat as 204, since DELETE is idempotent.
     let _ = db::blobs::delete_blob(&state.db, &bucket_name, &key, &auth.account_id).await?;
 
     Ok(StatusCode::NO_CONTENT)

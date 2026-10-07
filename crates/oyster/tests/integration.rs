@@ -1506,8 +1506,13 @@ async fn store_blob_propagates_payload_too_large_as_413() {
     );
 }
 
+/// A failed on-chain delete must not be reported as success: the
+/// caller gets the upstream error and the DB row is kept so the
+/// delete can be retried. Previously the row was dropped and a 204
+/// returned, which left the blob live on Walrus with no way for the
+/// client to tell.
 #[tokio::test]
-async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
+async fn delete_blob_propagates_upstream_error_as_502_and_keeps_row() {
     let tmp = TempDir::new().unwrap();
     let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
     let spy = Arc::new(SpyBlobStore::new(local));
@@ -1527,6 +1532,37 @@ async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
 
     spy.fail_next_delete(BlobStoreError::Upstream("walrus down".into()));
 
+    let (status, body) = json_response(
+        &app,
+        Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY, "body: {body}");
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("upstream")),
+        "expected an upstream error body, got {body}",
+    );
+
+    // The DB row must still exist so the client can retry.
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let blobs = body["data"].as_array().unwrap();
+    assert_eq!(blobs.len(), 1, "expected the blob row to be intact");
+    assert_eq!(blobs[0]["key"].as_str().unwrap(), blob_key);
+
+    // Retry with the backend healthy again: 204 and the row is gone.
     let resp = app
         .clone()
         .oneshot(
@@ -1538,9 +1574,8 @@ async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(spy.recorded_delete_calls().len(), 2);
 
-    // DB row should be gone — idempotent delete contract preserved for
-    // transient upstream errors.
     let (status, _) = raw_response(
         &app,
         Request::get(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
@@ -1549,6 +1584,52 @@ async fn delete_blob_swallows_non_balance_upstream_error_and_204s() {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Same contract for the key-rotation lock: a delete that races a
+/// wallet migration answers 503 and keeps the row, instead of silently
+/// dropping the record while the on-chain blob survives.
+#[tokio::test]
+async fn delete_blob_propagates_key_migration_as_503_and_keeps_row() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (app, _tmp, pool) = test_app_with_spy(spy.clone()).await;
+    let (_, key) = create_test_account(&pool).await;
+    let bucket_name = create_test_bucket(&app, &key, "migrating-test").await;
+    let (blob_key, _) = store_test_blob(
+        &app,
+        &key,
+        &bucket_name,
+        "locked.txt",
+        "text/plain",
+        b"wallet mid-rotation",
+    )
+    .await;
+
+    spy.fail_next_delete(BlobStoreError::KeyMigrationInProgress);
+
+    let (status, _) = json_response(
+        &app,
+        Request::delete(format!("/api/v1/buckets/{bucket_name}/blobs/{blob_key}"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+
+    let (status, body) = json_response(
+        &app,
+        Request::get(format!("/api/v1/buckets/{bucket_name}/blobs"))
+            .header("authorization", format!("Bearer {key}"))
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["data"].as_array().unwrap().len(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2167,6 +2248,92 @@ async fn s3_delete_object_propagates_insufficient_balance_as_402() {
     ))
     .await
     .expect("blob row should still exist after a 402 from delete_object");
+}
+
+/// S3 mirror of `delete_blob_propagates_upstream_error_as_502_and_keeps_row`:
+/// a failed on-chain delete is an error to the S3 client, not a
+/// silent success, and the object stays listed for retry.
+#[tokio::test]
+async fn s3_delete_object_propagates_upstream_error_and_keeps_row() {
+    let tmp = TempDir::new().unwrap();
+    let local = LocalBlobStore::new(tmp.path().join("blobs")).await.unwrap();
+    let spy = Arc::new(SpyBlobStore::new(local));
+
+    let (s3, ak, _tmp, _pool, _account_id) = test_s3_with_spy(spy.clone()).await;
+
+    s3.create_bucket(s3_req(
+        CreateBucketInput {
+            bucket: "upstream-fail".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    let body = StreamingBlob::from(s3s::Body::from(b"walrus hiccup".to_vec()));
+    s3.put_object(s3_req(
+        PutObjectInput {
+            bucket: "upstream-fail".into(),
+            key: "obj.txt".into(),
+            body: Some(body),
+            content_type: Some("text/plain".into()),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .unwrap();
+
+    spy.fail_next_delete(BlobStoreError::Upstream("walrus down".into()));
+
+    let err = s3
+        .delete_object(s3_req(
+            DeleteObjectInput {
+                bucket: "upstream-fail".into(),
+                key: "obj.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.status_code(), Some(hyper::StatusCode::BAD_GATEWAY));
+
+    s3.head_object(s3_req(
+        HeadObjectInput {
+            bucket: "upstream-fail".into(),
+            key: "obj.txt".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .expect("object should still exist after a failed on-chain delete");
+
+    // Retry succeeds once the backend is healthy.
+    s3.delete_object(s3_req(
+        DeleteObjectInput {
+            bucket: "upstream-fail".into(),
+            key: "obj.txt".into(),
+            ..Default::default()
+        },
+        &ak,
+    ))
+    .await
+    .expect("retry delete should succeed");
+    let err = s3
+        .head_object(s3_req(
+            HeadObjectInput {
+                bucket: "upstream-fail".into(),
+                key: "obj.txt".into(),
+                ..Default::default()
+            },
+            &ak,
+        ))
+        .await
+        .unwrap_err();
+    assert_eq!(err.status_code(), Some(hyper::StatusCode::NOT_FOUND));
 }
 
 #[tokio::test]

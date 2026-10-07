@@ -131,9 +131,10 @@ pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_re
 /// Oyster recovers by reading the existing on-chain `PooledBlob`
 /// instead of returning 502. `db_miss` indicates a TOCTOU race against
 /// the DB-side dedup index; `orphan_recovered` indicates the on-chain
-/// `PooledBlob` outlived its DB row (typically a prior delete tx that
-/// failed but whose DB row was dropped anyway — see
-/// [`DELETE_DB_ONLY_TOTAL`]).
+/// `PooledBlob` outlived its DB row (historically a delete tx that
+/// failed but whose DB row was dropped anyway; since delete failures
+/// keep the row, new orphans should only come from the post-store
+/// compensation dead-letter path).
 pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_heal_total";
 
 /// Counter: compensating on-chain delete attempts after a post-store
@@ -142,16 +143,14 @@ pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_hea
 /// are landing in `dead_letter_orphans` and need a reaper pass.
 pub const POST_STORE_COMPENSATION_TOTAL: &str = "oyster_post_store_compensation_total";
 
-/// Counter: `delete_blob` calls where the on-chain Sui delete tx
-/// failed with a non-`InsufficientBalance` error but Oyster still
-/// removed the DB row to preserve idempotent DELETE semantics.
-/// Labelled by `reason` ∈ {`upstream_error`, `internal_error`,
-/// `other`} — bucketed coarsely on purpose to avoid unbounded
-/// label cardinality from on-chain error messages. A non-zero rate
-/// here means on-chain `PooledBlob` orphans are accumulating and is
-/// the upstream of register-tx `EFieldAlreadyExists` aborts (see
-/// [`REGISTER_DEDUP_SELF_HEAL_TOTAL`]).
-pub const DELETE_DB_ONLY_TOTAL: &str = "oyster_delete_db_only_total";
+/// Counter: `delete_blob` / S3 `delete_object` calls whose on-chain
+/// delete tx failed but whose `PooledBlob` turned out to be already
+/// absent from the pool, so Oyster treated the delete as done and
+/// reconciled the DB pool counters from chain. Fires when a prior
+/// delete tx landed but its response was lost, or when a DB row
+/// outlived an earlier on-chain delete. A steady non-zero rate means
+/// delete responses are being lost somewhere between Sui and Oyster.
+pub const DELETE_ALREADY_GONE_TOTAL: &str = "oyster_delete_already_gone_total";
 
 /// Install the Prometheus recorder and return a handle for rendering.
 pub fn setup() -> PrometheusHandle {

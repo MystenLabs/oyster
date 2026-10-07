@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Changed
+- Blob deletes no longer report success when the onchain delete
+  failed. `DELETE /buckets/{bucket}/blobs/{key}` and S3 `DeleteObject`
+  used to drop the blob record and answer `204` even when the
+  `delete_pooled_blob` transaction failed, so a client could not tell a
+  real delete from a failed one and the encrypted blob stayed live on
+  Walrus until its storage expired. Now the record is kept and the
+  failure is returned (`402` when the wallet cannot pay gas, including
+  when gas-coin selection fails at transaction-build time, `502` for
+  upstream Sui/Walrus errors, `503` mid key-rotation); `204` means the
+  onchain `PooledBlob` is really gone. Retries are safe: if an earlier
+  delete transaction landed but its response was lost, the retry finds
+  the `PooledBlob` already absent, answers `204`, and reconciles the DB
+  pool counters from chain (new counter
+  `oyster_delete_already_gone_total`). The
+  `oyster_delete_db_only_total` counter is gone with the behavior it
+  measured.
+
 ### Added
 - Admin fund withdrawals: `PUT/GET/DELETE
   /admin/accounts/{id}/withdrawal-address`, `POST
