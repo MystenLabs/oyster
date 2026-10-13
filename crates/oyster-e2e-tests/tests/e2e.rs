@@ -1067,6 +1067,107 @@ fn store_blob_self_heals_on_orphaned_pooled_blob() {
     });
 }
 
+/// Regression for the registered-but-uncertified self-heal. The
+/// production sequence: PUT registers the `PooledBlob`, the certify tx
+/// fails (stale `StoragePool` version), Oyster answers 502 and writes
+/// no DB row. The client retries the same bytes; register aborts with
+/// `EFieldAlreadyExists` and the self-heal arm recovers the existing
+/// `PooledBlob`. It used to return 201 right there, leaving the blob
+/// with `certified_epoch: None` forever and unreadable. It must now
+/// finish the sliver upload and certify before answering, so that 201
+/// always means certified.
+#[test]
+fn store_blob_self_heal_certifies_registered_but_uncertified_blob() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("uncertified-heal").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "uncertified-heal").await;
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+
+        // 1. Any upload, to lazy-create the account's pool.
+        put_blob(app, &api_key, &bucket_id, "seed.txt", b"seed").await;
+
+        // 2. First half of the incident: register only, no slivers, no
+        //    certify, no DB row.
+        let data = b"registered-but-never-certified";
+        let registered = harness
+            .register_without_certify(&account_id, data.to_vec(), false)
+            .await;
+        let before = harness.pooled_blob(registered.pooled_blob_object_id).await;
+        assert!(
+            before.certified_epoch.is_none(),
+            "fixture must leave the PooledBlob uncertified",
+        );
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query pool")
+            .expect("pool exists");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            pool_state.object_id.parse().expect("parse pool ObjectID");
+        let used_before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status before")
+            .used_encoded_bytes;
+
+        // 3. The client's retry with the same bytes. Register aborts
+        //    with EFieldAlreadyExists; the self-heal must recover the
+        //    existing PooledBlob *and* certify it.
+        let body = put_blob(app, &api_key, &bucket_id, "retry.txt", data).await;
+        assert_eq!(body["blob_id"].as_str(), Some(registered.blob_id.as_str()));
+        assert_eq!(
+            body["pooled_blob_object_id"].as_str(),
+            Some(registered.pooled_blob_object_id.to_string().as_str()),
+            "self-heal must reuse the existing PooledBlob",
+        );
+        let after = harness.pooled_blob(registered.pooled_blob_object_id).await;
+        assert!(
+            after.certified_epoch.is_some(),
+            "201 must mean certified: {after:?}",
+        );
+
+        // 4. And the bytes are actually readable from Walrus.
+        let (status, bytes) = raw_response(
+            app,
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/retry.txt"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(bytes, data);
+
+        // 5. No second register: on-chain usage is unchanged.
+        let used_after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status after")
+            .used_encoded_bytes;
+        assert_eq!(used_after, used_before);
+
+        // 6. A further PUT of the same content hits the DB dedup and
+        //    is still readable.
+        put_blob(app, &api_key, &bucket_id, "again.txt", data).await;
+        let (status, bytes) = raw_response(
+            app,
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/again.txt"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(bytes, data);
+    });
+}
+
 /// An over-cap upload must be rejected with 400 *before* any Sui tx
 /// is submitted. Because `new_unencoded > max_unencoded` is checked
 /// before lazy-creating the on-chain `StoragePool`, no pool should

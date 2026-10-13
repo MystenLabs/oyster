@@ -360,6 +360,25 @@ mod tests {
     }
 
     #[test]
+    fn is_move_abort_matches_certify_already_certified() {
+        let location = v2::MoveLocation::default()
+            .with_module("storage_pool")
+            .with_function_name("certify");
+        let abort = v2::MoveAbort::default()
+            .with_abort_code(2)
+            .with_location(location);
+        let failure = TxExecutionFailure {
+            digest: synth_digest(),
+            description: Some("Move Runtime Abort. Abort Code: 2".into()),
+            kind: execution_error::ExecutionErrorKind::MoveAbort,
+            abort: Some(abort),
+        };
+        assert!(failure.is_move_abort("storage_pool", "certify", 2));
+        assert!(!failure.is_move_abort("storage_pool", "certify", 1));
+        assert!(!failure.is_move_abort("storage_pool", "add_blob", 2));
+    }
+
+    #[test]
     fn is_move_abort_false_when_no_abort() {
         let failure = TxExecutionFailure {
             digest: synth_digest(),

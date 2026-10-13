@@ -1,5 +1,30 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- A `PUT` retry after a certify failure no longer returns `201` for a
+  blob Walrus will never serve. When the first attempt's register
+  transaction landed but its certify transaction failed (the client got
+  `502`, no `blobs` row), the retry's register aborted with
+  `EFieldAlreadyExists` and the self-heal path returned `201` with the
+  existing `PooledBlob` object ID without uploading slivers or
+  certifying. The blob stayed `certified_epoch: null` on chain forever,
+  the client discarded its bytes, and every later `PUT` of the same
+  content hit the DB dedup and returned `201` too. The self-heal path
+  now reads the recovered `PooledBlob` and, when it is uncertified,
+  finishes the sliver upload and certify before answering, so `201`
+  always means certified. An `EAlreadyCertified` abort from a
+  concurrent request's certify is treated as success. Labelled
+  `oyster_register_dedup_self_heal_total{certified="already"|"completed"}`.
+- The certify transaction is rebuilt and resubmitted (up to three
+  attempts) when Sui rejects it on a stale `StoragePool` object version,
+  which is what happens when another transaction of the same account
+  lands between PTB build and execution. The sliver upload is not
+  repeated. Counted by `oyster_certify_stale_version_retries_total`.
+  Documented in `docs/src/guides/blob-lifecycle.md` ("Upload failure
+  and retry").
+
 ## [0.14.3] - 2026-09-08
 
 ### Added
