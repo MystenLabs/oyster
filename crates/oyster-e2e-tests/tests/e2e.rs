@@ -1299,6 +1299,251 @@ fn dedup_verifies_certification_when_row_has_no_certified_epoch() {
     });
 }
 
+/// `oysterd blobs repair` end to end. Two registered-but-uncertified
+/// `PooledBlob`s with NULL-`certified_epoch` rows: one whose slivers
+/// reached the storage nodes (the production shape: certify failed
+/// after the upload) and one whose slivers never did. The first must
+/// be certified from a standalone certificate, no bytes needed; the
+/// second is unrecoverable and, with `delete_unrecoverable`, is removed
+/// on chain and in the DB with its pool capacity returned.
+#[test]
+fn blobs_repair_certifies_recoverable_and_deletes_unrecoverable() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("blobs-repair").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "blobs-repair").await;
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+        put_blob(app, &api_key, &bucket_id, "seed.txt", b"seed").await;
+
+        let data_a = b"repair-me-slivers-present";
+        let data_b = b"repair-me-slivers-gone";
+        let a = harness
+            .register_without_certify(&account_id, data_a.to_vec(), true)
+            .await;
+        let b = harness
+            .register_without_certify(&account_id, data_b.to_vec(), false)
+            .await;
+        for (key, data, reg) in [("a.txt", &data_a[..], &a), ("b.txt", &data_b[..], &b)] {
+            oyster::db::blobs::insert_blob(
+                &harness.db,
+                key,
+                &reg.blob_id,
+                &bucket_id,
+                &account_id,
+                "application/octet-stream",
+                data.len() as i64,
+                &format!("{:x}", md5::compute(data)),
+                Some(&reg.pooled_blob_object_id.to_string()),
+                Some(reg.encoded_size as i64),
+                None,
+            )
+            .await
+            .expect("insert uncertified row");
+        }
+
+        let ctx = oyster::blob_repair::RepairContext::new(
+            harness.db.clone(),
+            harness.pearl.clone(),
+            &harness.rpc_url,
+            harness.system_object,
+            harness.staking_object,
+        )
+        .await
+        .expect("repair context");
+        let outcome_for = |report: &oyster::blob_repair::Report, blob_id: &str| {
+            report
+                .outcomes
+                .iter()
+                .find(|(c, _)| c.blob_id == blob_id)
+                .map(|(_, o)| o.clone())
+                .unwrap_or_else(|| panic!("no outcome for {blob_id}"))
+        };
+
+        // 1. Dry run: reads the chain and the nodes, changes nothing.
+        let report = oyster::blob_repair::repair(
+            &ctx,
+            &oyster::blob_repair::RepairOptions {
+                account: Some(account_id),
+                dry_run: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("dry run");
+        assert_eq!(report.outcomes.len(), 2, "two uncertified blobs");
+        assert!(
+            matches!(
+                outcome_for(&report, &a.blob_id),
+                oyster::blob_repair::Outcome::WouldCertify
+            ),
+            "{:?}",
+            outcome_for(&report, &a.blob_id)
+        );
+        assert!(
+            matches!(
+                outcome_for(&report, &b.blob_id),
+                oyster::blob_repair::Outcome::Unrecoverable { .. }
+            ),
+            "{:?}",
+            outcome_for(&report, &b.blob_id)
+        );
+        assert!(
+            harness
+                .pooled_blob(a.pooled_blob_object_id)
+                .await
+                .certified_epoch
+                .is_none()
+        );
+
+        // 2. Real run without deletion: A is certified, B reported.
+        let report = oyster::blob_repair::repair(
+            &ctx,
+            &oyster::blob_repair::RepairOptions {
+                account: Some(account_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("repair");
+        let a_outcome = outcome_for(&report, &a.blob_id);
+        assert!(
+            matches!(a_outcome, oyster::blob_repair::Outcome::Certified { .. }),
+            "{a_outcome:?}"
+        );
+        assert!(matches!(
+            outcome_for(&report, &b.blob_id),
+            oyster::blob_repair::Outcome::Unrecoverable { .. }
+        ));
+        assert_eq!(report.repaired(), 1);
+        assert_eq!(report.problems(), 1);
+        let on_chain = harness.pooled_blob(a.pooled_blob_object_id).await;
+        assert!(on_chain.certified_epoch.is_some(), "{on_chain:?}");
+        let row =
+            oyster::db::blobs::find_dedup_row_for_account(&harness.db, &account_id, &a.blob_id)
+                .await
+                .expect("query")
+                .expect("row");
+        assert_eq!(
+            row.certified_epoch.map(|e| e as u32),
+            on_chain.certified_epoch
+        );
+        let (status, bytes) = raw_response(
+            app,
+            Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/a.txt"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(bytes, data_a);
+
+        // 3. Idempotent, and the ids path resolves the account from the
+        //    pool: A is already certified and its rows already stamped.
+        let report = oyster::blob_repair::repair(
+            &ctx,
+            &oyster::blob_repair::RepairOptions {
+                ids: vec![a.pooled_blob_object_id],
+                skip_db: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("repair by id");
+        assert_eq!(report.outcomes.len(), 1);
+        assert!(
+            matches!(
+                outcome_for(&report, &a.blob_id),
+                oyster::blob_repair::Outcome::Stamped { rows: 0, .. }
+            ),
+            "{:?}",
+            outcome_for(&report, &a.blob_id)
+        );
+
+        // 4. Delete the unrecoverable one: gone on chain, rows gone,
+        //    pool capacity returned.
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query pool")
+            .expect("pool exists");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            pool_state.object_id.parse().expect("parse pool ObjectID");
+        let used_before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status")
+            .used_encoded_bytes;
+        let report = oyster::blob_repair::repair(
+            &ctx,
+            &oyster::blob_repair::RepairOptions {
+                account: Some(account_id),
+                delete_unrecoverable: true,
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("repair with delete");
+        assert_eq!(report.outcomes.len(), 1, "only B is left uncertified");
+        let b_outcome = outcome_for(&report, &b.blob_id);
+        assert!(
+            matches!(
+                b_outcome,
+                oyster::blob_repair::Outcome::Deleted { rows: 1, .. }
+            ),
+            "{b_outcome:?}"
+        );
+        assert_eq!(report.problems(), 0);
+        let b_on_chain = oyster::sui_object_reader::lookup_pooled_blob_object_id(
+            &harness.rpc_url,
+            pool_id,
+            &b.blob_id.parse().unwrap(),
+        )
+        .await
+        .expect("lookup");
+        assert!(b_on_chain.is_none(), "B's PooledBlob must be deleted");
+        assert!(
+            oyster::db::blobs::list_references(&harness.db, &account_id, &b.blob_id)
+                .await
+                .expect("query")
+                .is_empty(),
+            "B's rows must be gone",
+        );
+        let used_after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status")
+            .used_encoded_bytes;
+        assert_eq!(used_after, used_before - b.encoded_size);
+        let db_pool = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query pool")
+            .expect("pool exists");
+        assert_eq!(
+            db_pool.used_encoded_bytes as u64, used_after,
+            "DB counter follows chain"
+        );
+
+        // 5. Nothing left to repair.
+        let report = oyster::blob_repair::repair(
+            &ctx,
+            &oyster::blob_repair::RepairOptions {
+                account: Some(account_id),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("final run");
+        assert!(report.outcomes.is_empty());
+    });
+}
+
 /// An over-cap upload must be rejected with 400 *before* any Sui tx
 /// is submitted. Because `new_unencoded > max_unencoded` is checked
 /// before lazy-creating the on-chain `StoragePool`, no pool should

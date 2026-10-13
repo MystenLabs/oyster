@@ -283,6 +283,114 @@ pub async fn delete_blob(
     }))
 }
 
+/// A `blobs` row that references an on-chain `PooledBlob` but has no
+/// `certified_epoch`: input to `oysterd blobs repair`.
+#[derive(Debug, Clone)]
+pub struct UncertifiedReference {
+    /// Owning account.
+    pub account_id: AccountId,
+    /// Bucket name.
+    pub bucket_name: String,
+    /// Object key.
+    pub key: String,
+    /// Walrus blob ID.
+    pub blob_id: String,
+    /// On-chain `PooledBlob` object ID.
+    pub pooled_blob_object_id: String,
+    /// Walrus-encoded size, if the row recorded it.
+    pub encoded_size: Option<i64>,
+}
+
+/// Every row referencing a `PooledBlob` without a `certified_epoch`,
+/// optionally for one account, grouped by account and blob.
+pub async fn list_uncertified_references(
+    pool: &super::DbPool,
+    account_id: Option<&AccountId>,
+) -> Result<Vec<UncertifiedReference>, sqlx::Error> {
+    let base = "SELECT account_id, bucket_name, key, blob_id, pooled_blob_object_id, encoded_size \
+                FROM blobs WHERE pooled_blob_object_id IS NOT NULL AND certified_epoch IS NULL";
+    let rows = match account_id {
+        Some(account_id) => {
+            sqlx::query(&super::sql(&format!(
+                "{base} AND account_id = ? ORDER BY account_id, blob_id, created_at, key"
+            )))
+            .bind(account_id)
+            .fetch_all(pool)
+            .await?
+        }
+        None => {
+            sqlx::query(&super::sql(&format!(
+                "{base} ORDER BY account_id, blob_id, created_at, key"
+            )))
+            .fetch_all(pool)
+            .await?
+        }
+    };
+    Ok(rows
+        .into_iter()
+        .map(|r| UncertifiedReference {
+            account_id: r.get("account_id"),
+            bucket_name: r.get("bucket_name"),
+            key: r.get("key"),
+            blob_id: r.get("blob_id"),
+            pooled_blob_object_id: r.get("pooled_blob_object_id"),
+            encoded_size: r.get("encoded_size"),
+        })
+        .collect())
+}
+
+/// One key referencing a blob, for operator reports.
+#[derive(Debug, Clone)]
+pub struct BlobReference {
+    /// Bucket name.
+    pub bucket_name: String,
+    /// Object key.
+    pub key: String,
+    /// Walrus-encoded size, if the row recorded it.
+    pub encoded_size: Option<i64>,
+}
+
+/// Every `(bucket, key)` of `account` that references `blob_id`.
+pub async fn list_references(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    blob_id: &str,
+) -> Result<Vec<BlobReference>, sqlx::Error> {
+    let rows = sqlx::query(&super::sql(
+        "SELECT bucket_name, key, encoded_size FROM blobs \
+         WHERE account_id = ? AND blob_id = ? ORDER BY created_at, key",
+    ))
+    .bind(account_id)
+    .bind(blob_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| BlobReference {
+            bucket_name: r.get("bucket_name"),
+            key: r.get("key"),
+            encoded_size: r.get("encoded_size"),
+        })
+        .collect())
+}
+
+/// Remove every row of `account` that references `blob_id` (and their
+/// tags, via the FK cascade where configured). Returns rows removed.
+pub async fn delete_references_for_blob(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    blob_id: &str,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "DELETE FROM blobs WHERE account_id = ? AND blob_id = ?",
+    ))
+    .bind(account_id)
+    .bind(blob_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
+}
+
 /// Count how many blob metadata rows reference the given blob ID.
 pub async fn count_references(pool: &super::DbPool, blob_id: &str) -> Result<i64, sqlx::Error> {
     sqlx::query_scalar(&super::sql("SELECT COUNT(*) FROM blobs WHERE blob_id = ?"))

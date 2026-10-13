@@ -13,6 +13,19 @@
   its sliver upload and certify finished before the `201`. Counted by
   `oyster_dedup_certify_verify_total{certified="already"|"completed"}`.
   The exact epoch is informational; the contract is NULL vs. non-NULL.
+- `oysterd blobs repair`: bulk repair of `PooledBlob`s that are
+  registered on chain but never certified, the state the pre-fix
+  self-heal left behind (260 known in production). Candidates are every
+  `blobs` row without a `certified_epoch` and/or a `--ids-file` of
+  `PooledBlob` object IDs (which also reaches orphans with no row). Per
+  blob: already certified → stamp the rows; otherwise collect a
+  confirmation certificate from the storage nodes without re-uploading
+  (the failed upload did push the slivers) and certify; otherwise report
+  it, or with `--delete-unrecoverable` delete the `PooledBlob` and its
+  rows, return the capacity to the pool, and print the keys to notify.
+  Idempotent; `--dry-run` reports what each blob would get; exits 1 if
+  any blob needs attention. Runbook:
+  `docs/src/guides/uncertified-blob-repair.md`.
 
 ### Fixed
 - A `PUT` retry after a certify failure no longer returns `201` for a

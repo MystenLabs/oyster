@@ -1011,6 +1011,62 @@ impl DirectWalrusBlobStore {
         })
     }
 
+    /// The account's signing identity for on-chain transactions. Errors
+    /// if the account does not exist or a key rotation holds it.
+    pub async fn signer_for_account(
+        &self,
+        account_id: &AccountId,
+    ) -> Result<Signer, BlobStoreError> {
+        let key_version = self.account_key_version(account_id).await?;
+        let sender_address =
+            sui_transaction::resolve_sender_address(&self.pearl, account_id, key_version)
+                .await
+                .map_err(|e| BlobStoreError::Internal(format!("resolve sender address: {e}")))?;
+        Ok(Signer {
+            account_id: *account_id,
+            key_version,
+            sender_address,
+        })
+    }
+
+    /// Ask the storage nodes for a confirmation certificate for a
+    /// `PooledBlob` whose slivers they already hold, without uploading
+    /// anything. Fails when a quorum of nodes no longer has the slivers.
+    pub async fn collect_certificate_standalone(
+        &self,
+        pooled_blob: &PooledBlob,
+    ) -> Result<walrus_core::messages::ConfirmationCertificate, BlobStoreError> {
+        let committees = self
+            .node_client
+            .get_committees()
+            .await
+            .map_err(|e| BlobStoreError::Upstream(format!("get_committees: {e}")))?;
+        self.node_client
+            .get_certificate_standalone(
+                &pooled_blob.blob_id,
+                committees.epoch(),
+                &BlobPersistenceType::Deletable {
+                    object_id: pooled_blob.id.into(),
+                },
+            )
+            .await
+            .map_err(|e| BlobStoreError::Upstream(format!("collect certificate: {e}")))
+    }
+
+    /// Walrus-encoded size of a blob of `unencoded_size` bytes on this
+    /// network, as the chain accounts for it.
+    pub fn encoded_size_for(
+        &self,
+        unencoded_size: u64,
+        encoding_type: walrus_core::EncodingType,
+    ) -> Option<u64> {
+        walrus_core::encoding::encoded_blob_length_for_n_shards(
+            self.node_client.encoding_config().n_shards(),
+            unencoded_size,
+            encoding_type,
+        )
+    }
+
     /// Read a `PooledBlob` object from chain by its object ID.
     pub async fn read_pooled_blob(
         &self,

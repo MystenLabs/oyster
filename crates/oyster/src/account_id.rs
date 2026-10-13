@@ -18,6 +18,10 @@ impl Default for AccountId {
 }
 
 impl AccountId {
+    /// The all-zero UUID. Never a real account; used as a placeholder
+    /// in operator reports for entries that could not be attributed.
+    pub const NIL: Self = Self(Uuid::nil());
+
     /// Generate a new random account ID.
     pub fn new() -> Self {
         Self(Uuid::new_v4())
