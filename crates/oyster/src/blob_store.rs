@@ -19,6 +19,11 @@ pub struct StoreResult {
     /// on-chain. `None` for `LocalBlobStore` and for the dedup short-circuit
     /// path (the original registering row already carries the encoded size).
     pub encoded_size: Option<u64>,
+    /// Walrus epoch in which the on-chain `PooledBlob` was observed
+    /// certified. `Some` for every on-chain store result: the direct
+    /// Walrus store never returns `Ok` for an uncertified blob. `None`
+    /// for `LocalBlobStore`. Persisted as `blobs.certified_epoch`.
+    pub certified_epoch: Option<u64>,
 }
 
 impl BlobId {
@@ -272,6 +277,7 @@ impl BlobStore for LocalBlobStore {
                     blob_id,
                     pooled_blob_object_id: None,
                     encoded_size: None,
+                    certified_epoch: None,
                 });
             }
             let parent = path.parent().expect("blob path must have parent");
@@ -281,6 +287,7 @@ impl BlobStore for LocalBlobStore {
                 blob_id,
                 pooled_blob_object_id: None,
                 encoded_size: None,
+                certified_epoch: None,
             })
         })
     }

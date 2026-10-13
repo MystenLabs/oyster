@@ -7770,6 +7770,7 @@ dependencies = [
  "axum 0.8.8",
  "hex",
  "http-body-util",
+ "md5",
  "oyster",
  "oyster-cli",
  "pearl",

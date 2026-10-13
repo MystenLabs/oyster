@@ -286,6 +286,7 @@ mod tests {
             blob_id: BlobId("deadbeef".into()),
             pooled_blob_object_id: Some("0xpool".into()),
             encoded_size: None,
+            certified_epoch: None,
         };
         let db_err = sqlx::Error::RowNotFound;
 

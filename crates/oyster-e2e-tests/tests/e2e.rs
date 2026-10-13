@@ -1168,6 +1168,137 @@ fn store_blob_self_heal_certifies_registered_but_uncertified_blob() {
     });
 }
 
+/// The DB dedup short-circuit must not trust a `blobs` row alone. A row
+/// written before `certified_epoch` existed (NULL) is checked against
+/// the chain once and stamped; a row pointing at a `PooledBlob` that is
+/// registered but not certified (the state the pre-0.14.4 self-heal
+/// left behind) gets its upload finished before the `201`.
+#[test]
+fn dedup_verifies_certification_when_row_has_no_certified_epoch() {
+    run_e2e(async {
+        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+        tracing_subscriber::fmt::try_init().ok();
+
+        let harness = OysterTestHarness::start().await;
+        let app = &harness.router;
+        let (_app_id, admin_key) = harness.create_app_admin_key("dedup-verify").await;
+        let (account_id_str, api_key) = create_test_account_via_admin(app, &admin_key).await;
+        fund_test_wallet(&harness, app, &api_key).await;
+        let bucket_id = create_test_bucket(app, &api_key, "dedup-verify").await;
+        let account_id: oyster::AccountId = oyster::AccountId::from_str(&account_id_str).unwrap();
+
+        // A. Fresh upload stamps certified_epoch on its row.
+        let seed = b"dedup-verify-seed";
+        let body = put_blob(app, &api_key, &bucket_id, "seed.txt", seed).await;
+        let seed_blob_id = body["blob_id"].as_str().unwrap().to_string();
+        let row =
+            oyster::db::blobs::find_dedup_row_for_account(&harness.db, &account_id, &seed_blob_id)
+                .await
+                .expect("query")
+                .expect("row");
+        assert!(
+            row.certified_epoch.is_some(),
+            "fresh upload must stamp certified_epoch"
+        );
+
+        // B. Legacy row: NULL certified_epoch, chain certified. The next
+        //    dedup hit reads the chain once, stamps the row, and does
+        //    not register anything.
+        sqlx::query("UPDATE blobs SET certified_epoch = NULL WHERE blob_id = ?")
+            .bind(&seed_blob_id)
+            .execute(&harness.db)
+            .await
+            .expect("null out certified_epoch");
+        let pool_state = oyster::db::accounts::get_storage_pool(&harness.db, &account_id)
+            .await
+            .expect("query pool")
+            .expect("pool exists");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            pool_state.object_id.parse().expect("parse pool ObjectID");
+        let used_before = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status")
+            .used_encoded_bytes;
+        put_blob(app, &api_key, &bucket_id, "seed-copy.txt", seed).await;
+        let row =
+            oyster::db::blobs::find_dedup_row_for_account(&harness.db, &account_id, &seed_blob_id)
+                .await
+                .expect("query")
+                .expect("row");
+        assert!(
+            row.certified_epoch.is_some(),
+            "legacy row must be backfilled on dedup"
+        );
+        let used_after = harness
+            .walrus_sui_client()
+            .storage_pool_status(pool_id)
+            .await
+            .expect("storage_pool_status")
+            .used_encoded_bytes;
+        assert_eq!(used_after, used_before, "legacy dedup must not register");
+
+        // C. Row pointing at an uncertified PooledBlob (what the old
+        //    self-heal wrote). The dedup hit must finish the upload.
+        let data = b"dedup-verify-stuck";
+        let registered = harness
+            .register_without_certify(&account_id, data.to_vec(), false)
+            .await;
+        oyster::db::blobs::insert_blob(
+            &harness.db,
+            "stuck.txt",
+            &registered.blob_id,
+            &bucket_id,
+            &account_id,
+            "application/octet-stream",
+            data.len() as i64,
+            &format!("{:x}", md5::compute(data)),
+            Some(&registered.pooled_blob_object_id.to_string()),
+            Some(registered.encoded_size as i64),
+            None,
+        )
+        .await
+        .expect("insert stuck row");
+        let body = put_blob(app, &api_key, &bucket_id, "retry.txt", data).await;
+        assert_eq!(
+            body["pooled_blob_object_id"].as_str(),
+            Some(registered.pooled_blob_object_id.to_string().as_str()),
+            "dedup must reuse the existing PooledBlob",
+        );
+        let on_chain = harness.pooled_blob(registered.pooled_blob_object_id).await;
+        assert!(
+            on_chain.certified_epoch.is_some(),
+            "dedup must certify: {on_chain:?}"
+        );
+        let row = oyster::db::blobs::find_dedup_row_for_account(
+            &harness.db,
+            &account_id,
+            &registered.blob_id,
+        )
+        .await
+        .expect("query")
+        .expect("row");
+        assert_eq!(
+            row.certified_epoch.map(|e| e as u32),
+            on_chain.certified_epoch,
+            "DB must record the on-chain certified epoch",
+        );
+        // Both keys — the stuck one and the retry — are now readable.
+        for key in ["stuck.txt", "retry.txt"] {
+            let (status, bytes) = raw_response(
+                app,
+                Request::get(format!("/api/v1/buckets/{bucket_id}/blobs/{key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+            assert_eq!(status, axum::http::StatusCode::OK, "{key}");
+            assert_eq!(bytes, data, "{key}");
+        }
+    });
+}
+
 /// An over-cap upload must be rejected with 400 *before* any Sui tx
 /// is submitted. Because `new_unencoded > max_unencoded` is checked
 /// before lazy-creating the on-chain `StoragePool`, no pool should

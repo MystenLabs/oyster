@@ -38,6 +38,16 @@ curl -s -X PUT -H "Authorization: Bearer $API_KEY" \
 Both uploads return the **same `blob_id`** because the content is
 identical. The underlying storage holds only one copy.
 
+The dedup short-circuit only trusts a `blobs` row whose
+`certified_epoch` is set. That column records that Oyster saw the
+on-chain `PooledBlob` certified; every upload since migration 026
+writes it. A row without it (written before the migration, or for a
+blob whose certify never ran) is checked against the chain on its
+next dedup hit: an already-certified blob is stamped and reused, an
+uncertified one gets its sliver upload and certify finished first
+(`oyster_dedup_certify_verify_total{certified="already"|"completed"}`).
+Either way the row is stamped, so the chain read happens once per row.
+
 ## Reference counting
 
 Each key-to-blob mapping is a **reference**. Oyster tracks how many

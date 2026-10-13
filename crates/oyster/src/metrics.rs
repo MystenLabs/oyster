@@ -142,6 +142,16 @@ pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_re
 /// [`CERTIFY_STALE_VERSION_RETRIES_TOTAL`]).
 pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_heal_total";
 
+/// Counter: upload-path dedup hits whose DB row had no
+/// `certified_epoch` and so had to be checked against the chain,
+/// labelled by `certified` ∈ {`already`, `completed`}. `already` is the
+/// lazy backfill of rows written before migration 026 (one per row,
+/// then never again); `completed` means the row pointed at a
+/// registered-but-uncertified `PooledBlob` and this request finished
+/// the upload. Any `completed` after the backfill is a blob the fix in
+/// 0.14.4 would otherwise have left unreadable.
+pub const DEDUP_CERTIFY_VERIFY_TOTAL: &str = "oyster_dedup_certify_verify_total";
+
 /// Counter: certify transactions resubmitted after Sui rejected them on
 /// a stale `StoragePool` object version (another transaction of the
 /// same account landed between PTB build and execution). Each
