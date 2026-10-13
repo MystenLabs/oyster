@@ -244,6 +244,125 @@ impl OysterTestHarness {
         self.walrus_client.as_ref().sui_client()
     }
 
+    /// Read a `PooledBlob` object from chain.
+    pub async fn pooled_blob(
+        &self,
+        object_id: oyster::sui_types::base_types::ObjectID,
+    ) -> walrus_sui::types::PooledBlob {
+        self.walrus_sui_client()
+            .retriable_sui_client()
+            .get_sui_object::<walrus_sui::types::PooledBlob>(object_id)
+            .await
+            .expect("read PooledBlob")
+    }
+
+    /// Reproduce the first half of a failed upload: register `data` in
+    /// the account's `StoragePool` (signed by Pearl under the account's
+    /// key) but never certify it, leaving a `PooledBlob` with
+    /// `certified_epoch: None` on chain and no `blobs` row. With
+    /// `upload_slivers` the storage nodes also receive the slivers, as
+    /// they would have in production before the certify tx failed.
+    ///
+    /// The account must already own a pool (upload anything first).
+    pub async fn register_without_certify(
+        &self,
+        account_id: &oyster::AccountId,
+        data: Vec<u8>,
+        upload_slivers: bool,
+    ) -> RegisteredOnlyBlob {
+        use walrus_core::encoding::EncodingFactory as _;
+        use walrus_sui::client::{BlobObjectMetadata, BlobPersistence};
+
+        let key_version = db::accounts::get_key_version(&self.db, account_id)
+            .await
+            .expect("query key_version")
+            .expect("account exists");
+        let sender =
+            oyster::sui_transaction::resolve_sender_address(&self.pearl, account_id, key_version)
+                .await
+                .expect("resolve sender address");
+        let pool = db::accounts::get_storage_pool(&self.db, account_id)
+            .await
+            .expect("query pool")
+            .expect("account has a StoragePool; upload something first");
+        let pool_id: oyster::sui_types::base_types::ObjectID =
+            pool.object_id.parse().expect("parse pool ObjectID");
+
+        let node_client = self.walrus_client.as_ref();
+        let encoding = node_client
+            .encoding_config()
+            .get_for_type(walrus_core::EncodingType::RS2);
+        let (sliver_pairs, metadata) = encoding.encode_with_metadata(data).expect("encode blob");
+        let blob_obj_metadata = BlobObjectMetadata::try_from(&metadata).expect("blob metadata");
+        let encoded_size = blob_obj_metadata.encoded_size;
+        let walrus_blob_id = *metadata.blob_id();
+
+        let read_client = oyster::sui_transaction::build_sui_read_client(
+            &self.rpc_url,
+            self.system_object,
+            self.staking_object,
+        )
+        .await
+        .expect("build SuiReadClient");
+        let mut ptb =
+            walrus_sui::client::transaction_builder::WalrusPtbBuilder::new(read_client, sender);
+        ptb.register_pooled_blobs(pool_id, vec![blob_obj_metadata], BlobPersistence::Deletable)
+            .await
+            .expect("register_pooled_blobs PTB");
+        let tx_data = ptb
+            .build_transaction_data(None)
+            .await
+            .expect("build register tx");
+        oyster::sui_transaction::sign_and_submit(
+            &self.pearl,
+            account_id,
+            key_version,
+            &self.rpc_url,
+            tx_data,
+        )
+        .await
+        .expect("register tx");
+        // Mirror the production path, which bumps the DB counters right
+        // after register lands and before certify runs.
+        db::accounts::update_pool_after_register(&self.db, account_id, 0, encoded_size as i64)
+            .await
+            .expect("update_pool_after_register");
+
+        let pooled_blob_object_id = oyster::sui_object_reader::lookup_pooled_blob_object_id(
+            &self.rpc_url,
+            pool_id,
+            &walrus_blob_id,
+        )
+        .await
+        .expect("lookup PooledBlob")
+        .expect("PooledBlob registered");
+
+        if upload_slivers {
+            node_client
+                .send_blob_data_and_get_certificate(
+                    &metadata,
+                    Arc::new(sliver_pairs),
+                    &walrus_core::messages::BlobPersistenceType::Deletable {
+                        object_id: pooled_blob_object_id.into(),
+                    },
+                    None,
+                    walrus_sdk::uploader::TailHandling::Blocking,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                .await
+                .expect("sliver upload");
+        }
+
+        RegisteredOnlyBlob {
+            blob_id: walrus_blob_id.to_string(),
+            pooled_blob_object_id,
+            encoded_size,
+        }
+    }
+
     /// Run exactly one extension cycle synchronously, returning the number
     /// of pool rows that were claimed and processed (regardless of outcome).
     pub async fn trigger_extension_cycle(&self, lookahead_epochs: u32, extend_epochs: u32) -> u32 {
@@ -355,6 +474,18 @@ impl OysterTestHarness {
         // Fund with WAL for storage.
         fund_with_wal(&self.walrus_client, &self.rpc_url, addr, WAL_FUND_AMOUNT).await;
     }
+}
+
+/// A `PooledBlob` that [`OysterTestHarness::register_without_certify`]
+/// left registered but uncertified.
+#[derive(Debug, Clone)]
+pub struct RegisteredOnlyBlob {
+    /// Walrus blob ID (URL-safe base64), as Oyster reports it.
+    pub blob_id: String,
+    /// On-chain `PooledBlob` object ID.
+    pub pooled_blob_object_id: oyster::sui_types::base_types::ObjectID,
+    /// Walrus-encoded size registered against the pool.
+    pub encoded_size: u64,
 }
 
 /// Transfer WAL from the admin wallet (inside walrus_client) to the given recipient.

@@ -173,6 +173,35 @@ would still drift under concurrent uploads. The onchain
 reconcile-and-retry above absorbs the inevitable drift without
 serializing uploads.
 
+## Upload failure and retry
+
+An upload is three on-chain or network steps in order: register the
+`PooledBlob` in the account's pool, push the slivers to the storage
+nodes, and submit the certify transaction. Walrus serves a blob only
+once it is certified, and Oyster writes the `blobs` row only after
+all three steps succeed, so a `201` always means certified and
+readable.
+
+The account's `StoragePool` is an owned Sui object. If another
+transaction of the same account lands between building and executing
+the certify transaction (a concurrent upload, a delete, the extension
+worker), Sui rejects the certify as
+`ObjectVersionUnavailableForConsumption`. The certificate is already
+in hand, so Oyster rebuilds the transaction against the fresh object
+reference and resubmits, up to three attempts in total
+(`oyster_certify_stale_version_retries_total`). If every attempt
+fails, the client receives `502` and no `blobs` row is written; the
+`PooledBlob` stays registered but uncertified on chain.
+
+A `502` on `PUT` is the signal to retry with the same bytes. The retry
+re-registers, which aborts with `EFieldAlreadyExists` because the
+`PooledBlob` already exists; Oyster then recovers the existing object
+and reads its `certified_epoch`. If it is already certified (a TOCTOU
+dedup race, or an orphan from a delete whose transaction failed), the
+retry returns `201` immediately. If it is not, Oyster finishes the
+sliver upload and certify for that existing object before answering
+(`oyster_register_dedup_self_heal_total{certified="completed"}`).
+
 ## Blob states
 
 A blob's lifetime is bound to its account's `StoragePool`:

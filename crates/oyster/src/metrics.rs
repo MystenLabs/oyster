@@ -126,15 +126,27 @@ pub const INSUFFICIENT_FUNDS_RESPONSES_TOTAL: &str = "oyster_insufficient_funds_
 pub const PAYLOAD_TOO_LARGE_RESPONSES_TOTAL: &str = "oyster_payload_too_large_responses_total";
 
 /// Counter: register-PTB self-heal hits, labelled by `cause` ∈
-/// {`db_miss`, `orphan_recovered`}. Incremented when a register PTB
-/// aborts with `dynamic_field::add` code 0 (`EFieldAlreadyExists`) and
-/// Oyster recovers by reading the existing on-chain `PooledBlob`
-/// instead of returning 502. `db_miss` indicates a TOCTOU race against
-/// the DB-side dedup index; `orphan_recovered` indicates the on-chain
-/// `PooledBlob` outlived its DB row (typically a prior delete tx that
-/// failed but whose DB row was dropped anyway — see
-/// [`DELETE_DB_ONLY_TOTAL`]).
+/// {`db_miss`, `orphan_recovered`} and `certified` ∈ {`already`,
+/// `completed`}. Incremented when a register PTB aborts with
+/// `dynamic_field::add` code 0 (`EFieldAlreadyExists`) and Oyster
+/// recovers by reading the existing on-chain `PooledBlob` instead of
+/// returning 502. `db_miss` indicates a TOCTOU race against the
+/// DB-side dedup index; `orphan_recovered` indicates the on-chain
+/// `PooledBlob` outlived its DB row (a prior delete tx that failed but
+/// whose DB row was dropped anyway — see [`DELETE_DB_ONLY_TOTAL`] — or
+/// a prior upload whose certify tx failed after register landed).
+/// `certified=completed` means the recovered blob was registered but
+/// not certified and this request finished the sliver upload and
+/// certify; a steady non-zero rate there is the signature of certify
+/// transactions failing on the first attempt (see
+/// [`CERTIFY_STALE_VERSION_RETRIES_TOTAL`]).
 pub const REGISTER_DEDUP_SELF_HEAL_TOTAL: &str = "oyster_register_dedup_self_heal_total";
+
+/// Counter: certify transactions resubmitted after Sui rejected them on
+/// a stale `StoragePool` object version (another transaction of the
+/// same account landed between PTB build and execution). Each
+/// increment is one rebuilt-and-resubmitted attempt, not one upload.
+pub const CERTIFY_STALE_VERSION_RETRIES_TOTAL: &str = "oyster_certify_stale_version_retries_total";
 
 /// Counter: compensating on-chain delete attempts after a post-store
 /// DB failure in `store_blob` / S3 `put_object`. Labelled by

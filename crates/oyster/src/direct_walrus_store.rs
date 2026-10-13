@@ -780,9 +780,15 @@ impl DirectWalrusBlobStore {
                 // return Ok with the existing object ID. This
                 // covers TOCTOU dedup races (two concurrent uploads
                 // of the same content for one account both miss
-                // the DB dedup) and orphans left behind when a
-                // prior delete tx failed but its DB row was
-                // dropped anyway.
+                // the DB dedup), orphans left behind when a prior
+                // delete tx failed but its DB row was dropped anyway,
+                // and — the important one — a prior upload whose
+                // register landed but whose certify failed (502, no
+                // DB row). Registered is not certified: in that last
+                // case the on-chain `PooledBlob` has
+                // `certified_epoch: None` and Walrus will never serve
+                // it, so we must finish the sliver upload and certify
+                // here before answering 201.
                 tracing::warn!(
                     account_id = %account_id,
                     pool_object_id = %pool_object_id,
@@ -827,18 +833,43 @@ impl DirectWalrusBlobStore {
                 } else {
                     "orphan_recovered"
                 };
+
+                // Skip `update_pool_after_register`: the on-chain
+                // `used_encoded_bytes` (and the DB counters, bumped by
+                // whichever request registered it) already account for
+                // this PooledBlob. Certification, however, must be
+                // checked, not assumed.
+                let pooled_blob = self.read_pooled_blob(recovered).await?;
+                let certified = if pooled_blob.certified_epoch.is_some() {
+                    "already"
+                } else {
+                    tracing::warn!(
+                        account_id = %account_id,
+                        pooled_blob_object_id = %recovered,
+                        walrus_blob_id = %walrus_blob_id_str,
+                        "recovered PooledBlob is registered but not certified; \
+                         completing sliver upload and certify",
+                    );
+                    self.upload_and_certify(
+                        &Signer {
+                            account_id: *account_id,
+                            key_version,
+                            sender_address,
+                        },
+                        &pooled_blob,
+                        &metadata,
+                        sliver_pairs,
+                    )
+                    .await?;
+                    "completed"
+                };
                 metrics::counter!(
                     crate::metrics::REGISTER_DEDUP_SELF_HEAL_TOTAL,
                     "cause" => cause,
+                    "certified" => certified,
                 )
                 .increment(1);
 
-                // Skip `update_pool_after_register` and the certify
-                // step: the on-chain `used_encoded_bytes` already
-                // accounts for this PooledBlob, and re-certifying
-                // an already-registered blob is unnecessary (the
-                // existing DB-dedup short-circuit above also skips
-                // certify).
                 return Ok(StoreResult {
                     blob_id: BlobId(walrus_blob_id_str),
                     pooled_blob_object_id: Some(recovered.to_string()),
@@ -872,14 +903,70 @@ impl DirectWalrusBlobStore {
         )
         .await?;
 
-        // 4. Upload slivers to storage nodes and collect certificate.
+        // 4–5. Upload slivers and certify the fresh PooledBlob.
+        let pooled_blob = PooledBlob {
+            id: pooled_blob_object_id,
+            registered_epoch: current_epoch,
+            blob_id: walrus_blob_id,
+            unencoded_size,
+            encoding_type,
+            certified_epoch: None,
+            storage_pool_id: pool_object_id,
+            deletable: true,
+        };
+        self.upload_and_certify(
+            &Signer {
+                account_id: *account_id,
+                key_version,
+                sender_address,
+            },
+            &pooled_blob,
+            &metadata,
+            sliver_pairs,
+        )
+        .await?;
+
+        Ok(StoreResult {
+            blob_id: BlobId(walrus_blob_id_str),
+            pooled_blob_object_id: Some(pooled_blob_object_id.to_string()),
+            encoded_size: Some(encoded_size),
+        })
+    }
+
+    /// Read a `PooledBlob` object from chain by its object ID.
+    pub async fn read_pooled_blob(
+        &self,
+        object_id: ObjectID,
+    ) -> Result<PooledBlob, BlobStoreError> {
+        self.read_client
+            .retriable_sui_client()
+            .get_sui_object::<PooledBlob>(object_id)
+            .await
+            .map_err(|e| BlobStoreError::Upstream(format!("read PooledBlob {object_id}: {e}")))
+    }
+
+    /// Steps 4–5 of the upload: push the slivers to the storage nodes,
+    /// collect the confirmation certificate, and submit the certify
+    /// transaction for an already-registered `PooledBlob`.
+    ///
+    /// Shared by the fresh-register path and the `EFieldAlreadyExists`
+    /// self-heal path, so that *every* `Ok` from `store` means the blob
+    /// is certified and readable — a registered-but-uncertified
+    /// `PooledBlob` is invisible to Walrus reads.
+    async fn upload_and_certify(
+        &self,
+        signer: &Signer,
+        pooled_blob: &PooledBlob,
+        metadata: &walrus_core::metadata::VerifiedBlobMetadataWithId,
+        sliver_pairs: Vec<walrus_core::encoding::SliverPair>,
+    ) -> Result<CertifyOutcome, BlobStoreError> {
         let persistence_type = BlobPersistenceType::Deletable {
-            object_id: pooled_blob_object_id.into(),
+            object_id: pooled_blob.id.into(),
         };
         let certificate = self
             .node_client
             .send_blob_data_and_get_certificate(
-                &metadata,
+                metadata,
                 Arc::new(sliver_pairs),
                 &persistence_type,
                 None,
@@ -892,47 +979,145 @@ impl DirectWalrusBlobStore {
             .await
             .map_err(|e| BlobStoreError::Upstream(format!("sliver upload error: {e}")))?;
 
-        // 5. Certify the PooledBlob on-chain.
-        let pooled_blob = PooledBlob {
-            id: pooled_blob_object_id,
-            registered_epoch: current_epoch,
-            blob_id: walrus_blob_id,
-            unencoded_size,
-            encoding_type,
-            certified_epoch: None,
-            storage_pool_id: pool_object_id,
-            deletable: true,
-        };
-
-        let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), sender_address);
-        ptb.certify_pooled_blobs(pool_object_id, &[(&pooled_blob, certificate)])
-            .await
-            .map_err(|e| BlobStoreError::Upstream(format!("certify_pooled_blobs error: {e}")))?;
-        let tx_data = ptb
-            .build_transaction_data(None)
-            .await
-            .map_err(|e| BlobStoreError::Upstream(format!("build_transaction_data error: {e}")))?;
-
-        sui_transaction::sign_and_submit(
-            &self.pearl,
-            account_id,
-            key_version,
-            &self.rpc_url,
-            tx_data,
-        )
-        .await
-        .map_err(|e| {
-            // Certify doesn't take new funds (it consumes the registered
-            // blob slot), so we don't attach a funding estimate here.
-            classify_upstream_error(format!("certify tx error: {e}"), None)
-        })?;
-
-        Ok(StoreResult {
-            blob_id: BlobId(walrus_blob_id_str),
-            pooled_blob_object_id: Some(pooled_blob_object_id.to_string()),
-            encoded_size: Some(encoded_size),
-        })
+        self.submit_certify(signer, pooled_blob, certificate).await
     }
+
+    /// Build, sign and submit `certify_pooled_blob` for `pooled_blob`.
+    ///
+    /// The account's `StoragePool` is an owned object, so any other
+    /// transaction of the same account landing between PTB build and
+    /// execution (a concurrent upload, a delete, the extension worker)
+    /// bumps its version and the certify is rejected as
+    /// `ObjectVersionUnavailableForConsumption`. The certificate is
+    /// already in hand and the sliver upload is the expensive part, so
+    /// rebuild the PTB against the fresh object reference and resubmit
+    /// up to [`CERTIFY_MAX_ATTEMPTS`] times instead of answering 502.
+    ///
+    /// A `storage_pool::certify` `EAlreadyCertified` abort means a
+    /// concurrent request for the same content won; that is success.
+    pub async fn submit_certify(
+        &self,
+        signer: &Signer,
+        pooled_blob: &PooledBlob,
+        certificate: walrus_core::messages::ConfirmationCertificate,
+    ) -> Result<CertifyOutcome, BlobStoreError> {
+        let pool_object_id = pooled_blob.storage_pool_id;
+        let mut attempt = 1u32;
+        loop {
+            let mut ptb = WalrusPtbBuilder::new(self.read_client.clone(), signer.sender_address);
+            ptb.certify_pooled_blobs(pool_object_id, &[(pooled_blob, certificate.clone())])
+                .await
+                .map_err(|e| {
+                    BlobStoreError::Upstream(format!("certify_pooled_blobs error: {e}"))
+                })?;
+            let tx_data = ptb.build_transaction_data(None).await.map_err(|e| {
+                BlobStoreError::Upstream(format!("build_transaction_data error: {e}"))
+            })?;
+
+            match sui_transaction::sign_and_submit(
+                &self.pearl,
+                &signer.account_id,
+                signer.key_version,
+                &self.rpc_url,
+                tx_data,
+            )
+            .await
+            {
+                Ok(resp) => {
+                    tracing::info!(
+                        tx_digest = %resp.digest,
+                        pooled_blob_object_id = %pooled_blob.id,
+                        attempt,
+                        "certify tx submitted",
+                    );
+                    return Ok(CertifyOutcome::Certified);
+                }
+                Err(sui_transaction::SignAndSubmitError::ExecutionFailure(f))
+                    if f.is_move_abort("storage_pool", "certify", E_ALREADY_CERTIFIED) =>
+                {
+                    tracing::info!(
+                        pooled_blob_object_id = %pooled_blob.id,
+                        abort = %f,
+                        "certify tx aborted with EAlreadyCertified; treating as success",
+                    );
+                    return Ok(CertifyOutcome::AlreadyCertified);
+                }
+                Err(e) if attempt < CERTIFY_MAX_ATTEMPTS && is_stale_object_version(&e) => {
+                    metrics::counter!(crate::metrics::CERTIFY_STALE_VERSION_RETRIES_TOTAL)
+                        .increment(1);
+                    tracing::warn!(
+                        pooled_blob_object_id = %pooled_blob.id,
+                        pool_object_id = %pool_object_id,
+                        attempt,
+                        error = %e,
+                        "certify tx rejected on a stale StoragePool version; \
+                         rebuilding and retrying",
+                    );
+                    tokio::time::sleep(CERTIFY_RETRY_BACKOFF * attempt).await;
+                    attempt += 1;
+                }
+                Err(e) => {
+                    // Certify doesn't take new funds (it consumes the
+                    // registered blob slot), so no funding estimate.
+                    return Err(classify_upstream_error(
+                        format!("certify tx error: {e}"),
+                        None,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Who signs the on-chain transactions of one upload.
+#[derive(Debug, Clone)]
+pub struct Signer {
+    /// Owning account.
+    pub account_id: AccountId,
+    /// Pearl master-seed version the account's wallet derives from.
+    pub key_version: u32,
+    /// The wallet address derived under `key_version`.
+    pub sender_address: SuiAddress,
+}
+
+/// Result of [`DirectWalrusBlobStore::submit_certify`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertifyOutcome {
+    /// Our certify transaction landed.
+    Certified,
+    /// The blob was already certified when our transaction executed
+    /// (`storage_pool::certify` aborted with `EAlreadyCertified`).
+    AlreadyCertified,
+}
+
+/// `storage_pool::certify` abort code for an already-certified blob
+/// (`const EAlreadyCertified: u64 = 2` in `storage_pool.move`).
+const E_ALREADY_CERTIFIED: u64 = 2;
+
+/// Total certify submissions per upload, including the first.
+const CERTIFY_MAX_ATTEMPTS: u32 = 3;
+
+/// Base delay between certify attempts; multiplied by the attempt number.
+const CERTIFY_RETRY_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Whether a `sign_and_submit` failure is Sui rejecting the transaction
+/// because an owned input object (the account's `StoragePool`) moved on
+/// between PTB build and execution. Rebuilding the PTB resolves it.
+///
+/// Matches `UserInputError::ObjectVersionUnavailableForConsumption`
+/// ("… is unavailable for consumption, current version: …") and
+/// `SuiError::ObjectLockConflict` ("… already locked by a different
+/// transaction …") by their Display strings, since the gRPC transport
+/// flattens them to text before they reach us.
+fn is_stale_object_version(e: &sui_transaction::SignAndSubmitError) -> bool {
+    if matches!(e, sui_transaction::SignAndSubmitError::ExecutionFailure(_)) {
+        return false;
+    }
+    let lower = e.to_string().to_lowercase();
+    lower.contains("unavailable for consumption")
+        || lower.contains("unavailableforconsumption")
+        || lower.contains("locked by a different transaction")
+        || lower.contains("objectlockconflict")
 }
 
 impl BlobStore for DirectWalrusBlobStore {
@@ -1190,5 +1375,49 @@ mod tests {
             matches!(err, BlobStoreError::Upstream(_)),
             "expected Upstream, got {err:?}",
         );
+    }
+
+    #[test]
+    fn stale_object_version_matches_sui_rejection_strings() {
+        // `UserInputError::ObjectVersionUnavailableForConsumption` Display.
+        let e = sui_transaction::SignAndSubmitError::Other(
+            "status: InvalidArgument, message: \"Transaction needs to be rebuilt because \
+             object 0xabc version 42 (digest) is unavailable for consumption, current \
+             version: 43\""
+                .into(),
+        );
+        assert!(is_stale_object_version(&e));
+        // `SuiError::ObjectLockConflict` Display.
+        let e = sui_transaction::SignAndSubmitError::Other(
+            "Object (0xabc, 42, digest) already locked by a different transaction: digest".into(),
+        );
+        assert!(is_stale_object_version(&e));
+        // Proto kind names, in case the transport surfaces those instead.
+        let e = sui_transaction::SignAndSubmitError::Other(
+            "ObjectVersionUnavailableForConsumption".into(),
+        );
+        assert!(is_stale_object_version(&e));
+    }
+
+    #[test]
+    fn stale_object_version_ignores_other_failures() {
+        let e = sui_transaction::SignAndSubmitError::Other("InsufficientCoinBalance".into());
+        assert!(!is_stale_object_version(&e));
+        let e = sui_transaction::SignAndSubmitError::Other("connection reset".into());
+        assert!(!is_stale_object_version(&e));
+    }
+
+    #[test]
+    fn stale_object_version_never_matches_on_chain_aborts() {
+        // An on-chain abort whose description happens to mention a
+        // version string must not be retried: the tx executed.
+        let failure = sui_transaction::TxExecutionFailure {
+            digest: sui_types::digests::TransactionDigest::default(),
+            description: Some("unavailable for consumption".into()),
+            kind: v2::execution_error::ExecutionErrorKind::MoveAbort,
+            abort: None,
+        };
+        let e = sui_transaction::SignAndSubmitError::ExecutionFailure(Box::new(failure));
+        assert!(!is_stale_object_version(&e));
     }
 }
