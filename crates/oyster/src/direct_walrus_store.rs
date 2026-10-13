@@ -503,21 +503,83 @@ impl DirectWalrusBlobStore {
         // Account-level content dedup: if the same blob_id is already registered
         // for this account, reuse its PooledBlob object ID and skip all on-chain
         // work. The StoragePool rejects duplicate blob_ids anyway.
-        if let Some(existing) = db::blobs::find_pooled_blob_object_id_for_account(
-            &self.db,
-            account_id,
-            &walrus_blob_id_str,
-        )
-        .await?
+        if let Some(existing) =
+            db::blobs::find_dedup_row_for_account(&self.db, account_id, &walrus_blob_id_str).await?
         {
+            // A row only proves registration. `certified_epoch` is the
+            // DB's record that the blob was also certified; rows written
+            // before migration 026, and rows written for a blob whose
+            // certify never ran, carry NULL. For those, check the chain
+            // and finish the upload if needed, then stamp the row so the
+            // next dedup hit is DB-only.
+            let certified_epoch = match existing.certified_epoch {
+                Some(epoch) => epoch as u64,
+                None => {
+                    let object_id: ObjectID =
+                        existing.pooled_blob_object_id.parse().map_err(|e| {
+                            BlobStoreError::Internal(format!(
+                                "invalid pooled_blob_object_id {} in DB: {e}",
+                                existing.pooled_blob_object_id
+                            ))
+                        })?;
+                    let pooled_blob = self.read_pooled_blob(object_id).await?;
+                    let (epoch, outcome) = match pooled_blob.certified_epoch {
+                        Some(epoch) => (epoch, "already"),
+                        None => {
+                            tracing::warn!(
+                                account_id = %account_id,
+                                pooled_blob_object_id = %object_id,
+                                walrus_blob_id = %walrus_blob_id_str,
+                                "dedup hit on a PooledBlob that is registered but not \
+                                 certified; completing sliver upload and certify",
+                            );
+                            self.upload_and_certify(
+                                &Signer {
+                                    account_id: *account_id,
+                                    key_version,
+                                    sender_address,
+                                },
+                                &pooled_blob,
+                                &metadata,
+                                sliver_pairs,
+                            )
+                            .await?;
+                            let epoch = self
+                                .read_pooled_blob(object_id)
+                                .await?
+                                .certified_epoch
+                                .ok_or_else(|| {
+                                    BlobStoreError::Internal(format!(
+                                        "PooledBlob {object_id} still uncertified after certify"
+                                    ))
+                                })?;
+                            (epoch, "completed")
+                        }
+                    };
+                    metrics::counter!(
+                        crate::metrics::DEDUP_CERTIFY_VERIFY_TOTAL,
+                        "certified" => outcome,
+                    )
+                    .increment(1);
+                    db::blobs::set_certified_epoch(
+                        &self.db,
+                        account_id,
+                        &walrus_blob_id_str,
+                        epoch as i64,
+                    )
+                    .await?;
+                    u64::from(epoch)
+                }
+            };
             // Record encoded_size on the dedup'd row so the final delete (when
             // the last reference to this blob_id is removed) can decrement
             // pool_used_encoded_bytes — Walrus is content-addressed, so the
             // encoded_size matches the prior row.
             return Ok(StoreResult {
                 blob_id: BlobId(walrus_blob_id_str),
-                pooled_blob_object_id: Some(existing),
+                pooled_blob_object_id: Some(existing.pooled_blob_object_id),
                 encoded_size: Some(encoded_size),
+                certified_epoch: Some(certified_epoch),
             });
         }
 
@@ -840,8 +902,9 @@ impl DirectWalrusBlobStore {
                 // this PooledBlob. Certification, however, must be
                 // checked, not assumed.
                 let pooled_blob = self.read_pooled_blob(recovered).await?;
-                let certified = if pooled_blob.certified_epoch.is_some() {
-                    "already"
+                let (certified_epoch, certified) = if let Some(epoch) = pooled_blob.certified_epoch
+                {
+                    (epoch, "already")
                 } else {
                     tracing::warn!(
                         account_id = %account_id,
@@ -861,7 +924,16 @@ impl DirectWalrusBlobStore {
                         sliver_pairs,
                     )
                     .await?;
-                    "completed"
+                    let epoch = self
+                        .read_pooled_blob(recovered)
+                        .await?
+                        .certified_epoch
+                        .ok_or_else(|| {
+                            BlobStoreError::Internal(format!(
+                                "PooledBlob {recovered} still uncertified after certify"
+                            ))
+                        })?;
+                    (epoch, "completed")
                 };
                 metrics::counter!(
                     crate::metrics::REGISTER_DEDUP_SELF_HEAL_TOTAL,
@@ -874,6 +946,7 @@ impl DirectWalrusBlobStore {
                     blob_id: BlobId(walrus_blob_id_str),
                     pooled_blob_object_id: Some(recovered.to_string()),
                     encoded_size: Some(encoded_size),
+                    certified_epoch: Some(u64::from(certified_epoch)),
                 });
             }
             Err(e) => {
@@ -926,10 +999,15 @@ impl DirectWalrusBlobStore {
         )
         .await?;
 
+        // `current_epoch` was read before register; certify lands in the
+        // same epoch except across an epoch boundary, where it is off by
+        // one. The column's contract is NULL vs. non-NULL, so that is
+        // acceptable and saves a chain read per upload.
         Ok(StoreResult {
             blob_id: BlobId(walrus_blob_id_str),
             pooled_blob_object_id: Some(pooled_blob_object_id.to_string()),
             encoded_size: Some(encoded_size),
+            certified_epoch: Some(u64::from(current_epoch)),
         })
     }
 

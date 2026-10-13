@@ -1626,6 +1626,7 @@ mod tests {
             "md5",
             None,
             None,
+            None,
         )
         .await
         .unwrap();
@@ -1813,6 +1814,7 @@ mod tests {
             "text/plain",
             3,
             "md5",
+            None,
             None,
             None,
         )

@@ -45,4 +45,5 @@ walrus-core.workspace = true
 sqlx.workspace = true
 
 [dev-dependencies]
+md5 = "0.8.0"
 oyster-cli = { path = "../oyster-cli" }

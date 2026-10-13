@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### Added
+- New `blobs.certified_epoch` column (migration 026): the Walrus epoch in
+  which Oyster observed the blob's on-chain `PooledBlob` certified.
+  Every upload now writes it. The account-level content dedup on `PUT`
+  only short-circuits on a row that has it; a row without it (written
+  before the migration, or by the pre-fix self-heal for a blob whose
+  certify never ran) is checked against the chain once: an
+  already-certified blob is stamped and reused, an uncertified one gets
+  its sliver upload and certify finished before the `201`. Counted by
+  `oyster_dedup_certify_verify_total{certified="already"|"completed"}`.
+  The exact epoch is informational; the contract is NULL vs. non-NULL.
+
 ### Fixed
 - A `PUT` retry after a certify failure no longer returns `201` for a
   blob Walrus will never serve. When the first attempt's register

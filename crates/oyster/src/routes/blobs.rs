@@ -234,6 +234,7 @@ pub async fn store_blob(
         &md5_digest,
         result.pooled_blob_object_id.as_deref(),
         result.encoded_size.map(|e| e as i64),
+        result.certified_epoch.map(|e| e as i64),
     )
     .await
     {

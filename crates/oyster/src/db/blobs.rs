@@ -52,6 +52,7 @@ pub async fn insert_blob(
     md5: &str,
     pooled_blob_object_id: Option<&str>,
     encoded_size: Option<i64>,
+    certified_epoch: Option<i64>,
 ) -> Result<BlobMetadata, sqlx::Error> {
     // Delete-then-insert for cross-DB upsert compatibility
     sqlx::query(&super::sql(
@@ -63,8 +64,8 @@ pub async fn insert_blob(
     .await?;
 
     let query = format!(
-        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, encoded_size) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) \
+        "INSERT INTO blobs (key, blob_id, bucket_name, account_id, content_type, size, md5, pooled_blob_object_id, encoded_size, certified_epoch) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          RETURNING {BLOB_COLUMNS}",
     );
     let row = sqlx::query(&super::sql(&query))
@@ -77,6 +78,7 @@ pub async fn insert_blob(
         .bind(md5)
         .bind(pooled_blob_object_id)
         .bind(encoded_size)
+        .bind(certified_epoch)
         .fetch_one(pool)
         .await?;
 
@@ -114,6 +116,61 @@ pub async fn find_pooled_blob_object_id_for_account(
     .fetch_optional(pool)
     .await
     .map(|opt: Option<Option<String>>| opt.flatten())
+}
+
+/// What the upload-path dedup needs to know about content this account
+/// already stores: the on-chain `PooledBlob` to reuse and whether Oyster
+/// has seen it certified.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DedupRow {
+    /// On-chain `PooledBlob` object ID.
+    pub pooled_blob_object_id: String,
+    /// `blobs.certified_epoch`; `None` means not known to be certified.
+    pub certified_epoch: Option<i64>,
+}
+
+/// Find a row for `(account, blob_id)` that references an on-chain
+/// `PooledBlob`, preferring one already stamped certified so that the
+/// dedup short-circuit needs no chain read when any row knows the
+/// answer.
+pub async fn find_dedup_row_for_account(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    blob_id: &str,
+) -> Result<Option<DedupRow>, sqlx::Error> {
+    let row = sqlx::query(&super::sql(
+        "SELECT pooled_blob_object_id, certified_epoch FROM blobs \
+         WHERE account_id = ? AND blob_id = ? AND pooled_blob_object_id IS NOT NULL \
+         ORDER BY CASE WHEN certified_epoch IS NULL THEN 1 ELSE 0 END LIMIT 1",
+    ))
+    .bind(account_id)
+    .bind(blob_id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| DedupRow {
+        pooled_blob_object_id: r.get("pooled_blob_object_id"),
+        certified_epoch: r.get("certified_epoch"),
+    }))
+}
+
+/// Stamp `certified_epoch` on every row of `(account, blob_id)` that
+/// does not have one yet. Returns the number of rows updated.
+pub async fn set_certified_epoch(
+    pool: &super::DbPool,
+    account_id: &AccountId,
+    blob_id: &str,
+    certified_epoch: i64,
+) -> Result<u64, sqlx::Error> {
+    let result = sqlx::query(&super::sql(
+        "UPDATE blobs SET certified_epoch = ? \
+         WHERE account_id = ? AND blob_id = ? AND certified_epoch IS NULL",
+    ))
+    .bind(certified_epoch)
+    .bind(account_id)
+    .bind(blob_id)
+    .execute(pool)
+    .await?;
+    Ok(result.rows_affected())
 }
 
 /// Fetch blob metadata by bucket name and key.
@@ -278,6 +335,7 @@ mod tests {
             "d41d8cd98f00b204e9800998ecf8427e",
             Some("0xpool"),
             Some(123),
+            Some(7),
         )
         .await
         .unwrap();
@@ -305,6 +363,7 @@ mod tests {
             "d41d8cd98f00b204e9800998ecf8427e",
             None,
             Some(123),
+            None,
         )
         .await
         .unwrap();
