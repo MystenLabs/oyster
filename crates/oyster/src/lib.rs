@@ -10,6 +10,8 @@ pub mod app_admin;
 pub mod app_id;
 /// API key authentication and account extraction from requests.
 pub mod auth;
+/// Bulk repair of registered-but-uncertified `PooledBlob`s (`oysterd blobs repair`).
+pub mod blob_repair;
 /// Blob storage trait and local filesystem implementation.
 pub mod blob_store;
 /// Server configuration loaded from environment variables.

@@ -5,7 +5,7 @@ use std::{path::PathBuf, sync::Arc};
 use axum::http::{HeaderName, HeaderValue};
 use clap::{Parser, Subcommand};
 use oyster::{
-    AccountId, AppId, AppState, blob_store::LocalBlobStore, config::Config, db,
+    AccountId, AppId, AppState, blob_repair, blob_store::LocalBlobStore, config::Config, db,
     direct_walrus_store::DirectWalrusBlobStore, key_migration, pearl_client::PearlConnection,
     routes,
 };
@@ -46,6 +46,44 @@ enum Command {
     Keys {
         #[command(subcommand)]
         command: KeysCommand,
+    },
+    /// Repair `PooledBlob`s that are registered on chain but never
+    /// certified (runbook: docs/src/guides/uncertified-blob-repair.md).
+    /// Needs PEARL_GRPC_URL, SUI_RPC_URL, WALRUS_SYSTEM_OBJECT and
+    /// WALRUS_STAKING_OBJECT like `serve`.
+    Blobs {
+        #[command(subcommand)]
+        command: BlobsCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BlobsCommand {
+    /// For every blob row without a certified_epoch (and every PooledBlob
+    /// id in --ids-file): read the chain; stamp the rows if certified;
+    /// otherwise collect a certificate from the storage nodes and
+    /// certify; otherwise report it as unrecoverable or, with
+    /// --delete-unrecoverable, delete the PooledBlob and its rows and
+    /// print the keys to notify. Idempotent; safe to re-run. Exits 1 if
+    /// any blob needs attention.
+    Repair {
+        /// Only this account's rows (does not filter --ids-file).
+        #[arg(long)]
+        account: Option<AccountId>,
+        /// File with one PooledBlob object id per line (blank lines and
+        /// `#` comments ignored), e.g. the list from an incident.
+        #[arg(long, value_name = "PATH")]
+        ids_file: Option<PathBuf>,
+        /// Only repair --ids-file entries; do not scan the database.
+        #[arg(long, requires = "ids_file")]
+        skip_db: bool,
+        /// Read and report only; submit nothing and write nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// When the storage nodes no longer hold a blob's slivers, delete
+        /// its PooledBlob and rows instead of only reporting it.
+        #[arg(long)]
+        delete_unrecoverable: bool,
     },
 }
 
@@ -201,6 +239,9 @@ async fn main() {
         Command::App { .. } | Command::Signup { .. } => unreachable!("handled above"),
         Command::Keys { command } => {
             handle_keys_command(command, &config, db, pearl).await;
+        }
+        Command::Blobs { command } => {
+            handle_blobs_command(command, &config, db, pearl).await;
         }
         Command::Serve => {
             tracing::info!("starting oyster server on {}", config.bind_addr);
@@ -438,6 +479,95 @@ async fn handle_keys_command(
         if dry_run { "dry run" } else { "done" },
         report.outcomes.len(),
         report.moved(),
+        report.problems(),
+    );
+    if report.problems() > 0 {
+        std::process::exit(1);
+    }
+}
+
+async fn handle_blobs_command(
+    command: BlobsCommand,
+    config: &Config,
+    db: db::DbPool,
+    pearl: Option<PearlConnection>,
+) {
+    let BlobsCommand::Repair {
+        account,
+        ids_file,
+        skip_db,
+        dry_run,
+        delete_unrecoverable,
+    } = command;
+
+    let ids: Vec<sui_types::base_types::ObjectID> = match ids_file {
+        Some(path) => {
+            let text = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(|l| {
+                    l.parse()
+                        .unwrap_or_else(|e| panic!("invalid PooledBlob object id {l:?}: {e}"))
+                })
+                .collect()
+        }
+        None => Vec::new(),
+    };
+
+    let pearl = pearl.expect("PEARL_GRPC_URL is required for `blobs repair`");
+    let rpc_url = config
+        .sui_rpc_url
+        .as_deref()
+        .expect("SUI_RPC_URL is required for `blobs repair`");
+    let system_object: sui_types::base_types::ObjectID = config
+        .walrus_system_object
+        .as_deref()
+        .expect("WALRUS_SYSTEM_OBJECT is required for `blobs repair`")
+        .parse()
+        .expect("invalid WALRUS_SYSTEM_OBJECT");
+    let staking_object: sui_types::base_types::ObjectID = config
+        .walrus_staking_object
+        .as_deref()
+        .expect("WALRUS_STAKING_OBJECT is required for `blobs repair`")
+        .parse()
+        .expect("invalid WALRUS_STAKING_OBJECT");
+    let ctx = blob_repair::RepairContext::new(db, pearl, rpc_url, system_object, staking_object)
+        .await
+        .expect("failed to initialize blob repair context");
+
+    let opts = blob_repair::RepairOptions {
+        account,
+        ids,
+        skip_db,
+        dry_run,
+        delete_unrecoverable,
+    };
+    let report = blob_repair::repair(&ctx, &opts)
+        .await
+        .expect("blobs repair failed");
+
+    println!("ACCOUNT\tBLOB_ID\tPOOLED_BLOB\tREFERENCES\tOUTCOME");
+    for (cand, outcome) in &report.outcomes {
+        let refs: Vec<String> = cand
+            .references
+            .iter()
+            .map(|(bucket, key)| format!("{bucket}/{key}"))
+            .collect();
+        println!(
+            "{}\t{}\t{}\t{}\t{outcome}",
+            cand.account_id,
+            cand.blob_id,
+            cand.pooled_blob_object_id,
+            refs.join(","),
+        );
+    }
+    eprintln!(
+        "{}: {} blob(s) examined, {} repaired, {} need attention",
+        if dry_run { "dry run" } else { "done" },
+        report.outcomes.len(),
+        report.repaired(),
         report.problems(),
     );
     if report.problems() > 0 {

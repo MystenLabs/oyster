@@ -12,3 +12,6 @@ Practical guides for working with Oyster beyond the API reference.
   and the extension service
 - **[Pearl Master-Seed Rotation](key-rotation.md)**: operator runbook for
   moving accounts onto a new master seed (`oysterd keys`)
+- **[Repairing Uncertified Blobs](uncertified-blob-repair.md)**: operator
+  runbook for `PooledBlob`s registered but never certified
+  (`oysterd blobs repair`)

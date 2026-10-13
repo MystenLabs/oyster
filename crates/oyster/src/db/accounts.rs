@@ -866,6 +866,19 @@ pub async fn update_pool_after_delete(
     Ok(())
 }
 
+/// The account whose `StoragePool` is `pool_object_id`, if any.
+pub async fn find_account_by_storage_pool(
+    pool: &super::DbPool,
+    pool_object_id: &str,
+) -> Result<Option<AccountId>, sqlx::Error> {
+    sqlx::query_scalar(&super::sql(
+        "SELECT id FROM accounts WHERE storage_pool_object_id = ? LIMIT 1",
+    ))
+    .bind(pool_object_id)
+    .fetch_optional(pool)
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
