@@ -19,6 +19,7 @@
 - [oyster-cli Quick Start](https://docs.wal.app/oyster/guides/cli.md)
 - [Content Addressing](https://docs.wal.app/oyster/guides/content-addressing.md)
 - [Pearl Master-Seed Rotation](https://docs.wal.app/oyster/guides/key-rotation.md)
+- [Repairing Uncertified Blobs](https://docs.wal.app/oyster/guides/uncertified-blob-repair.md)
 - [Web Signup](https://docs.wal.app/oyster/guides/web-signup.md)
 - [Webhooks](https://docs.wal.app/oyster/guides/webhooks.md)
 

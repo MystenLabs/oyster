@@ -51,6 +51,10 @@
     Every Oyster account's wallet is an Ed25519 key that Pearl derives from a *master seed* with
     HKDF-SHA256. Pearl can hold several seeds at once, each with a version number, and every
     account records which version its wallet derives from (`accounts.key_version`).
+- [Repairing Uncertified Blobs](https://docs.wal.app/oyster/guides/uncertified-blob-repair.md):
+    An upload is three steps in order: register the `PooledBlob` in the account's `StoragePool`,
+    push the slivers to the storage nodes, and submit the certify transaction. Walrus serves a
+    blob only once it is certified.
 - [Web Signup](https://docs.wal.app/oyster/guides/web-signup.md):
     Oyster can serve a self-serve signup page at `/signup`. A user signs in with Google, passes
     a Cloudflare Turnstile anti-bot check, and receives an **app** plus its first **admin key**,
