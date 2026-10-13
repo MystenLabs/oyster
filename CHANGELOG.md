@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.14.4] - 2026-10-13
 
 ### Added
 - New `blobs.certified_epoch` column (migration 026): the Walrus epoch in
