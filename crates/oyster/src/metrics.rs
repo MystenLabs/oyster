@@ -73,6 +73,15 @@ pub const EXTENSION_MAX_FAILURE_COUNT: &str = "oyster_extension_max_failure_coun
 /// comparisons in alert rules stay false rather than acting on a stale
 /// last value.
 pub const EXTENSION_MIN_POOL_EPOCHS_REMAINING: &str = "oyster_extension_min_pool_epochs_remaining";
+/// Gauge: like [`EXTENSION_MIN_POOL_EPOCHS_REMAINING`] but over pools
+/// with `extend_failure_count = 0` only, i.e. pools the worker has not
+/// attempted since their last success. Unfunded pools park in backoff
+/// and pin the all-pools minimum at the lookahead edge, so this is the
+/// value that says the worker itself is not keeping up: a pool nobody
+/// has failed on is about to expire because nobody has reached it. NaN
+/// when no such pool exists.
+pub const EXTENSION_MIN_UNFAILED_POOL_EPOCHS_REMAINING: &str =
+    "oyster_extension_min_unfailed_pool_epochs_remaining";
 /// Gauge: Unix timestamp (seconds) of the last extension cycle that ran
 /// to completion, including empty cycles. A stale value means the worker
 /// is dead or stuck before the claim step (e.g. `current_epoch` RPC

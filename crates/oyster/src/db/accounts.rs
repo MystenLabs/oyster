@@ -517,6 +517,11 @@ pub struct PoolHealthStats {
     /// Lowest `pool_end_epoch` across accounts that have a pool; `None`
     /// when no account has a pool yet.
     pub min_pool_end_epoch: Option<i64>,
+    /// Lowest `pool_end_epoch` across pools with `extend_failure_count = 0`
+    /// (not in backoff); `None` when every pool is in backoff or there are
+    /// no pools. Unlike `min_pool_end_epoch`, an unfunded pool parked in
+    /// backoff cannot pin this value.
+    pub min_unfailed_pool_end_epoch: Option<i64>,
 }
 
 /// One aggregate query over accounts that own a `StoragePool`. Uses
@@ -527,7 +532,9 @@ pub async fn pool_health_stats(pool: &super::DbPool) -> Result<PoolHealthStats, 
         "SELECT \
              COUNT(CASE WHEN extend_failure_count > 0 THEN 1 END) AS pools_in_backoff, \
              MAX(extend_failure_count) AS max_failure_count, \
-             MIN(pool_end_epoch) AS min_pool_end_epoch \
+             MIN(pool_end_epoch) AS min_pool_end_epoch, \
+             MIN(CASE WHEN extend_failure_count = 0 THEN pool_end_epoch END) \
+                 AS min_unfailed_pool_end_epoch \
          FROM accounts \
          WHERE storage_pool_object_id IS NOT NULL",
     ))
@@ -537,6 +544,7 @@ pub async fn pool_health_stats(pool: &super::DbPool) -> Result<PoolHealthStats, 
         pools_in_backoff: row.get("pools_in_backoff"),
         max_failure_count: row.get::<Option<i64>, _>("max_failure_count").unwrap_or(0),
         min_pool_end_epoch: row.get("min_pool_end_epoch"),
+        min_unfailed_pool_end_epoch: row.get("min_unfailed_pool_end_epoch"),
     })
 }
 
@@ -1697,6 +1705,7 @@ mod tests {
                 pools_in_backoff: 0,
                 max_failure_count: 0,
                 min_pool_end_epoch: None,
+                min_unfailed_pool_end_epoch: None,
             }
         );
 
@@ -1725,6 +1734,7 @@ mod tests {
                 pools_in_backoff: 0,
                 max_failure_count: 0,
                 min_pool_end_epoch: Some(25),
+                min_unfailed_pool_end_epoch: Some(25),
             }
         );
 
@@ -1745,10 +1755,13 @@ mod tests {
                 pools_in_backoff: 2,
                 max_failure_count: 2,
                 min_pool_end_epoch: Some(25),
+                min_unfailed_pool_end_epoch: None,
             }
         );
 
         // A successful extension clears the failure count and moves the min.
+        // `a` (end 40) is still in backoff, so it pins the all-pools min
+        // but not the unfailed one, which follows `b`'s new end epoch.
         bump_pool_end_epoch(&pool, &b.id, "0xbbb", 60)
             .await
             .unwrap();
@@ -1759,6 +1772,7 @@ mod tests {
                 pools_in_backoff: 1,
                 max_failure_count: 2,
                 min_pool_end_epoch: Some(40),
+                min_unfailed_pool_end_epoch: Some(60),
             }
         );
     }

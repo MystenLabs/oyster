@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- `oyster_extension_min_unfailed_pool_epochs_remaining`: the extension
+  worker's min-epochs-remaining gauge restricted to pools with
+  `extend_failure_count = 0`. The existing all-pools gauge sits at the
+  lookahead edge whenever one unfunded pool is parked in backoff, so it
+  cannot tell an abandoned wallet from a worker that is too slow for the
+  fleet. The new gauge excludes pools in backoff, so a reading of `1` or
+  less for an hour means a pool nobody has failed on is about to expire
+  unextended. Sampled from the same per-cycle `pool_health_stats` query.
+
 ## [0.14.4] - 2026-10-13
 
 ### Added

@@ -19,10 +19,10 @@ use crate::{
         EXTENSION_CYCLE_DURATION_SECONDS, EXTENSION_CYCLE_POOLS_PROCESSED, EXTENSION_CYCLES_TOTAL,
         EXTENSION_EPOCHS_EXTENDED_TOTAL, EXTENSION_ERRORS_TOTAL, EXTENSION_FAILURES_TOTAL,
         EXTENSION_LAST_CYCLE_COMPLETED_TIMESTAMP_SECONDS, EXTENSION_MAX_FAILURE_COUNT,
-        EXTENSION_MIN_POOL_EPOCHS_REMAINING, EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL,
-        EXTENSION_POOLS_EXPIRED_RESET_TOTAL, EXTENSION_POOLS_EXPIRING,
-        EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_IN_BACKOFF, EXTENSION_POOLS_REPAIRED_TOTAL,
-        WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
+        EXTENSION_MIN_POOL_EPOCHS_REMAINING, EXTENSION_MIN_UNFAILED_POOL_EPOCHS_REMAINING,
+        EXTENSION_POOLS_ALREADY_EXTENDED_TOTAL, EXTENSION_POOLS_EXPIRED_RESET_TOTAL,
+        EXTENSION_POOLS_EXPIRING, EXTENSION_POOLS_EXTENDED_TOTAL, EXTENSION_POOLS_IN_BACKOFF,
+        EXTENSION_POOLS_REPAIRED_TOTAL, WEBHOOK_SKIPPED_UNSIGNED_TOTAL,
     },
     pearl_client::PearlConnection,
     sui_object_reader::{self, OnChainStoragePoolState},
@@ -462,7 +462,8 @@ fn finish_cycle(cycle_start: Instant, processed: u32) {
 
 /// Sample fleet-wide pool health from the DB and publish it as gauges:
 /// pools in failure backoff, the worst consecutive-failure count, and
-/// how many epochs remain before the earliest pool expires. One cheap
+/// how many epochs remain before the earliest pool expires (over all
+/// pools, and over pools not in backoff). One cheap
 /// aggregate query per cycle; a failure is logged and counted but never
 /// blocks the cycle.
 async fn publish_pool_health_gauges(db: &DbPool, current_epoch: u32) {
@@ -478,6 +479,10 @@ async fn publish_pool_health_gauges(db: &DbPool, current_epoch: u32) {
                 .min_pool_end_epoch
                 .map_or(f64::NAN, |min_end| (min_end - current_epoch as i64) as f64);
             gauge!(EXTENSION_MIN_POOL_EPOCHS_REMAINING).set(remaining);
+            let unfailed_remaining = stats
+                .min_unfailed_pool_end_epoch
+                .map_or(f64::NAN, |min_end| (min_end - current_epoch as i64) as f64);
+            gauge!(EXTENSION_MIN_UNFAILED_POOL_EPOCHS_REMAINING).set(unfailed_remaining);
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to sample pool health stats");
