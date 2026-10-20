@@ -68,6 +68,7 @@ The ones worth alerting on:
 |---|---|---|
 | `oyster_extension_last_cycle_completed_timestamp_seconds` | gauge | Unix time of the last completed cycle (empty cycles included). Stale ⇒ worker dead or stuck before the claim step. |
 | `oyster_extension_min_pool_epochs_remaining` | gauge | `min(pool_end_epoch) − current_epoch` across all pools. Should stay above `POOL_EXTEND_LOOKAHEAD_EPOCHS` minus one; `≤ 0` means a pool expired unextended. NaN when no pools exist. |
+| `oyster_extension_min_unfailed_pool_epochs_remaining` | gauge | Same, but only over pools with `extend_failure_count = 0`. Unfunded pools park in backoff and pin the all-pools minimum, so this is the one to alert on: a value of `1` or less for an hour means a pool nobody has failed on is expiring because the worker has not reached it. NaN when every pool is in backoff. |
 | `oyster_extension_pools_in_backoff` | gauge | Pools whose last attempt failed and are waiting out exponential backoff — usually unfunded wallets. |
 | `oyster_extension_max_failure_count` | gauge | Worst consecutive-failure streak across pools. |
 | `oyster_extension_failures_total{reason}` | counter | Failed `extend_storage_pool` attempts. `insufficient_funds` is the app's problem; `ptb_build`, `sign_or_submit`, `on_chain_abort`, `invalid_object_id` are the operator's. |
