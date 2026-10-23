@@ -9,6 +9,7 @@ use walrus_sui::{
     client::{ReadClient as _, SuiClientError, transaction_builder::WalrusPtbBuilder},
     coin::CoinType,
 };
+use walrus_utils::backoff::ExponentialBackoffConfig;
 
 use crate::{
     AccountId, AppId, FundingAmount,
@@ -52,6 +53,10 @@ pub struct ExtensionConfig {
     /// (`claim_cooldown * 2^failures`, capped here). Also bounds how long
     /// a user waits after funding their wallet before the next attempt.
     pub failure_backoff_cap: std::time::Duration,
+    /// Inline retries of the signed `extend_storage_pool` transaction
+    /// after a transient RPC failure, before the attempt counts as failed
+    /// and the pool goes into `failure_backoff`.
+    pub submit_backoff: ExponentialBackoffConfig,
 }
 
 /// Exponential backoff after `failures` consecutive failed attempts:
@@ -226,7 +231,9 @@ pub async fn run_extension_cycle_once(
         // sign/submit outlives `claim_cooldown` can overlap a second
         // replica's claim, which then reads the pre-extension
         // `end_epoch`. Keep `EXTENSION_CLAIM_COOLDOWN_SECS` comfortably
-        // above the checkpoint-wait timeout plus Pearl signing latency.
+        // above Pearl signing latency plus every submit try: the
+        // fullnode's request timeout (60s on the public testnet
+        // fullnode) and the checkpoint-wait timeout, per try.
         let Some(on_chain) = read_pool_state(rpc_url, &pool, pool_object_id).await else {
             errors += 1;
             continue;
@@ -345,7 +352,7 @@ pub async fn run_extension_cycle_once(
             sender_address,
             pool,
             pool_object_id,
-            config.extend_epochs,
+            config,
         )
         .await;
         let outcome = if attempt.is_ok() { "ok" } else { "failed" };
@@ -803,19 +810,26 @@ async fn extend_single_pool(
     sender_address: SuiAddress,
     pool: &ExpiringPool,
     pool_object_id: ObjectID,
-    extend_epochs: u32,
+    config: &ExtensionConfig,
 ) -> Result<(), ExtendPoolError> {
     let mut ptb = WalrusPtbBuilder::new(read_client.clone(), sender_address);
     ptb.extend_storage_pool(
         pool_object_id,
-        extend_epochs,
+        config.extend_epochs,
         pool.pool_reserved_encoded_bytes.max(0) as u64,
     )
     .await?;
 
     let tx_data = ptb.build_transaction_data(None).await?;
-    sui_transaction::sign_and_submit(pearl, &pool.account_id, pool.key_version, rpc_url, tx_data)
-        .await?;
+    sui_transaction::sign_and_submit_with_retry(
+        pearl,
+        &pool.account_id,
+        pool.key_version,
+        rpc_url,
+        tx_data,
+        &config.submit_backoff,
+    )
+    .await?;
 
     Ok(())
 }

@@ -15,6 +15,11 @@ pub const PEARL_GRPC_CALLS_TOTAL: &str = "oyster_pearl_grpc_calls_total";
 /// Histogram: Pearl gRPC call latency in seconds, labelled by method.
 pub const PEARL_GRPC_LATENCY: &str = "oyster_pearl_grpc_latency_seconds";
 
+/// Counter: Sui transaction submits retried with the same signed bytes
+/// after a transient RPC failure. Only callers that pass a retry budget
+/// to `sign_and_submit_with_retry` (the extension worker) retry.
+pub const SUI_SUBMIT_RETRIES_TOTAL: &str = "oyster_sui_submit_retries_total";
+
 /// Gauge: number of active accounts.
 pub const ACTIVE_ACCOUNTS: &str = "oyster_active_accounts";
 /// Gauge: number of active blobs.
