@@ -7795,6 +7795,7 @@ dependencies = [
  "walrus-service",
  "walrus-sui",
  "walrus-test-utils",
+ "walrus-utils",
  "zeroize",
 ]
 

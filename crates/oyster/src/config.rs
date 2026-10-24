@@ -231,6 +231,10 @@ pub struct Config {
     /// same row from being re-claimed (or re-notified) for this long, regardless
     /// of the attempt's outcome.
     pub extension_claim_cooldown_secs: u64,
+    /// How many times the extension worker re-submits the same signed
+    /// `extend_storage_pool` transaction after a transient RPC failure before
+    /// counting the attempt as failed.
+    pub extension_submit_retries: u32,
     /// Ceiling for the exponential retry backoff applied after failed
     /// extension attempts (`claim_cooldown * 2^failures`, capped here).
     /// Bounds how long a user waits after funding their wallet before the
@@ -312,6 +316,10 @@ impl Config {
                 .ok()
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(60),
+            extension_submit_retries: std::env::var("EXTENSION_SUBMIT_RETRIES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1),
             extension_backoff_cap_secs: std::env::var("EXTENSION_BACKOFF_CAP_SECS")
                 .ok()
                 .and_then(|v| v.parse().ok())

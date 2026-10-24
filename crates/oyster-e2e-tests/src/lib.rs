@@ -204,6 +204,7 @@ impl OysterTestHarness {
             extension_claim_batch_size: 100,
             extension_claim_cooldown_secs: 60,
             extension_backoff_cap_secs: 3600,
+            extension_submit_retries: 1,
             extension_metrics_bind_addr: "unused".into(),
             default_avg_blob_size: 0,
             allow_http_webhook_scheme: false,
@@ -381,6 +382,11 @@ impl OysterTestHarness {
             claim_batch_size: 100,
             claim_cooldown: std::time::Duration::from_secs(60),
             failure_backoff_cap: std::time::Duration::from_secs(3600),
+            submit_backoff: walrus_utils::backoff::ExponentialBackoffConfig::new(
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(5),
+                Some(1),
+            ),
         };
         oyster::extension_task::run_extension_cycle_once(
             &self.db,

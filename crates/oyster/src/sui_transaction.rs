@@ -1,5 +1,10 @@
-use std::{fmt, sync::Arc, time::Duration};
+use std::{
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use metrics::counter;
 use prost_types::FieldMask;
 use sui_rpc::{
     Client as SuiGrpcClient,
@@ -14,10 +19,13 @@ use sui_types::{
     digests::TransactionDigest,
     transaction::{Transaction, TransactionData},
 };
-use walrus_sui::client::{SuiReadClient, contract_config::ContractConfig};
-use walrus_utils::backoff::ExponentialBackoffConfig;
+use walrus_sui::client::{
+    SuiReadClient, contract_config::ContractConfig,
+    retry_client::retriable_rpc_error::RetriableRpcError,
+};
+use walrus_utils::backoff::{BackoffStrategy, ExponentialBackoffConfig};
 
-use crate::{AccountId, pearl_client::PearlConnection};
+use crate::{AccountId, metrics::SUI_SUBMIT_RETRIES_TOTAL, pearl_client::PearlConnection};
 
 /// Protocol-agnostic execute response carrying just the fields Oyster
 /// needs from a submitted Sui transaction.
@@ -200,6 +208,31 @@ pub async fn sign_and_submit(
     rpc_url: &str,
     tx_data: TransactionData,
 ) -> Result<SignedTxOutcome, SignAndSubmitError> {
+    let no_retries = ExponentialBackoffConfig::new(Duration::ZERO, Duration::ZERO, Some(0));
+    sign_and_submit_with_retry(
+        pearl,
+        account_id,
+        key_version,
+        rpc_url,
+        tx_data,
+        &no_retries,
+    )
+    .await
+}
+
+/// Like [`sign_and_submit`], but re-submits the same signed transaction
+/// after a transient RPC failure, waiting between tries as `backoff`
+/// says. Re-submitting identical bytes is safe: Sui executes a digest at
+/// most once, and a repeat of an executed transaction returns its
+/// effects. Signs once, so Pearl is not called again on a retry.
+pub async fn sign_and_submit_with_retry(
+    pearl: &PearlConnection,
+    account_id: &AccountId,
+    key_version: u32,
+    rpc_url: &str,
+    tx_data: TransactionData,
+    backoff: &ExponentialBackoffConfig,
+) -> Result<SignedTxOutcome, SignAndSubmitError> {
     // Sign via Pearl. Pearl returns a BCS-serialized sui-types
     // `Transaction` envelope (intent message + signatures).
     let tx_bytes = bcs::to_bytes(&tx_data)?;
@@ -224,7 +257,7 @@ pub async fn sign_and_submit(
         })
         .collect();
 
-    let mut client = build_sui_grpc_client(rpc_url)?;
+    let tx_digest = *signed_tx.digest();
     let request = ExecuteTransactionRequest::new(proto_tx)
         .with_signatures(proto_sigs)
         .with_read_mask(FieldMask {
@@ -235,14 +268,58 @@ pub async fn sign_and_submit(
                 "events".to_string(),
             ],
         });
-    // Wait for the transaction to land in a checkpoint so that follow-up
-    // JSON-RPC reads (Walrus's `SuiReadClient` is still on JSON-RPC) see
-    // the just-created objects. Matches the read-your-writes guarantee
-    // the legacy `quorum_driver_api` execute path used to provide.
-    let response = client
-        .execute_transaction_and_wait_for_checkpoint(request, EXECUTE_CHECKPOINT_WAIT_TIMEOUT)
-        .await?
-        .into_inner();
+    let mut strategy = backoff.get_strategy(rand::random());
+    let mut attempt = 1u32;
+    let response = loop {
+        let attempt_start = Instant::now();
+        // Wait for the transaction to land in a checkpoint so that follow-up
+        // JSON-RPC reads (Walrus's `SuiReadClient` is still on JSON-RPC) see
+        // the just-created objects. Matches the read-your-writes guarantee
+        // the legacy `quorum_driver_api` execute path used to provide. A
+        // fresh client per try opens a new connection, so a retry is not
+        // pinned to the backend that just failed.
+        let mut client = build_sui_grpc_client(rpc_url)?;
+        let error = match client
+            .execute_transaction_and_wait_for_checkpoint(
+                request.clone(),
+                EXECUTE_CHECKPOINT_WAIT_TIMEOUT,
+            )
+            .await
+        {
+            Ok(response) => {
+                if attempt > 1 {
+                    tracing::info!(
+                        %tx_digest,
+                        attempt,
+                        elapsed_ms = attempt_start.elapsed().as_millis(),
+                        "sui transaction submit succeeded after retry"
+                    );
+                }
+                break response.into_inner();
+            }
+            Err(error) => error,
+        };
+        let elapsed_ms = attempt_start.elapsed().as_millis();
+        let Some(delay) = is_retriable_submit_error(&error)
+            .then(|| strategy.next_delay())
+            .flatten()
+        else {
+            return Err(SignAndSubmitError::Other(
+                format!("{error} (tx {tx_digest}, try {attempt} took {elapsed_ms}ms)").into(),
+            ));
+        };
+        tracing::warn!(
+            %tx_digest,
+            attempt,
+            elapsed_ms,
+            retry_in_ms = delay.as_millis(),
+            %error,
+            "sui transaction submit failed, retrying the same signed transaction"
+        );
+        counter!(SUI_SUBMIT_RETRIES_TOTAL).increment(1);
+        tokio::time::sleep(delay).await;
+        attempt += 1;
+    };
 
     let executed = response
         .transaction
@@ -294,6 +371,20 @@ pub async fn sign_and_submit(
         changed_objects,
         events,
     })
+}
+
+/// Whether a failed submit may be retried with the same signed bytes:
+/// transient RPC statuses (the Walrus client's retriable set, which
+/// includes the fullnode's own `DeadlineExceeded`), and a transaction
+/// that executed but was not seen in a checkpoint in time, where a
+/// resubmit returns the cached effects and checks the checkpoint again.
+fn is_retriable_submit_error(error: &ExecuteAndWaitError) -> bool {
+    match error {
+        ExecuteAndWaitError::RpcError(status) => status.is_retriable_rpc_error(),
+        ExecuteAndWaitError::CheckpointTimeout(_)
+        | ExecuteAndWaitError::CheckpointStreamError { .. } => true,
+        _ => false,
+    }
 }
 
 #[cfg(test)]

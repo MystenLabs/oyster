@@ -369,6 +369,11 @@ async fn main() {
                 failure_backoff_cap: std::time::Duration::from_secs(
                     config.extension_backoff_cap_secs,
                 ),
+                submit_backoff: walrus_utils::backoff::ExponentialBackoffConfig::new(
+                    std::time::Duration::from_secs(1),
+                    std::time::Duration::from_secs(5),
+                    Some(config.extension_submit_retries),
+                ),
             };
 
             oyster::extension_task::run_extension_loop(

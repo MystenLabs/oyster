@@ -236,6 +236,7 @@ files to `/run/secrets/`).
 | `EXTENSION_BUSY_SLEEP_MS` | `250` | Sleep between extension cycles when there's still work to drain |
 | `EXTENSION_CLAIM_BATCH_SIZE` | `100` | Max pool rows claimed per cycle |
 | `EXTENSION_CLAIM_COOLDOWN_SECS` | `60` | Per-row claim TTL; same knob backs off both re-claim and webhook re-notify |
+| `EXTENSION_SUBMIT_RETRIES` | `1` | Re-submits of the same signed `extend_storage_pool` transaction after a transient RPC failure, before the attempt counts as failed |
 | `OYSTER_EXTENSION_METRICS_BIND_ADDR` | `0.0.0.0:50053` | Metrics endpoint for the extension worker |
 | `OYSTER_DEFAULT_AVG_BLOB_SIZE` | `10000000` | Default `avg_blob_size` (unencoded bytes) for new accounts; inflates the storage-cap ceiling so `max_unencoded_bytes` is a *lower* bound for blobs of this size. `0` disables inflation |
 

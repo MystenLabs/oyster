@@ -256,6 +256,7 @@ mod tests {
             extension_claim_batch_size: 100,
             extension_claim_cooldown_secs: 60,
             extension_backoff_cap_secs: 3600,
+            extension_submit_retries: 1,
             extension_metrics_bind_addr: "unused".into(),
             default_avg_blob_size: 0,
             allow_http_webhook_scheme: true,

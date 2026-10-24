@@ -11,6 +11,17 @@
   fleet. The new gauge excludes pools in backoff, so a reading of `1` or
   less for an hour means a pool nobody has failed on is about to expire
   unextended. Sampled from the same per-cycle `pool_health_stats` query.
+- `EXTENSION_SUBMIT_RETRIES` (default 1): the extension worker now
+  re-submits the same signed `extend_storage_pool` transaction after a
+  transient RPC failure (the fullnode's `DeadlineExceeded`, `Unavailable`,
+  `Internal`, `ResourceExhausted`, transport errors, or a checkpoint wait
+  that timed out) before counting the attempt as failed and backing the
+  pool off. Each failed try logs the transaction digest, the try number
+  and how long the try took, and increments
+  `oyster_sui_submit_retries_total`; a retry that then succeeds logs the
+  same fields. A submit that still fails reports the digest and the last
+  try's duration in its error. Other `sign_and_submit` callers do not
+  retry.
 
 ## [0.14.4] - 2026-10-13
 
