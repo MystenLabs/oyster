@@ -13,6 +13,12 @@ Oyster provides a Web2-friendly HTTP API (buckets, blobs, API keys) backed by Wa
 decentralized blob storage and Sui for on-chain state. A companion service, **Pearl**, handles
 deterministic key derivation and transaction signing in isolation.
 
+## Documentation
+
+The Oyster documentation is published at [docs.wal.app/oyster](https://docs.wal.app/oyster). Its
+source lives in [MystenLabs/walrus-documentation](https://github.com/MystenLabs/walrus-documentation)
+under `content/oyster/`; open documentation pull requests there.
+
 ## Architecture
 
 ```
@@ -176,7 +182,7 @@ Each cycle:
    `POOL_EXTEND_EPOCHS`), signs via Pearl, and submits to Sui. On success bumps
    `pool_end_epoch` on the account row.
 3. On insufficient-funds failure, computes the WAL + SUI cost the wallet needs and POSTs an
-   `account.funding_required` webhook (see [docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md)).
+   `account.funding_required` webhook (see [the webhooks guide](https://docs.wal.app/oyster/guides/webhooks)).
    The cooldown TTL acts as the only retry/back-off bookkeeping.
 
 `POOL_EXTEND_LOOKAHEAD_EPOCHS` and `POOL_EXTEND_EPOCHS` are raw Walrus epochs — operators pick
@@ -198,7 +204,7 @@ Each delivery is signed with a per-app Ed25519 keypair; receivers verify with th
 `X-Oyster-Public-Key-Fingerprint` headers. App builders register and rotate the receiver URL
 self-service via `oyster app webhook set <URL>` (or
 `PUT /api/v1/admin/app/webhook`); each call generates a fresh keypair and returns the public
-key. See [docs/src/guides/webhooks.md](./docs/src/guides/webhooks.md) for the full payload
+key. See [the webhooks guide](https://docs.wal.app/oyster/guides/webhooks) for the full payload
 schema, retry policy, signature verification, and receiver examples.
 
 ### Database

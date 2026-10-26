@@ -1,9 +1,16 @@
 name: Deploy Docs
 
+# The Oyster documentation moved to MystenLabs/walrus-documentation and is
+# published at https://docs.wal.app/oyster. This keeps the old GitHub Pages
+# site, https://mystenlabs.github.io/oyster/, serving a redirect there so
+# existing links keep working.
+
 on:
   push:
     branches: [main]
-    paths: [docs/**]
+    paths:
+      - .github/pages-redirect/**
+      - .github/workflows/docs.yml
   workflow_dispatch:
 
 # Required for GitHub Pages deployment via Actions
@@ -17,27 +24,15 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - name: Install mdbook
-        run: |
-          mkdir -p "$HOME/.local/bin"
-          curl -sSL https://github.com/rust-lang/mdBook/releases/download/v0.4.43/mdbook-v0.4.43-x86_64-unknown-linux-gnu.tar.gz \
-            | tar xz -C "$HOME/.local/bin"
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - run: mdbook build docs/
-      - uses: actions/upload-pages-artifact@v4
-        with:
-          path: docs/book
-
   deploy:
-    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      - uses: actions/checkout@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: .github/pages-redirect
       - id: deployment
         uses: actions/deploy-pages@v4
