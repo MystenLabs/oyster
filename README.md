@@ -17,7 +17,7 @@ deterministic key derivation and transaction signing in isolation.
 
 The Oyster documentation is published at [docs.wal.app/oyster](https://docs.wal.app/oyster). Its
 source lives in [MystenLabs/walrus-documentation](https://github.com/MystenLabs/walrus-documentation)
-under `oyster-content/`; open documentation pull requests there.
+under `content/oyster/`; open documentation pull requests there.
 
 ## Architecture
 
